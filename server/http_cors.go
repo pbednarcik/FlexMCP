@@ -45,14 +45,13 @@ type CORSConfig struct {
 	MaxAge int
 }
 
-// CORSOption configures a CORSConfig. It is consumed by the per-transport
-// options WithSSECORS and WithStreamableHTTPCORS.
+// CORSOption configures a CORSConfig. It is consumed by
+// WithStreamableHTTPCORS.
 type CORSOption func(*CORSConfig)
 
 // WithCORSAllowedOrigins sets the list of origins allowed to access the
 // server. Passing "*" allows any origin. Calling this multiple times within a
-// single WithSSECORS / WithStreamableHTTPCORS invocation replaces the previous
-// value.
+// single WithStreamableHTTPCORS invocation replaces the previous value.
 func WithCORSAllowedOrigins(origins ...string) CORSOption {
 	return func(c *CORSConfig) {
 		c.AllowedOrigins = append(c.AllowedOrigins[:0:0], origins...)

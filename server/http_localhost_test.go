@@ -144,38 +144,6 @@ func TestStreamableHTTP_LocalhostProtection(t *testing.T) {
 	}
 }
 
-// TestSSE_LocalhostProtection verifies that DNS rebinding protection is
-// automatically enabled for the SSE transport when requests arrive over a
-// loopback connection.
-func TestSSE_LocalhostProtection(t *testing.T) {
-	for _, tt := range localhostProtectionTests {
-		t.Run(tt.name, func(t *testing.T) {
-			mcpServer := NewMCPServer("test", "1.0.0")
-			sseServer := NewSSEServer(mcpServer,
-				WithSSEDisableLocalhostProtection(tt.disableProtection),
-			)
-			addr, client := startLoopbackServer(t, sseServer)
-
-			// A POST to the message endpoint without a session is enough to
-			// distinguish the 403 protection response from normal handling
-			// (400 Bad Request for the missing sessionId).
-			req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/message", addr), bytes.NewReader(nil))
-			require.NoError(t, err)
-			req.Host = tt.hostHeader
-
-			resp, err := client.Do(req)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-
-			if tt.wantForbidden {
-				assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-			} else {
-				assert.NotEqual(t, http.StatusForbidden, resp.StatusCode)
-			}
-		})
-	}
-}
-
 // TestStreamableHTTP_LocalhostProtection_NonLoopbackUnaffected verifies that
 // the protection only applies to loopback connections: a handler invoked
 // without a loopback local address must not reject foreign Host headers.

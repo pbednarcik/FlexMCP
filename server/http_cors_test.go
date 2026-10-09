@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -249,108 +248,6 @@ func TestStreamableHTTP_CORS_WildcardWithCredentialsEchoesOrigin(t *testing.T) {
 
 	assert.Equal(t, "https://anywhere.com", resp.Header.Get("Access-Control-Allow-Origin"))
 	assert.Equal(t, "true", resp.Header.Get("Access-Control-Allow-Credentials"))
-}
-
-func TestSSE_CORS_Preflight(t *testing.T) {
-	t.Parallel()
-
-	mcp := NewMCPServer("test", "1.0.0")
-	srv := NewSSEServer(mcp,
-		WithSSECORS(
-			WithCORSAllowedOrigins("https://example.com"),
-		),
-	)
-	ts := httptest.NewServer(srv)
-	t.Cleanup(ts.Close)
-
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodOptions, ts.URL+"/sse", nil)
-	require.NoError(t, err)
-	req.Header.Set("Origin", "https://example.com")
-	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
-	assert.Equal(t, "https://example.com", resp.Header.Get("Access-Control-Allow-Origin"))
-	assert.Contains(t, resp.Header.Get("Access-Control-Allow-Methods"), http.MethodGet)
-}
-
-func TestSSE_CORS_DefaultWildcardPreservedWhenDisabled(t *testing.T) {
-	t.Parallel()
-
-	mcp := NewMCPServer("test", "1.0.0")
-	ts := NewTestServer(mcp)
-	t.Cleanup(ts.Close)
-
-	// Issue a GET to the SSE endpoint and look for the default behavior.
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/sse", nil)
-	require.NoError(t, err)
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	// Without an explicit CORS config, handleSSE preserves the historical
-	// "*" default to avoid breaking existing browser-based clients.
-	assert.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
-}
-
-func TestSSE_CORS_OverridesDefaultWildcard(t *testing.T) {
-	t.Parallel()
-
-	mcp := NewMCPServer("test", "1.0.0")
-	srv := NewSSEServer(mcp,
-		WithSSECORS(WithCORSAllowedOrigins("https://example.com")),
-	)
-	ts := httptest.NewServer(srv)
-	t.Cleanup(ts.Close)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/sse", nil)
-	require.NoError(t, err)
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Origin", "https://example.com")
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	assert.Equal(t, "https://example.com", resp.Header.Get("Access-Control-Allow-Origin"))
-}
-
-func TestSSE_CORS_HandlersHonorConfig(t *testing.T) {
-	t.Parallel()
-
-	mcp := NewMCPServer("test", "1.0.0")
-	srv := NewSSEServer(mcp,
-		WithSSECORS(WithCORSAllowedOrigins("https://example.com")),
-	)
-
-	mux := http.NewServeMux()
-	mux.Handle("/custom/sse", srv.SSEHandler())
-	mux.Handle("/custom/message", srv.MessageHandler())
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodOptions, ts.URL+"/custom/message", nil)
-	require.NoError(t, err)
-	req.Header.Set("Origin", "https://example.com")
-	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
-	assert.Equal(t, "https://example.com", resp.Header.Get("Access-Control-Allow-Origin"))
 }
 
 func TestCORSConfig_Clone(t *testing.T) {

@@ -64,7 +64,7 @@ func TestStreamableHTTPServerBasic(t *testing.T) {
 		)
 
 		if httpServer == nil {
-			t.Error("SSEServer should not be nil")
+			t.Error("StreamableHTTPServer should not be nil")
 		} else {
 			if httpServer.server == nil {
 				t.Error("MCPServer should not be nil")

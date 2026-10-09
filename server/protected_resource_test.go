@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/mark3labs/mcp-go/server/servertest"
 )
 
 func TestProtectedResourceMetadataPath(t *testing.T) {
@@ -295,58 +294,4 @@ func TestStreamableHTTPServer_WithoutProtectedResourceMetadata_NoMetadataServed(
 	// We just need to ensure we are NOT serving PRM JSON when not configured.
 	assert.NotEqual(t, "application/json", resp.Header.Get("Content-Type"),
 		"well-known endpoint must not return PRM JSON when not configured")
-}
-
-func TestSSEServer_WithSSEProtectedResourceMetadata(t *testing.T) {
-	mcpSrv := server.NewMCPServer("test", "1.0.0")
-	cfg := server.ProtectedResourceMetadataConfig{
-		Resource:             "https://sse.example.com",
-		AuthorizationServers: []string{"https://auth.example.com"},
-	}
-
-	ts := servertest.NewTestServer(mcpSrv,
-		server.WithSSEProtectedResourceMetadata(cfg),
-	)
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/.well-known/oauth-protected-resource")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var got server.ProtectedResourceMetadataConfig
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	assert.Equal(t, cfg.Resource, got.Resource)
-	assert.Equal(t, cfg.AuthorizationServers, got.AuthorizationServers)
-}
-
-func TestSSEServer_WithSSEProtectedResourceMetadata_PathQualifiedResource(t *testing.T) {
-	mcpSrv := server.NewMCPServer("test", "1.0.0")
-	cfg := server.ProtectedResourceMetadataConfig{
-		Resource: "https://sse.example.com/mcp",
-	}
-
-	ts := servertest.NewTestServer(mcpSrv,
-		server.WithSSEProtectedResourceMetadata(cfg),
-	)
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/.well-known/oauth-protected-resource/mcp")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestSSEServer_WithoutProtectedResourceMetadata_WellKnown404(t *testing.T) {
-	mcpSrv := server.NewMCPServer("test", "1.0.0")
-	ts := servertest.NewTestServer(mcpSrv)
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/.well-known/oauth-protected-resource")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
