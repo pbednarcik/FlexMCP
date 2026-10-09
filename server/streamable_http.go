@@ -282,9 +282,9 @@ func WithStreamableHTTPCORS(opts ...CORSOption) StreamableHTTPOption {
 // SSE connection was broken) is opt-in via WithEventStore.
 type StreamableHTTPServer struct {
 	server                   *MCPServer
-	sessionTools             *sessionToolsStore
-	sessionResources         *sessionResourcesStore
-	sessionResourceTemplates *sessionResourceTemplatesStore
+	sessionTools             *sessionMapStore[ServerTool]
+	sessionResources         *sessionMapStore[ServerResource]
+	sessionResourceTemplates *sessionMapStore[ServerResourceTemplate]
 	activeSessions           sync.Map     // sessionId --> *streamableHttpSession (for sampling responses)
 	requestIDCounter         atomic.Int64 // server -> client request IDs, shared across sessions
 
@@ -338,13 +338,13 @@ type StreamableHTTPServer struct {
 func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *StreamableHTTPServer {
 	s := &StreamableHTTPServer{
 		server:                   server,
-		sessionTools:             newSessionToolsStore(),
+		sessionTools:             newSessionMapStore[ServerTool](),
 		sessionLogLevels:         newSessionLogLevelsStore(),
 		endpointPath:             "/mcp",
 		sessionIdManagerResolver: NewDefaultSessionIdManagerResolver(&StatelessGeneratingSessionIdManager{}),
 		logger:                   slog.Default(),
-		sessionResources:         newSessionResourcesStore(),
-		sessionResourceTemplates: newSessionResourceTemplatesStore(),
+		sessionResources:         newSessionMapStore[ServerResource](),
+		sessionResourceTemplates: newSessionMapStore[ServerResourceTemplate](),
 	}
 
 	// Apply all options
@@ -1572,103 +1572,38 @@ func (s *sessionLogLevelsStore) delete(sessionID string) {
 	delete(s.logs, sessionID)
 }
 
-type sessionResourcesStore struct {
-	mu        sync.RWMutex
-	resources map[string]map[string]ServerResource // sessionID -> resourceURI -> resource
+// sessionMapStore keeps one map of values per session and hands out copies,
+// so no caller ever shares a map with the store. get on an unknown session
+// answers an empty, non-nil map.
+type sessionMapStore[V any] struct {
+	mu sync.RWMutex
+	m  map[string]map[string]V // sessionID -> name -> value
 }
 
-func newSessionResourcesStore() *sessionResourcesStore {
-	return &sessionResourcesStore{
-		resources: make(map[string]map[string]ServerResource),
-	}
+func newSessionMapStore[V any]() *sessionMapStore[V] {
+	return &sessionMapStore[V]{m: make(map[string]map[string]V)}
 }
 
-func (s *sessionResourcesStore) get(sessionID string) map[string]ServerResource {
+func (s *sessionMapStore[V]) get(sessionID string) map[string]V {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cloned := make(map[string]ServerResource, len(s.resources[sessionID]))
-	maps.Copy(cloned, s.resources[sessionID])
+	cloned := make(map[string]V, len(s.m[sessionID]))
+	maps.Copy(cloned, s.m[sessionID])
 	return cloned
 }
 
-func (s *sessionResourcesStore) set(sessionID string, resources map[string]ServerResource) {
+func (s *sessionMapStore[V]) set(sessionID string, values map[string]V) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cloned := make(map[string]ServerResource, len(resources))
-	maps.Copy(cloned, resources)
-	s.resources[sessionID] = cloned
+	cloned := make(map[string]V, len(values))
+	maps.Copy(cloned, values)
+	s.m[sessionID] = cloned
 }
 
-func (s *sessionResourcesStore) delete(sessionID string) {
+func (s *sessionMapStore[V]) delete(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.resources, sessionID)
-}
-
-type sessionResourceTemplatesStore struct {
-	mu        sync.RWMutex
-	templates map[string]map[string]ServerResourceTemplate // sessionID -> uriTemplate -> template
-}
-
-func newSessionResourceTemplatesStore() *sessionResourceTemplatesStore {
-	return &sessionResourceTemplatesStore{
-		templates: make(map[string]map[string]ServerResourceTemplate),
-	}
-}
-
-func (s *sessionResourceTemplatesStore) get(sessionID string) map[string]ServerResourceTemplate {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	cloned := make(map[string]ServerResourceTemplate, len(s.templates[sessionID]))
-	maps.Copy(cloned, s.templates[sessionID])
-	return cloned
-}
-
-func (s *sessionResourceTemplatesStore) set(sessionID string, templates map[string]ServerResourceTemplate) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cloned := make(map[string]ServerResourceTemplate, len(templates))
-	maps.Copy(cloned, templates)
-	s.templates[sessionID] = cloned
-}
-
-func (s *sessionResourceTemplatesStore) delete(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.templates, sessionID)
-}
-
-type sessionToolsStore struct {
-	mu    sync.RWMutex
-	tools map[string]map[string]ServerTool // sessionID -> toolName -> tool
-}
-
-func newSessionToolsStore() *sessionToolsStore {
-	return &sessionToolsStore{
-		tools: make(map[string]map[string]ServerTool),
-	}
-}
-
-func (s *sessionToolsStore) get(sessionID string) map[string]ServerTool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	cloned := make(map[string]ServerTool, len(s.tools[sessionID]))
-	maps.Copy(cloned, s.tools[sessionID])
-	return cloned
-}
-
-func (s *sessionToolsStore) set(sessionID string, tools map[string]ServerTool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cloned := make(map[string]ServerTool, len(tools))
-	maps.Copy(cloned, tools)
-	s.tools[sessionID] = cloned
-}
-
-func (s *sessionToolsStore) delete(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.tools, sessionID)
+	delete(s.m, sessionID)
 }
 
 // Sampling support types for HTTP transport
@@ -1764,9 +1699,9 @@ type streamableHttpSession struct {
 	doneOnce            sync.Once
 	sessionID           string
 	notificationChannel chan mcp.JSONRPCNotification // server -> client notifications
-	tools               *sessionToolsStore
-	resources           *sessionResourcesStore
-	resourceTemplates   *sessionResourceTemplatesStore
+	tools               *sessionMapStore[ServerTool]
+	resources           *sessionMapStore[ServerResource]
+	resourceTemplates   *sessionMapStore[ServerResourceTemplate]
 	upgradeToSSE        atomic.Bool
 	logLevels           *sessionLogLevelsStore
 
@@ -1785,7 +1720,7 @@ type streamableHttpSession struct {
 	subscriptionFilter mcp.SubscriptionFilter
 }
 
-func newStreamableHttpSession(sessionID string, toolStore *sessionToolsStore, resourcesStore *sessionResourcesStore, templatesStore *sessionResourceTemplatesStore, levels *sessionLogLevelsStore, requestIDCounter *atomic.Int64) *streamableHttpSession {
+func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[ServerTool], resourcesStore *sessionMapStore[ServerResource], templatesStore *sessionMapStore[ServerResourceTemplate], levels *sessionLogLevelsStore, requestIDCounter *atomic.Int64) *streamableHttpSession {
 	s := &streamableHttpSession{
 		done:                   make(chan struct{}),
 		sessionID:              sessionID,
