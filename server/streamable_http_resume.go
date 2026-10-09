@@ -345,10 +345,7 @@ func (s *StreamableHTTPServer) serveListeningStream(w HTTPResponseWriter, r *HTT
 	// slip through unseen between the response starting and the attach.
 	conn := st.attach()
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	startSSEResponse(w)
 	w.Flush()
 
 	if s.listenHeartbeatInterval > 0 {
@@ -388,10 +385,7 @@ func (s *StreamableHTTPServer) handleResumeGet(w HTTPResponseWriter, r *HTTPRequ
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+	startSSEResponse(w)
 	w.Flush()
 
 	if st == nil {

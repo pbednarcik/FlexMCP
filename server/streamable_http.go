@@ -725,6 +725,13 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// handle potential notifications
 	mu := sync.Mutex{}
 	upgradedHeader := false
+	// upgrade commits the response as SSE once; every later message rides it.
+	upgrade := func() {
+		if !upgradedHeader {
+			startSSEResponse(w)
+			upgradedHeader = true
+		}
+	}
 	done := make(chan struct{})
 
 	ctx = context.WithValue(ctx, requestHeader, r.header())
@@ -755,12 +762,8 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		}
 		if ctx.Err() != nil {
 			rst.clearPostWriter()
-		} else if !upgradedHeader {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Connection", "keep-alive")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.WriteHeader(http.StatusOK)
-			upgradedHeader = true
+		} else {
+			upgrade()
 		}
 		rst.deliver(storeCtx, msg, last)
 	}
@@ -847,14 +850,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 						return
 					}
 
-					// if there's notifications, upgradedHeader to SSE response
-					if !upgradedHeader {
-						w.Header().Set("Content-Type", "text/event-stream")
-						w.Header().Set("Connection", "keep-alive")
-						w.Header().Set("Cache-Control", "no-cache")
-						w.WriteHeader(http.StatusOK)
-						upgradedHeader = true
-					}
+					upgrade()
 					err := writeSSEEvent(w, nt)
 					if err != nil {
 						s.logger.Error("Failed to write SSE event", "err", err)
@@ -883,13 +879,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 						return
 					}
 
-					if !upgradedHeader {
-						w.Header().Set("Content-Type", "text/event-stream")
-						w.Header().Set("Connection", "keep-alive")
-						w.Header().Set("Cache-Control", "no-cache")
-						w.WriteHeader(http.StatusOK)
-						upgradedHeader = true
-					}
+					upgrade()
 					if err := writeSSEEvent(w, req); err != nil {
 						s.logger.Error("Failed to write SSE event", "err", err)
 					}
@@ -946,13 +936,7 @@ drainLoop:
 				w.Flush()
 				continue
 			}
-			if !upgradedHeader {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set("Connection", "keep-alive")
-				w.Header().Set("Cache-Control", "no-cache")
-				w.WriteHeader(http.StatusOK)
-				upgradedHeader = true
-			}
+			upgrade()
 			if err := writeSSEEvent(w, nt); err != nil {
 				s.logger.Error("Failed to write SSE event during drain", "err", err)
 			}
@@ -992,13 +976,7 @@ drainLoop:
 		deliverResumable(response, true)
 		mu.Unlock()
 	} else if (session.upgradeToSSE.Load() && canStream) || upgradedHeader {
-		if !upgradedHeader {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Connection", "keep-alive")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.WriteHeader(http.StatusOK)
-			upgradedHeader = true
-		}
+		upgrade()
 		if err := writeSSEEvent(w, response); err != nil {
 			s.logger.Error("Failed to write final SSE response event", "err", err)
 		}
@@ -1116,12 +1094,7 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 		return
 	}
 
-	// Set the client context before handling the message
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
+	startSSEResponse(w)
 	w.Flush()
 
 	// Start notification handler for this session
@@ -1294,6 +1267,15 @@ func writeSSEEvent(w io.Writer, data any) error {
 		return fmt.Errorf("failed to write SSE event: %w", err)
 	}
 	return nil
+}
+
+// startSSEResponse commits the response as an SSE stream: the three headers
+// every stream carries, then the 200 that sends them.
+func startSSEResponse(w HTTPResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleSamplingResponse processes incoming sampling responses from clients
