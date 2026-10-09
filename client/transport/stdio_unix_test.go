@@ -20,7 +20,7 @@ func TestStdio_WithCommandFunc(t *testing.T) {
 	err := os.MkdirAll(chrootDir, 0o755)
 	require.NoError(t, err, "failed to create chroot dir")
 
-	fakeCmdFunc := func(ctx context.Context, command string, args []string, env []string) (*exec.Cmd, error) {
+	fakeCmdFunc := func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 		called = true
 
 		// Override the args inside our command func.

@@ -697,7 +697,7 @@ func TestStdio_ConcurrentRequestsUnblockOnServerDeath(t *testing.T) {
 func TestStdio_NewStdioMCPClientWithOptions_CreatesAndStartsClient(t *testing.T) {
 	called := false
 
-	fakeCmdFunc := func(ctx context.Context, command string, args []string, env []string) (*exec.Cmd, error) {
+	fakeCmdFunc := func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 		called = true
 		return exec.CommandContext(ctx, "echo", "started"), nil
 	}
@@ -718,7 +718,7 @@ func TestStdio_NewStdioMCPClientWithOptions_CreatesAndStartsClient(t *testing.T)
 
 func TestStdio_NewStdioMCPClientWithOptions_FailsToStart(t *testing.T) {
 	// Create a commandFunc that points to a nonexistent binary
-	badCmdFunc := func(ctx context.Context, command string, args []string, env []string) (*exec.Cmd, error) {
+	badCmdFunc := func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 		return exec.CommandContext(ctx, "/nonexistent/bar", args...), nil
 	}
 
@@ -730,6 +730,9 @@ func TestStdio_NewStdioMCPClientWithOptions_FailsToStart(t *testing.T) {
 	)
 
 	require.Error(t, err)
-	require.EqualError(t, err, "failed to start stdio transport: failed to start command: fork/exec /nonexistent/bar: no such file or directory")
+	// The cause's wording is the OS's: "fork/exec ...: no such file or
+	// directory" on Unix, "executable file not found in %PATH%" on Windows.
+	require.ErrorContains(t, err, "failed to start stdio transport: failed to start command: ")
+	require.ErrorContains(t, err, "/nonexistent/bar")
 	require.Nil(t, client)
 }

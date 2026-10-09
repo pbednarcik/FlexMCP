@@ -316,12 +316,17 @@ func TestOAuthHandler_SetExpectedState_CrossRequestScenario(t *testing.T) {
 	// Simulate the scenario where different OAuthHandler instances are used
 	// for initialization and callback steps (different HTTP request handlers)
 
+	// Metadata discovery answering 404 keeps the mocked metadata below, and
+	// the token endpoint answering 404 fails the exchange, with no network.
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+
 	config := OAuthConfig{
 		ClientID:              "test-client",
 		RedirectURI:           "http://localhost:8085/callback",
 		Scopes:                []string{"mcp.read", "mcp.write"},
 		TokenStore:            NewMemoryTokenStore(),
-		AuthServerMetadataURL: "http://example.com/.well-known/oauth-authorization-server",
+		AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
 		PKCEEnabled:           true,
 	}
 
@@ -331,9 +336,9 @@ func TestOAuthHandler_SetExpectedState_CrossRequestScenario(t *testing.T) {
 
 	// Mock the server metadata for the first handler
 	handler1.serverMetadata = &AuthServerMetadata{
-		Issuer:                "http://example.com",
-		AuthorizationEndpoint: "http://example.com/authorize",
-		TokenEndpoint:         "http://example.com/token",
+		Issuer:                server.URL,
+		AuthorizationEndpoint: server.URL + "/authorize",
+		TokenEndpoint:         server.URL + "/token",
 	}
 
 	// Generate state and get authorization URL (this would typically be done in the init handler)
@@ -359,9 +364,9 @@ func TestOAuthHandler_SetExpectedState_CrossRequestScenario(t *testing.T) {
 
 	// Mock the server metadata for the second handler
 	handler2.serverMetadata = &AuthServerMetadata{
-		Issuer:                "http://example.com",
-		AuthorizationEndpoint: "http://example.com/authorize",
-		TokenEndpoint:         "http://example.com/token",
+		Issuer:                server.URL,
+		AuthorizationEndpoint: server.URL + "/authorize",
+		TokenEndpoint:         server.URL + "/token",
 	}
 
 	// Initially, the second handler has no expected state

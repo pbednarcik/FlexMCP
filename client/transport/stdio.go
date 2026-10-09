@@ -421,14 +421,18 @@ func (c *Stdio) Close() error {
 	// and zombie processes.
 	var closeErr error
 	c.closeCleanupOnce.Do(func() {
+		// Closed after the child exits: on Windows a pipe Close blocks while
+		// the stderr drain's read is pending. cmd.Wait may close it first.
+		defer func() {
+			if c.stderr != nil {
+				if err := c.stderr.Close(); err != nil && !errors.Is(err, os.ErrClosed) && closeErr == nil {
+					closeErr = fmt.Errorf("failed to close stderr: %w", err)
+				}
+			}
+		}()
 		if c.stdin != nil {
 			if err := c.stdin.Close(); err != nil {
 				closeErr = fmt.Errorf("failed to close stdin: %w", err)
-			}
-		}
-		if c.stderr != nil {
-			if err := c.stderr.Close(); err != nil && closeErr == nil {
-				closeErr = fmt.Errorf("failed to close stderr: %w", err)
 			}
 		}
 		if c.cmd != nil {

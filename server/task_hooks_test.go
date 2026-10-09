@@ -86,8 +86,8 @@ func TestTaskHooks_TaskCompleted(t *testing.T) {
 	assert.Equal(t, "test-task-2", completedMetrics[0].TaskID)
 	assert.Equal(t, "test-tool", completedMetrics[0].ToolName)
 	assert.Equal(t, mcp.TaskStatusCompleted, completedMetrics[0].Status)
-	assert.NotNil(t, completedMetrics[0].CompletedAt)
-	assert.Greater(t, completedMetrics[0].Duration, time.Duration(0))
+	require.NotNil(t, completedMetrics[0].CompletedAt)
+	assert.Equal(t, completedMetrics[0].CompletedAt.Sub(completedMetrics[0].CreatedAt), completedMetrics[0].Duration)
 	assert.Nil(t, completedMetrics[0].Error)
 }
 
@@ -130,8 +130,8 @@ func TestTaskHooks_TaskFailed(t *testing.T) {
 	assert.Equal(t, "test-tool", failedMetrics[0].ToolName)
 	assert.Equal(t, mcp.TaskStatusFailed, failedMetrics[0].Status)
 	assert.Equal(t, "task failed", failedMetrics[0].StatusMessage)
-	assert.NotNil(t, failedMetrics[0].CompletedAt)
-	assert.Greater(t, failedMetrics[0].Duration, time.Duration(0))
+	require.NotNil(t, failedMetrics[0].CompletedAt)
+	assert.Equal(t, failedMetrics[0].CompletedAt.Sub(failedMetrics[0].CreatedAt), failedMetrics[0].Duration)
 	assert.Equal(t, testErr, failedMetrics[0].Error)
 }
 
@@ -179,8 +179,8 @@ func TestTaskHooks_TaskCancelled(t *testing.T) {
 	assert.Equal(t, "test-task-4", cancelledMetrics[0].TaskID)
 	assert.Equal(t, "test-tool", cancelledMetrics[0].ToolName)
 	assert.Equal(t, mcp.TaskStatusCancelled, cancelledMetrics[0].Status)
-	assert.NotNil(t, cancelledMetrics[0].CompletedAt)
-	assert.Greater(t, cancelledMetrics[0].Duration, time.Duration(0))
+	require.NotNil(t, cancelledMetrics[0].CompletedAt)
+	assert.Equal(t, cancelledMetrics[0].CompletedAt.Sub(cancelledMetrics[0].CreatedAt), cancelledMetrics[0].Duration)
 }
 
 func TestTaskHooks_TaskStatusChanged(t *testing.T) {

@@ -679,9 +679,15 @@ func TestStdio_SpawnCommand(t *testing.T) {
 		_ = stdio.cmd.Process.Kill()
 	})
 
-	require.Equal(t, "echo", filepath.Base(stdio.cmd.Path))
+	require.Equal(t, "echo", commandName(stdio.cmd.Path))
 	require.Contains(t, stdio.cmd.Args, "hello")
 	require.Contains(t, stdio.cmd.Env, "TEST_ENVIRON_VAR=true")
+}
+
+// commandName returns the base name of a resolved command path without the
+// ".exe" that Windows adds, so "echo" matches on every platform.
+func commandName(path string) string {
+	return strings.TrimSuffix(filepath.Base(path), ".exe")
 }
 
 func TestStdio_SpawnCommand_UsesCommandFunc(t *testing.T) {
@@ -692,7 +698,7 @@ func TestStdio_SpawnCommand_UsesCommandFunc(t *testing.T) {
 		"echo",
 		nil,
 		[]string{"test"},
-		WithCommandFunc(func(ctx context.Context, cmd string, args []string, env []string) (*exec.Cmd, error) {
+		WithCommandFunc(func(ctx context.Context, cmd string, env []string, args []string) (*exec.Cmd, error) {
 			c := exec.CommandContext(ctx, cmd, "hola")
 			c.Env = env
 			return c, nil
@@ -705,7 +711,7 @@ func TestStdio_SpawnCommand_UsesCommandFunc(t *testing.T) {
 		_ = stdio.cmd.Process.Kill()
 	})
 
-	require.Equal(t, "echo", filepath.Base(stdio.cmd.Path))
+	require.Equal(t, "echo", commandName(stdio.cmd.Path))
 	require.Contains(t, stdio.cmd.Args, "hola")
 	require.NotContains(t, stdio.cmd.Env, "TEST_ENVIRON_VAR=true")
 	require.NotNil(t, stdio.stdin)
@@ -720,7 +726,7 @@ func TestStdio_SpawnCommand_UsesCommandFunc_Error(t *testing.T) {
 		"echo",
 		nil,
 		[]string{"test"},
-		WithCommandFunc(func(ctx context.Context, cmd string, args []string, env []string) (*exec.Cmd, error) {
+		WithCommandFunc(func(ctx context.Context, cmd string, env []string, args []string) (*exec.Cmd, error) {
 			return nil, errors.New("test error")
 		}),
 	)

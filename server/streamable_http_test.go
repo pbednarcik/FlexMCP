@@ -515,12 +515,21 @@ func TestStreamableHTTP_GET(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "text/event-stream")
 
+	// The GET session is registered only once the request reaches the server,
+	// so a single early broadcast can find no client; repeat until done.
 	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mcpServer.SendNotificationToAllClients("test/notification", map[string]any{
-			"value": "all clients",
-		})
-		time.Sleep(10 * time.Millisecond)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mcpServer.SendNotificationToAllClients("test/notification", map[string]any{
+					"value": "all clients",
+				})
+			}
+		}
 	}()
 
 	resp, err := server.Client().Do(req)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -72,7 +71,7 @@ func TestCommandTransport_StderrAccessor(t *testing.T) {
 		_ = ct.cmd.Process.Kill()
 	})
 
-	require.Equal(t, "echo", filepath.Base(ct.cmd.Path))
+	require.Equal(t, "echo", commandName(ct.cmd.Path))
 	require.Contains(t, ct.cmd.Args, "hello")
 	require.NotNil(t, ct.Stderr())
 }
