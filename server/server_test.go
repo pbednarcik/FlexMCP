@@ -286,7 +286,7 @@ func TestMCPServer_Capabilities(t *testing.T) {
 
 				assert.NotNil(t, initResult.Capabilities.Resources)
 
-				assert.True(t, initResult.Capabilities.Resources.Subscribe)
+				assert.False(t, initResult.Capabilities.Resources.Subscribe, "resources/subscribe is not served to legacy clients")
 				assert.True(t, initResult.Capabilities.Resources.ListChanged)
 
 				assert.NotNil(t, initResult.Capabilities.Prompts)
@@ -323,7 +323,7 @@ func TestMCPServer_Capabilities(t *testing.T) {
 
 				assert.NotNil(t, initResult.Capabilities.Resources)
 
-				assert.True(t, initResult.Capabilities.Resources.Subscribe)
+				assert.False(t, initResult.Capabilities.Resources.Subscribe, "resources/subscribe is not served to legacy clients")
 				assert.False(t, initResult.Capabilities.Resources.ListChanged)
 
 				assert.NotNil(t, initResult.Capabilities.Prompts)

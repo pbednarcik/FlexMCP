@@ -1,7 +1,7 @@
-A client using an earlier protocol version sees exactly the responses it saw
-before: the initialize handshake still works, still negotiates a legacy
-version, and results carry neither resultType nor the caching hints introduced
-in 2026-07-28.
+A client using an earlier protocol version is served as before: the initialize
+handshake still works, still negotiates a legacy version, and results carry
+neither resultType nor the caching hints introduced in 2026-07-28. One change:
+resources.subscribe is not offered, since resources/subscribe is not served.
 
 -- client --
 {
@@ -27,8 +27,7 @@ in 2026-07-28.
 				"listChanged": true
 			},
 			"resources": {
-				"listChanged": true,
-				"subscribe": true
+				"listChanged": true
 			},
 			"tools": {
 				"listChanged": true

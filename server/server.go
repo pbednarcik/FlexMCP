@@ -1270,6 +1270,11 @@ func (s *MCPServer) handleInitialize(
 	request mcp.InitializeRequest,
 ) (*mcp.InitializeResult, *requestError) {
 	capabilities := s.serverCapabilitiesSnapshot()
+	// A legacy client would subscribe through resources/subscribe, which is not
+	// served; subscriptions are offered to modern clients via subscriptions/listen.
+	if capabilities.Resources != nil {
+		capabilities.Resources.Subscribe = false
+	}
 
 	result := mcp.InitializeResult{
 		ProtocolVersion: s.protocolVersion(request.Params.ProtocolVersion),
