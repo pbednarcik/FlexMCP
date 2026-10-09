@@ -539,50 +539,33 @@ func (r CallToolRequest) RequireBoolSlice(key string) ([]bool, error) {
 	return nil, fmt.Errorf("required argument %q not found", key)
 }
 
-// MarshalJSON implements custom JSON marshaling for CallToolResult
+// MarshalJSON writes the wire form of a CallToolResult: content is always
+// present, structured content comes from the raw bytes when they are kept,
+// and the keys stay in the sorted order a map gave them, so the bytes are
+// unchanged by the move away from a map. resultType is required from
+// protocol version 2026-07-28 onward and omitted for earlier clients; the
+// multi round-trip fields are present only while the server is asking the
+// client for more input (SEP-2322).
 func (r CallToolResult) MarshalJSON() ([]byte, error) {
-	m := make(map[string]any)
-
-	// Marshal Meta if present
-	if r.Meta != nil {
-		m["_meta"] = r.Meta
+	content := r.Content
+	if content == nil {
+		content = []Content{}
 	}
-
-	// resultType is required from protocol version 2026-07-28 onward, and
-	// omitted when replying to a client using an earlier version.
-	if r.ResultType != "" {
-		m["resultType"] = r.ResultType
-	}
-
-	// Marshal Content array
-	content := make([]any, len(r.Content))
-	for i, c := range r.Content {
-		content[i] = c
-	}
-	m["content"] = content
-
-	// Marshal StructuredContent if present
+	var structured any
 	if len(r.RawStructuredContent) > 0 {
-		m["structuredContent"] = json.RawMessage(r.RawStructuredContent)
+		structured = r.RawStructuredContent
 	} else if r.StructuredContent != nil {
-		m["structuredContent"] = r.StructuredContent
+		structured = r.StructuredContent
 	}
-
-	// Marshal IsError if true
-	if r.IsError {
-		m["isError"] = r.IsError
-	}
-
-	// Multi round-trip fields, present only when the server is asking the
-	// client for more input before it can complete the call (SEP-2322).
-	if len(r.InputRequests) > 0 {
-		m["inputRequests"] = r.InputRequests
-	}
-	if r.RequestState != "" {
-		m["requestState"] = r.RequestState
-	}
-
-	return json.Marshal(m)
+	return json.Marshal(struct {
+		Meta              *Meta         `json:"_meta,omitempty"`
+		Content           []Content     `json:"content"`
+		InputRequests     InputRequests `json:"inputRequests,omitempty"`
+		IsError           bool          `json:"isError,omitempty"`
+		RequestState      string        `json:"requestState,omitempty"`
+		ResultType        ResultType    `json:"resultType,omitempty"`
+		StructuredContent any           `json:"structuredContent,omitempty"`
+	}{r.Meta, content, r.InputRequests, r.IsError, r.RequestState, r.ResultType, structured})
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for CallToolResult
