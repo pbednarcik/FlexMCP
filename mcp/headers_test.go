@@ -477,3 +477,61 @@ func TestParamHeaderAnnotationsToleratesUnreadableSchema(t *testing.T) {
 	assert.NoError(t, ValidateParamHeaderAnnotations(tool))
 	assert.Empty(t, ExtractParamHeaderBindings(tool))
 }
+
+// TestParamHeaderIntegerAndBooleanValuesMustAgreeWithTheBody pins how a
+// mirrored integer or boolean is compared: the header is read as a number,
+// so a fraction of zero is the same integer, while a real fraction, text,
+// whitespace, an overflow or a value outside the JavaScript safe range is a
+// mismatch; a boolean must be spelled exactly as JSON spells it; a body
+// value the header cannot carry is a mismatch even when the header repeats
+// it.
+func TestParamHeaderIntegerAndBooleanValuesMustAgreeWithTheBody(t *testing.T) {
+	tool := &Tool{
+		Name: "t",
+		RawInputSchema: json.RawMessage(`{"type":"object","properties":{
+			"n": {"type": "integer", "x-mcp-header": "N"},
+			"b": {"type": "boolean", "x-mcp-header": "B"}
+		}}`),
+	}
+
+	tests := []struct {
+		name      string
+		arguments string
+		header    string
+		value     string
+		wantErr   string // "" accepts; otherwise the mismatch reason must contain it
+	}{
+		{"integer spelled as the body", `{"n": 42}`, "N", "42", ""},
+		{"negative integer", `{"n": -7}`, "N", "-7", ""},
+		{"integer with a zero fraction", `{"n": 42}`, "N", "42.0", ""},
+		{"integer in exponent form", `{"n": 42}`, "N", "4.2e1", ""},
+		{"integer with a real fraction", `{"n": 42}`, "N", "42.5", "does not match"},
+		{"integer as text", `{"n": 42}`, "N", "abc", "does not match"},
+		{"integer with leading whitespace", `{"n": 42}`, "N", " 42", "does not match"},
+		{"integer that overflows a float", `{"n": 42}`, "N", "1e400", "does not match"},
+		{"integer outside the safe range in the header", `{"n": 42}`, "N", "9007199254740993", "does not match"},
+		{"body integer outside the safe range", `{"n": 9007199254740993}`, "N", "9007199254740993", "not a primitive type"},
+		{"body number with a fraction", `{"n": 1.5}`, "N", "1.5", "not a primitive type"},
+		{"boolean spelled as JSON", `{"b": true}`, "B", "true", ""},
+		{"boolean capitalised", `{"b": true}`, "B", "True", "does not match"},
+		{"boolean as a digit", `{"b": false}`, "B", "0", "does not match"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := json.RawMessage(`{"name":"t","arguments":` + tt.arguments + `}`)
+			header := http.Header{}
+			header.Set(HeaderParamPrefix+tt.header, tt.value)
+
+			err := ValidateParamHeaders(header.Get, tool, params)
+
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.True(t, IsHeaderMismatch(err), "expected a header mismatch, got %v", err)
+			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
