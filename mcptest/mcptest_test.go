@@ -607,3 +607,44 @@ func TestSimulateClientInfo(t *testing.T) {
 		t.Errorf("Got %q, want %q", got, want)
 	}
 }
+
+// nameElicitor answers every elicitation with the name "MCP Go".
+type nameElicitor struct{ calls atomic.Int32 }
+
+func (h *nameElicitor) Elicit(context.Context, mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
+	h.calls.Add(1)
+	return &mcp.ElicitationResult{Action: mcp.ElicitationResponseActionAccept, Content: map[string]any{"name": "MCP Go"}}, nil
+}
+
+// A tool that asks for input through a multi round-trip result is answered
+// by the handlers given to the test client.
+func TestServerClientOptionsAnswerAMultiRoundTripTool(t *testing.T) {
+	srv := mcptest.NewUnstartedServer(t)
+	defer srv.Close()
+	srv.AddTool(mcp.NewTool("greet"), func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if answer := server.ElicitationResponse(request.Params.InputResponses, "who"); answer != nil {
+			content, _ := answer.Content.(map[string]any)
+			name, _ := content["name"].(string)
+			return mcp.NewToolResultText("hello " + name), nil
+		}
+		return server.NewInputRequestBuilder("step=1").
+			Elicit("who", mcp.ElicitationParams{Mode: mcp.ElicitationModeForm, Message: "What is your name?", RequestedSchema: map[string]any{"type": "object"}}).
+			ToolResult(), nil
+	})
+	elicitor := &nameElicitor{}
+	srv.AddClientOptions(client.WithElicitationHandler(elicitor))
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := srv.Client().CallTool(t.Context(), mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "greet"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Content[0].(mcp.TextContent).Text; got != "hello MCP Go" {
+		t.Errorf("got %q, want %q", got, "hello MCP Go")
+	}
+	if calls := elicitor.calls.Load(); calls != 1 {
+		t.Errorf("the elicitation handler ran %d times, want 1", calls)
+	}
+}

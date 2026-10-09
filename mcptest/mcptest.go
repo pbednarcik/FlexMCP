@@ -25,6 +25,7 @@ type Server struct {
 	resources         []server.ServerResource
 	resourceTemplates []server.ServerResourceTemplate
 	serverOpts        []server.ServerOption
+	clientOpts        []client.ClientOption
 	clientInfo        mcp.Implementation
 
 	cancel func()
@@ -130,6 +131,13 @@ func (s *Server) AddServerOptions(opts ...server.ServerOption) {
 	s.serverOpts = append(s.serverOpts, opts...)
 }
 
+// AddClientOptions adds client options to an unstarted server's test client,
+// such as the handlers that answer a multi round-trip tool's input requests
+// (client.WithElicitationHandler, WithSamplingHandler, WithRootsHandler).
+func (s *Server) AddClientOptions(opts ...client.ClientOption) {
+	s.clientOpts = append(s.clientOpts, opts...)
+}
+
 // SetClientInfo sets the client info for the test client.
 func (s *Server) SetClientInfo(info mcp.Implementation) {
 	s.clientInfo = info
@@ -165,7 +173,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.transport = transport.NewIO(s.clientReader, s.clientWriter, io.NopCloser(&s.logBuffer))
 
-	s.client = client.NewClient(s.transport)
+	s.client = client.NewClient(s.transport, s.clientOpts...)
 
 	if err := s.client.Start(ctx); err != nil {
 		return fmt.Errorf("client.Start(): %w", err)
