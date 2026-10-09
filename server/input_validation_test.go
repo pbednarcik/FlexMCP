@@ -402,3 +402,80 @@ func TestInputSchemaValidation_ErrorKindReadable(t *testing.T) {
 		})
 	}
 }
+
+// TestInputSchemaValidation_Edges pins the edges the matrix above leaves
+// open: a schema that is valid JSON but does not compile, arguments that
+// are not an object, arguments that are absent, and several violations in
+// one call.
+func TestInputSchemaValidation_Edges(t *testing.T) {
+	twoFieldTool := mcp.NewTool("two",
+		mcp.WithString("a", mcp.Required()),
+		mcp.WithString("b"),
+	)
+	uncompilableTool := mcp.Tool{
+		Name:           "uncompilable",
+		RawInputSchema: json.RawMessage(`{"type": "object", "$ref": "#/definitions/missing"}`),
+	}
+
+	tests := []struct {
+		name              string
+		tool              mcp.Tool
+		args              any
+		wantErrContains   []string
+		wantHandlerCalled bool
+	}{
+		{
+			// Same contract as a malformed schema: the validator steps aside
+			// rather than failing every call to the tool.
+			name:              "schema that does not compile is skipped",
+			tool:              uncompilableTool,
+			args:              map[string]any{"anything": true},
+			wantHandlerCalled: true,
+		},
+		{
+			name:            "arguments that are an array are rejected at the root",
+			tool:            twoFieldTool,
+			args:            []any{"a", "b"},
+			wantErrContains: []string{"<root>", "object"},
+		},
+		{
+			name:            "arguments that are a string are rejected at the root",
+			tool:            twoFieldTool,
+			args:            "a=1",
+			wantErrContains: []string{"<root>", "object"},
+		},
+		{
+			name:            "absent arguments are an empty object, so required fails",
+			tool:            twoFieldTool,
+			args:            nil,
+			wantErrContains: []string{"<root>", "Missing:[a]"},
+		},
+		{
+			name:            "every violation is reported, separated by semicolons",
+			tool:            twoFieldTool,
+			args:            map[string]any{"b": 1},
+			wantErrContains: []string{"<root>: &{Missing:[a]}; /b: &{Got:number Want:[string]}"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+			handlerCalled := false
+			srv.AddTool(tt.tool, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				handlerCalled = true
+				return mcp.NewToolResultText("ok"), nil
+			})
+
+			resp := callTool(t, srv, tt.tool.Name, tt.args)
+
+			if tt.wantHandlerCalled {
+				requireToolSuccess(t, resp)
+			}
+			for _, want := range tt.wantErrContains {
+				requireToolErrorContaining(t, resp, want)
+			}
+			assert.Equal(t, tt.wantHandlerCalled, handlerCalled, "handler invocation expectation")
+		})
+	}
+}
