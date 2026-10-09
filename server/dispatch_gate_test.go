@@ -102,6 +102,18 @@ func TestDispatchDroppedLegacyMethodsAreUnknownInBothEras(t *testing.T) {
 	}
 }
 
+func TestDispatchNeverAnswersAResponse(t *testing.T) {
+	srv := everyCapabilityServer()
+	for _, tt := range []struct{ name, message string }{
+		{"result", `{"jsonrpc":"2.0","id":5,"result":{}}`},
+		{"error", `{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"Method not found"}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Nil(t, srv.HandleMessage(t.Context(), json.RawMessage(tt.message)))
+		})
+	}
+}
+
 func TestDispatchModernOnlyMethodsAreUnknownToLegacyRequests(t *testing.T) {
 	srv := everyCapabilityServer()
 	for _, gate := range dispatchGates {

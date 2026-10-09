@@ -673,7 +673,8 @@ func establishLegacySession(t *testing.T, url string) string {
 }
 
 func TestClientToServerResponsesByProtocolEra(t *testing.T) {
-	// A POST carrying an id plus a result is a client-to-server response. The
+	// A POST carrying an id plus a result or an error is a client-to-server
+	// response. The
 	// server sends no requests, so nothing awaits one: a modern response is a
 	// malformed modern message (it carries no _meta) and is rejected as such; a
 	// legacy response is accepted and dropped, as the handshake-era transport
@@ -687,7 +688,9 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 		withSession bool
 		// protocolVersion is sent in the Mcp-Protocol-Version header.
 		protocolVersion string
-		wantStatus      int
+		// errorForm sends an error response instead of a result.
+		errorForm  bool
+		wantStatus int
 	}{
 		{
 			name:            "a modern response replaying a valid session is rejected",
@@ -705,6 +708,13 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 			name:        "a legacy response is accepted and dropped",
 			stateful:    true,
 			withSession: true,
+			wantStatus:  http.StatusAccepted,
+		},
+		{
+			name:        "a legacy error response is accepted and dropped",
+			stateful:    true,
+			withSession: true,
+			errorForm:   true,
 			wantStatus:  http.StatusAccepted,
 		},
 	}
@@ -725,11 +735,12 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 				sessionID = establishLegacySession(t, httpServer.URL)
 			}
 
-			body, err := json.Marshal(map[string]any{
-				"jsonrpc": "2.0",
-				"id":      42,
-				"result":  map[string]any{"action": "accept"},
-			})
+			response := map[string]any{"jsonrpc": "2.0", "id": 42, "result": map[string]any{"action": "accept"}}
+			if tt.errorForm {
+				delete(response, "result")
+				response["error"] = map[string]any{"code": mcp.METHOD_NOT_FOUND, "message": "Method not found"}
+			}
+			body, err := json.Marshal(response)
 			require.NoError(t, err)
 
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, httpServer.URL, bytes.NewReader(body))

@@ -25,6 +25,7 @@ func (s *MCPServer) HandleMessage(
 		Method  mcp.MCPMethod `json:"method"`
 		ID      any           `json:"id,omitempty"`
 		Result  any           `json:"result,omitempty"`
+		Error   any           `json:"error,omitempty"`
 	}
 
 	if err := json.Unmarshal(message, &baseMessage); err != nil {
@@ -57,9 +58,10 @@ func (s *MCPServer) HandleMessage(
 		return nil // Return nil for notifications
 	}
 
-	if baseMessage.Result != nil {
-		// this is a response to a request sent by the server (e.g. from a ping
-		// sent due to WithKeepAlive option)
+	if baseMessage.Result != nil || baseMessage.Error != nil {
+		// A response, success or error, to a request the server sent, such as
+		// a keep-alive ping: nothing waits for it, and a response is never
+		// answered.
 		return nil
 	}
 
