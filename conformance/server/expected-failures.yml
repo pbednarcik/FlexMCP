@@ -1,12 +1,6 @@
 # The checker repeats these scenarios and only considers the baseline stale
 # after ten consecutive passes.
 #
-# tools-call-with-progress: on the handshake-era path a session opened by a
-# GET stream has two readers of one notification channel, the GET writer and
-# the POST's forwarder, so a notification emitted during a tools/call lands on
-# whichever stream wins. The legacy removal (docs/Design/LegacyRemoval.md)
-# drops the GET stream.
-#
 # tools-call-sampling, tools-call-elicitation, elicitation-sep1034-defaults,
 # elicitation-sep1330-enums: these scenarios need the server to send a request
 # to the client, which FlexMCP's server no longer does. Protocol version
@@ -17,7 +11,6 @@
 # removed both methods, and FlexMCP's server no longer serves them in either
 # era; resource subscriptions come through subscriptions/listen.
 server:
-  - tools-call-with-progress
   - tools-call-sampling
   - tools-call-elicitation
   - elicitation-sep1034-defaults
