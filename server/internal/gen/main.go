@@ -20,6 +20,9 @@ var hooksTemplate string
 //go:embed request_handler.go.tmpl
 var requestHandlerTemplate string
 
+//go:embed dispatch_gates_test.go.tmpl
+var dispatchGatesTemplate string
+
 func RenderTemplateToFile(templateContent, destPath, fileName string, data any) error {
 	// Create temp file for initial output
 	tempFile, err := os.CreateTemp("", "hooks-*.go")
@@ -82,6 +85,10 @@ func main() {
 	}
 
 	if err := RenderTemplateToFile(requestHandlerTemplate, destPath, "request_handler.go", MCPRequestTypes); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := RenderTemplateToFile(dispatchGatesTemplate, destPath, "dispatch_gates_gen_test.go", MCPRequestTypes); err != nil {
 		log.Fatal(err)
 	}
 }

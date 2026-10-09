@@ -10,34 +10,15 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// dispatchGate mirrors one row of the generator's table
-// (server/internal/gen/data.go, a main package, so not importable): the
-// capability a method sits behind and the protocol era it belongs to.
+// dispatchGate is one row of the generator's table
+// (server/internal/gen/data.go), rendered into dispatch_gates_gen_test.go by
+// go generate: the capability a method sits behind and the protocol era it
+// belongs to.
 type dispatchGate struct {
 	method          mcp.MCPMethod
 	capability      string // the word in "<capability> not supported"; "" when ungated
 	removedInModern bool
 	requiresModern  bool
-}
-
-var dispatchGates = []dispatchGate{
-	{method: mcp.MethodInitialize, removedInModern: true},
-	{method: mcp.MethodPing, removedInModern: true},
-	{method: mcp.MethodServerDiscover, requiresModern: true},
-	{method: mcp.MethodSubscriptionsListen, requiresModern: true},
-	{method: mcp.MethodSetLogLevel, capability: "logging", removedInModern: true},
-	{method: mcp.MethodResourcesList, capability: "resources"},
-	{method: mcp.MethodResourcesTemplatesList, capability: "resources"},
-	{method: mcp.MethodResourcesRead, capability: "resources"},
-	{method: mcp.MethodPromptsList, capability: "prompts"},
-	{method: mcp.MethodPromptsGet, capability: "prompts"},
-	{method: mcp.MethodToolsList, capability: "tools"},
-	{method: mcp.MethodToolsCall, capability: "tools"},
-	{method: mcp.MethodTasksGet, capability: "tasks"},
-	{method: mcp.MethodTasksList, capability: "tasks", removedInModern: true},
-	{method: mcp.MethodTasksResult, capability: "tasks", removedInModern: true},
-	{method: mcp.MethodTasksCancel, capability: "tasks"},
-	{method: mcp.MethodCompletionComplete, capability: "completions"},
 }
 
 // everyCapabilityServer has every capability on, so only the era and
