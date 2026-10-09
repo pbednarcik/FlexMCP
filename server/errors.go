@@ -47,15 +47,6 @@ var (
 			" or later (multi round-trip requests, SEP-2322)")
 )
 
-// ErrDynamicPathConfig is returned when attempting to use static path methods with dynamic path configuration
-type ErrDynamicPathConfig struct {
-	Method string
-}
-
-func (e *ErrDynamicPathConfig) Error() string {
-	return fmt.Sprintf("%s cannot be used with WithDynamicBasePath. Use dynamic path logic in your router.", e.Method)
-}
-
 // noResultError reports a handler that returned neither a result nor an
 // error, which leaves the server nothing to send.
 func noResultError(kind, name string) error {

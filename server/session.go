@@ -173,9 +173,9 @@ func (s *MCPServer) buildLogNotification(notification mcp.LoggingMessageNotifica
 	}
 }
 
-// legacyLogLevel is the log threshold of a handshake-era client, which has no
-// logging/setLevel to choose one: error and worse, the level every session
-// started at when it did.
+// legacyLogLevel is the log threshold of a handshake-era client: error and
+// worse. Its logging/setLevel is acknowledged but not kept, since the server
+// holds no per-client state.
 const legacyLogLevel = mcp.LoggingLevelError
 
 // SendLogMessageToClient sends a log message to the client of the request in

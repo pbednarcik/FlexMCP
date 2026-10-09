@@ -8,8 +8,7 @@ import (
 // jsonrpcErrorResponseWriter is the minimum surface needed by
 // writeJSONRPCError to emit a JSON-RPC error response onto an HTTP-style
 // transport. Both http.ResponseWriter and HTTPResponseWriter satisfy this
-// interface, so the same helper serves the SSE and streamable HTTP
-// transports.
+// interface, so the same helper serves both.
 type jsonrpcErrorResponseWriter interface {
 	Header() http.Header
 	WriteHeader(statusCode int)

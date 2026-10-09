@@ -16,8 +16,8 @@ import (
 // request with the answers in InputResponses and the state echoed back.
 //
 // A client on an earlier protocol version cannot answer such a result, and
-// the server no longer issues the server-initiated requests it would need,
-// so the request fails with [ErrInputRequiresModernClient].
+// the server issues no server-initiated requests to ask it instead, so the
+// request fails with [ErrInputRequiresModernClient].
 
 // InputRequestBuilder accumulates the requests a handler needs answered before
 // it can complete, and renders them as an [mcp.InputRequiredResult].

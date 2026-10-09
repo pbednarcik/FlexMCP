@@ -6,12 +6,12 @@ import (
 	"strings"
 )
 
-// CORSConfig holds the Cross-Origin Resource Sharing configuration shared by
-// the SSE and Streamable HTTP transports. The zero value disables CORS
+// CORSConfig holds the Cross-Origin Resource Sharing configuration of the
+// Streamable HTTP transport. The zero value disables CORS
 // handling entirely; set at least one allowed origin via AllowedOrigins (or
 // the WithCORSAllowedOrigins helper) to enable it.
 //
-// CORS handling is opt-in: when no origins are configured, the transports do
+// CORS handling is opt-in: when no origins are configured, the transport does
 // not emit any Access-Control-* response headers and preflight (OPTIONS)
 // requests are passed through to the underlying handlers unchanged.
 type CORSConfig struct {

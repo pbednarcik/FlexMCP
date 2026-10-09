@@ -216,10 +216,9 @@ func WithProtectedResourceMetadata(config ProtectedResourceMetadataConfig) Strea
 // WithSessionIdleTTL sets the idle TTL for per-session transport state.
 // When enabled, a background sweeper periodically removes entries from
 // per-session stores (tools, resources, resource templates) for sessions
-// that have been idle longer than the given
-// duration. This prevents memory leaks when clients disconnect without
-// sending a DELETE request. A zero or negative value disables the sweeper
-// (the default).
+// that have been idle longer than the given duration. This prevents memory
+// leaks when clients disconnect without sending a DELETE request. A zero or
+// negative value disables the sweeper (the default).
 func WithSessionIdleTTL(ttl time.Duration) StreamableHTTPOption {
 	return func(s *StreamableHTTPServer) {
 		s.sessionIdleTTL = ttl
@@ -285,8 +284,8 @@ type StreamableHTTPServer struct {
 	sessionTools             *sessionMapStore[ServerTool]
 	sessionResources         *sessionMapStore[ServerResource]
 	sessionResourceTemplates *sessionMapStore[ServerResourceTemplate]
-	activeSessions           sync.Map     // sessionId --> *streamableHttpSession (for sampling responses)
-	requestIDCounter         atomic.Int64 // server -> client request IDs, shared across sessions
+	activeSessions           sync.Map     // sessionId --> *streamableHttpSession held open by a GET stream
+	requestIDCounter         atomic.Int64 // IDs of the keep-alive pings the server sends
 
 	eventStore         EventStore
 	resumableStreams   sync.Map // streamID --> *resumableStream
@@ -562,7 +561,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// Body has already been buffered by the caller (ServeHTTP or Handle).
 	rawData := r.Body
-	// First, try to parse as a response (sampling responses don't have a method field)
+	// The envelope: a client's response carries an id and no method.
 	var jsonMessage struct {
 		ID     json.RawMessage `json:"id"`
 		Result json.RawMessage `json:"result,omitempty"`
@@ -661,8 +660,8 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		}
 	}
 
-	// Check if a persistent session exists (for sampling support), otherwise create ephemeral session
-	// Persistent sessions are created by GET (continuous listening) connections
+	// Reuse the persistent session a GET (listening) stream created, if any;
+	// otherwise the request gets an ephemeral session below.
 	if session == nil && !era.modern {
 		if sessionInterface, exists := s.activeSessions.Load(sessionID); exists {
 			if persistentSession, ok := sessionInterface.(*streamableHttpSession); ok {
@@ -1131,9 +1130,7 @@ func (s *StreamableHTTPServer) writeJSONRPCError(
 	})
 }
 
-// nextRequestID gets the next requestID for a server-initiated request. The
-// counter is shared with sampling, elicitation and roots requests so IDs never
-// collide within a session.
+// nextRequestID returns the ID of the next keep-alive ping the server sends.
 func (s *StreamableHTTPServer) nextRequestID(sessionID string) int64 {
 	return s.requestIDCounter.Add(1)
 }

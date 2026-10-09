@@ -541,8 +541,7 @@ func (r CallToolRequest) RequireBoolSlice(key string) ([]bool, error) {
 
 // MarshalJSON writes the wire form of a CallToolResult: content is always
 // present, structured content comes from the raw bytes when they are kept,
-// and the keys stay in the sorted order a map gave them, so the bytes are
-// unchanged by the move away from a map. resultType is required from
+// and the keys are written in sorted order. resultType is required from
 // protocol version 2026-07-28 onward and omitted for earlier clients; the
 // multi round-trip fields are present only while the server is asking the
 // client for more input (SEP-2322).

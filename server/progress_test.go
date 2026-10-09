@@ -54,9 +54,8 @@ func TestModernToolCallStreamsProgressBeforeTheResult(t *testing.T) {
 	srv := NewTestStreamableHTTPServer(mcpServer)
 	t.Cleanup(srv.Close)
 
-	// The call is repeated because the defect this pins was a race between
-	// the notification forwarder and the response path: one run in two lost
-	// the first notification under the race detector, one in many without it.
+	// The call is repeated because the notification forwarder and the
+	// response path race: a lost notification shows only in some runs.
 	for i := range 25 {
 		meta := modernMeta()
 		meta["progressToken"] = "p-1"

@@ -98,12 +98,10 @@ type SessionWithProtocolVersion interface {
 // required client capabilities are missing, or a well-known key holds a value
 // of the wrong shape.
 func extractRequestProtocolInfo(message json.RawMessage) (*RequestProtocolInfo, error) {
-	// One typed partial decode of the four well-known keys. Decoding _meta
-	// as a *mcp.Meta builds a generic map and every typed accessor then
-	// re-marshals its value, which was the largest allocation block of a
-	// request. The tags spell mcp.MetaKeyProtocolVersion, MetaKeyClientInfo,
-	// MetaKeyClientCapabilities and MetaKeyLogLevel; each value is decoded on
-	// its own so a malformed one is ignored, as the accessors ignored it.
+	// One typed partial decode of the four well-known keys, whose tags spell
+	// mcp.MetaKeyProtocolVersion, MetaKeyClientInfo, MetaKeyClientCapabilities
+	// and MetaKeyLogLevel. Each value is decoded on its own, so a malformed
+	// optional one is ignored.
 	var wrapper struct {
 		Params struct {
 			Meta struct {

@@ -211,9 +211,9 @@ func TestE2E_LegacyClientAgainstModernServer(t *testing.T) {
 	assert.Equal(t, mcp.ProtocolVersion20251125, result.ProtocolVersion)
 	assert.NotEmpty(t, httpTransport.GetSessionId(), "legacy clients still get a session")
 
-	// The greet tool asks for input the way a modern client would be asked;
-	// this client cannot be, and the server no longer asks on its behalf, so
-	// the call fails and says why.
+	// The greet tool asks for input the way a modern client is asked; this
+	// client cannot be, and the server does not ask on its behalf, so the call
+	// fails and says why.
 	var call mcp.CallToolRequest
 	call.Params.Name = "greet"
 

@@ -206,8 +206,8 @@ func TestGetPromptLeavesInputRequestsWithoutMessages(t *testing.T) {
 	assert.Nil(t, result.Messages)
 }
 
-// A client that predates multi round-trip cannot be asked, and the server no
-// longer asks on its behalf: the prompt fails with ErrInputRequiresModernClient.
+// A client that predates multi round-trip cannot be asked, and the server does
+// not ask on its behalf: the prompt fails with ErrInputRequiresModernClient.
 func TestGetPromptNeedingInputFailsForLegacyClients(t *testing.T) {
 	s := NewMCPServer("test", "1.0.0", WithPromptCapabilities(true))
 	s.AddPrompt(mcp.NewPrompt("ask"), askForTopic)
