@@ -115,11 +115,11 @@ func (s *MCPServer) HandleMessage(
 	defer cancel()
 
 	// Store cancel func so notifications/cancelled can cancel this request.
-	// Use session-scoped keys to prevent cross-session request ID collisions.
 	if baseMessage.ID != nil {
-		key := inflightKey(ctx, baseMessage.ID)
-		s.inflightCancels.Store(key, cancel)
-		defer s.inflightCancels.Delete(key)
+		if key, ok := inflightKey(ctx, baseMessage.ID); ok {
+			s.inflightCancels.Store(key, cancel)
+			defer s.inflightCancels.Delete(key)
+		}
 	}
 
 	// Extract trace context from _meta before opening the server span so the span

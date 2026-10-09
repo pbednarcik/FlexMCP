@@ -99,3 +99,34 @@ func TestCancelledNotificationIsScopedToTheSession(t *testing.T) {
 		}
 	})
 }
+
+// TestCancelledNotificationNeedsASessionToScopeIt pins that a session with no
+// ID, a modern HTTP request's ephemeral one, cannot cancel by notification:
+// every such session shares the empty ID, so a cancel from one client would
+// reach another's request. Closing the request's stream, which ends its
+// context, is the cancel there.
+func TestCancelledNotificationNeedsASessionToScopeIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, started := blockingToolServer(t)
+		ctx, closeStream := context.WithCancel(srv.WithContext(t.Context(), cancelTestSession("")))
+		defer closeStream()
+		responses := callBlock(srv, ctx)
+		<-started
+
+		require.Nil(t, srv.HandleMessage(srv.WithContext(t.Context(), cancelTestSession("")), json.RawMessage(cancelSeven)))
+		synctest.Wait()
+		select {
+		case resp := <-responses:
+			t.Fatalf("another client's cancel ended the request: %v", resp)
+		default:
+		}
+
+		closeStream()
+		synctest.Wait()
+		select {
+		case <-responses:
+		default:
+			t.Fatal("the request did not end when its stream closed")
+		}
+	})
+}

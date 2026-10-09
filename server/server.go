@@ -2399,10 +2399,11 @@ func (s *MCPServer) handleNotification(
 	// Handle cancellation notifications per MCP spec
 	if notification.Method == string(mcp.MethodNotificationCancelled) {
 		if reqID, ok := notification.Params.AdditionalFields["requestId"]; ok {
-			key := inflightKey(ctx, reqID)
-			if cancel, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
-				if cancelFunc, ok := cancel.(context.CancelFunc); ok {
-					cancelFunc()
+			if key, ok := inflightKey(ctx, reqID); ok {
+				if cancel, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
+					if cancelFunc, ok := cancel.(context.CancelFunc); ok {
+						cancelFunc()
+					}
 				}
 			}
 		}
@@ -2419,13 +2420,18 @@ func (s *MCPServer) handleNotification(
 	return nil
 }
 
-// inflightKey returns a session-scoped key for the inflight cancellation map.
-// This prevents cross-session request ID collisions in multi-client scenarios.
-func inflightKey(ctx context.Context, requestID any) string {
+// inflightKey returns the key a request's cancel func is filed under, scoped
+// to its session so one client cannot cancel another's request. A session
+// with no ID, a modern HTTP request's ephemeral one, has no scope to offer:
+// ok is false, and closing the request's stream is its cancel.
+func inflightKey(ctx context.Context, requestID any) (key string, ok bool) {
 	if session := ClientSessionFromContext(ctx); session != nil {
-		return fmt.Sprintf("%s:%v", session.SessionID(), requestID)
+		if session.SessionID() == "" {
+			return "", false
+		}
+		return fmt.Sprintf("%s:%v", session.SessionID(), requestID), true
 	}
-	return fmt.Sprintf(":%v", requestID)
+	return fmt.Sprintf(":%v", requestID), true
 }
 
 func createResponse(id any, result any) mcp.JSONRPCMessage {
