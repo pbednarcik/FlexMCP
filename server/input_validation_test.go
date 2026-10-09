@@ -340,10 +340,10 @@ func TestInputSchemaValidation_NestedPathInError(t *testing.T) {
 		"error message should reference the nested path: %s", tc.Text)
 }
 
-// TestInputSchemaValidation_ErrorKindReadable asserts that validation error
-// messages render jsonschema ErrorKind values with named struct fields
-// instead of fmt %s fallback noise like %!s(int=0).
-func TestInputSchemaValidation_ErrorKindReadable(t *testing.T) {
+// TestInputSchemaValidation_MessagesAreSentences pins the message the model
+// receives: the instance location, then the validator's own English
+// sentence for the violation, never a Go struct dump.
+func TestInputSchemaValidation_MessagesAreSentences(t *testing.T) {
 	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
 	tool := mcp.Tool{
 		Name: "validated",
@@ -365,22 +365,22 @@ func TestInputSchemaValidation_ErrorKindReadable(t *testing.T) {
 		wantNotContains []string
 	}{
 		{
-			name:            "minProperties renders Got/Want",
+			name:            "minProperties says what was got and wanted",
 			args:            map[string]any{"id": 23582, "fields": map[string]any{}},
-			wantContains:    []string{"/fields:", "Got:0", "Want:1"},
-			wantNotContains: []string{"%!s"},
+			wantContains:    []string{"/fields: minProperties: got 0, want 1"},
+			wantNotContains: []string{"%!s", "&{"},
 		},
 		{
-			name:            "required renders Missing field names",
+			name:            "required names the missing property",
 			args:            map[string]any{"id": 23582},
-			wantContains:    []string{"Missing:[fields]"},
-			wantNotContains: []string{"%!s"},
+			wantContains:    []string{"<root>: missing property 'fields'"},
+			wantNotContains: []string{"%!s", "&{"},
 		},
 		{
-			name:            "type renders Got/Want",
+			name:            "type says what was got and wanted",
 			args:            map[string]any{"id": "abc"},
-			wantContains:    []string{"/id:", "Got:string", "Want:[number]"},
-			wantNotContains: []string{"%!s"},
+			wantContains:    []string{"/id: got string, want number"},
+			wantNotContains: []string{"%!s", "&{"},
 		},
 	}
 
@@ -436,25 +436,25 @@ func TestInputSchemaValidation_Edges(t *testing.T) {
 			name:            "arguments that are an array are rejected at the root",
 			tool:            twoFieldTool,
 			args:            []any{"a", "b"},
-			wantErrContains: []string{"<root>", "object"},
+			wantErrContains: []string{"<root>: got array, want object"},
 		},
 		{
 			name:            "arguments that are a string are rejected at the root",
 			tool:            twoFieldTool,
 			args:            "a=1",
-			wantErrContains: []string{"<root>", "object"},
+			wantErrContains: []string{"<root>: got string, want object"},
 		},
 		{
 			name:            "absent arguments are an empty object, so required fails",
 			tool:            twoFieldTool,
 			args:            nil,
-			wantErrContains: []string{"<root>", "Missing:[a]"},
+			wantErrContains: []string{"<root>: missing property 'a'"},
 		},
 		{
 			name:            "every violation is reported, separated by semicolons",
 			tool:            twoFieldTool,
 			args:            map[string]any{"b": 1},
-			wantErrContains: []string{"<root>: &{Missing:[a]}; /b: &{Got:number Want:[string]}"},
+			wantErrContains: []string{"<root>: missing property 'a'; /b: got number, want string"},
 		},
 	}
 

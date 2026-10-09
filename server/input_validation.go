@@ -12,6 +12,8 @@ import (
 	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -269,12 +271,16 @@ func collectValidationMessages(verr *jsonschema.ValidationError) []string {
 	return out
 }
 
+// validationMessages renders the validator's error kinds as English
+// sentences, the form a model can act on.
+var validationMessages = message.NewPrinter(language.English)
+
 func formatLeafMessage(verr *jsonschema.ValidationError) string {
 	location := jsonPointer(verr.InstanceLocation)
 	if location == "" {
 		location = "<root>"
 	}
-	return fmt.Sprintf("%s: %+v", location, verr.ErrorKind)
+	return location + ": " + verr.ErrorKind.LocalizedString(validationMessages)
 }
 
 // jsonPointer renders a list of path segments as a RFC 6901 JSON Pointer.
