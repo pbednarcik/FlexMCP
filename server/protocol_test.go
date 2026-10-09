@@ -39,6 +39,8 @@ func TestRequestProtocolInfoReadsMetaByItsKeys(t *testing.T) {
 			&RequestProtocolInfo{Modern: true, ProtocolVersion: "2026-07-28", ClientCapabilities: &mcp.ClientCapabilities{}}, ""},
 		{"malformed log level is ignored", `{"_meta":{` + modern + `,` + caps + `,"io.modelcontextprotocol/logLevel":5}}`,
 			&RequestProtocolInfo{Modern: true, ProtocolVersion: "2026-07-28", ClientCapabilities: &mcp.ClientCapabilities{}}, ""},
+		{"key case is not significant, as encoding/json matches field tags", `{"_meta":{"IO.modelcontextprotocol/protocolversion":"2026-07-28","io.modelcontextprotocol/CLIENTCAPABILITIES":{}}}`,
+			&RequestProtocolInfo{Modern: true, ProtocolVersion: "2026-07-28", ClientCapabilities: &mcp.ClientCapabilities{}}, ""},
 		{"modern without capabilities is an error", `{"_meta":{` + modern + `}}`, nil, "missing or invalid _meta field io.modelcontextprotocol/clientCapabilities"},
 		{"modern with null capabilities is an error", `{"_meta":{` + modern + `,"io.modelcontextprotocol/clientCapabilities":null}}`, nil, "missing or invalid _meta field io.modelcontextprotocol/clientCapabilities"},
 		{"modern with malformed capabilities is an error", `{"_meta":{` + modern + `,"io.modelcontextprotocol/clientCapabilities":5}}`, nil, "missing or invalid _meta field io.modelcontextprotocol/clientCapabilities"},
