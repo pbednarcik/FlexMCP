@@ -1,6 +1,10 @@
-# Notification delivery on current main is intermittent until #969 is merged.
 # The checker repeats these scenarios and only considers the baseline stale
 # after ten consecutive passes.
+#
+# tools-call-with-progress: on the handshake-era path a session opened by a
+# GET stream has two readers of one notification channel, the GET writer and
+# the POST's forwarder, so a notification emitted during a tools/call lands on
+# whichever stream wins. The legacy removal (docs/Design/LegacyRemoval.md)
+# drops the GET stream.
 server:
-  - tools-call-with-logging
   - tools-call-with-progress
