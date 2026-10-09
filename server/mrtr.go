@@ -169,7 +169,8 @@ func clientSupportsMultiRoundTrip(ctx context.Context) bool {
 
 // resolveMultiRoundTrip passes an input_required result through to a client
 // that understands the multi round-trip pattern, and refuses it for one that
-// predates protocol version 2026-07-28.
+// predates protocol version 2026-07-28: with ErrLoadShedding when the handler
+// asked nothing and only wants a retry, ErrInputRequiresModernClient otherwise.
 func resolveMultiRoundTrip[T any](
 	ctx context.Context,
 	result *T,
@@ -178,10 +179,14 @@ func resolveMultiRoundTrip[T any](
 	if clientSupportsMultiRoundTrip(ctx) {
 		return result, nil
 	}
-	if _, _, pending := needsInput(result); pending {
-		return nil, ErrInputRequiresModernClient
+	requests, _, pending := needsInput(result)
+	if !pending {
+		return result, nil
 	}
-	return result, nil
+	if len(requests) == 0 {
+		return nil, ErrLoadShedding
+	}
+	return nil, ErrInputRequiresModernClient
 }
 
 // callToolResultNeedsInput reports whether a tools/call result asks the client

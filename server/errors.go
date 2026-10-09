@@ -45,6 +45,12 @@ var (
 	ErrInputRequiresModernClient = errors.New(
 		"the handler asked the client for input, which needs protocol version " + mcp.ProtocolVersion20260728 +
 			" or later (multi round-trip requests, SEP-2322)")
+
+	// ErrLoadShedding is returned when a handler sheds load, asking the client
+	// to retry later through a multi round-trip result with no input requests,
+	// and the client predates protocol version 2026-07-28. Callers may map it
+	// to a backpressure response, such as HTTP 503 with Retry-After.
+	ErrLoadShedding = errors.New("the server is busy, retry later")
 )
 
 // noResultError reports a handler that returned neither a result nor an

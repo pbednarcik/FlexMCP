@@ -112,21 +112,27 @@ func TestMultiRoundTrip_ModernClientRetriesWithAnswer(t *testing.T) {
 
 // A client on a protocol version before 2026-07-28 cannot answer an input
 // request, and the server issues no server-initiated request on its behalf,
-// so the call fails with ErrInputRequiresModernClient. The same holds for a
-// handler that sheds load with an empty input request.
+// so the call fails with ErrInputRequiresModernClient. A handler that sheds
+// load asks nothing, so that client is told to retry later instead.
 func TestMultiRoundTrip_LegacyClientGetsAnError(t *testing.T) {
 	srv := newMRTRServer(t)
 	srv.AddTool(mcp.NewTool("busy"), func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return NewInputRequestBuilder("retry-later").ToolResult(), nil
 	})
 
-	for _, name := range []string{"confirmThenGreet", "busy"} {
-		t.Run(name, func(t *testing.T) {
-			result, reqErr := callToolInEra(t, srv, mcp.CallToolParams{Name: name}, false)
+	for _, tt := range []struct {
+		tool string
+		want error
+	}{
+		{"confirmThenGreet", ErrInputRequiresModernClient},
+		{"busy", ErrLoadShedding},
+	} {
+		t.Run(tt.tool, func(t *testing.T) {
+			result, reqErr := callToolInEra(t, srv, mcp.CallToolParams{Name: tt.tool}, false)
 			assert.Nil(t, result)
 			require.NotNil(t, reqErr)
 			assert.Equal(t, mcp.INTERNAL_ERROR, reqErr.code)
-			assert.ErrorIs(t, reqErr, ErrInputRequiresModernClient)
+			assert.ErrorIs(t, reqErr, tt.want)
 		})
 	}
 }
