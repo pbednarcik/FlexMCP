@@ -54,8 +54,8 @@ func supportsSchemaTagFallbackType(t reflect.Type, seen map[reflect.Type]bool) b
 			return true
 		}
 		seen[t] = true
-		for i := 0; i < t.NumField(); i++ {
-			field := t.Field(i)
+		for field := range t.Fields() {
+			field := field
 			if fieldJSONInfo(field).omit {
 				continue
 			}
@@ -110,8 +110,8 @@ func (s *schemaFallbackState) schemaForStructFields(
 
 	var walk func(reflect.Type) error
 	walk = func(structType reflect.Type) error {
-		for i := 0; i < structType.NumField(); i++ {
-			field := structType.Field(i)
+		for field := range structType.Fields() {
+			field := field
 			fieldType := field.Type
 			info := fieldJSONInfo(field)
 			if info.omit {
@@ -212,8 +212,8 @@ func applyStructFieldTags(t reflect.Type, schema *jsonschema.Schema) {
 
 	var walk func(reflect.Type)
 	walk = func(structType reflect.Type) {
-		for i := 0; i < structType.NumField(); i++ {
-			field := structType.Field(i)
+		for field := range structType.Fields() {
+			field := field
 			fieldType := field.Type
 			info := fieldJSONInfo(field)
 			if info.omit {

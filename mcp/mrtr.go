@@ -254,11 +254,9 @@ type InputRequiredResult struct {
 // client on retry and may be empty.
 func NewInputRequiredResult(requests InputRequests, requestState string) *InputRequiredResult {
 	return &InputRequiredResult{
-		Result: Result{ResultType: ResultTypeInputRequired},
-		MultiRoundTripResult: MultiRoundTripResult{
-			InputRequests: requests,
-			RequestState:  requestState,
-		},
+		ResultType:    ResultTypeInputRequired,
+		InputRequests: requests,
+		RequestState:  requestState,
 	}
 }
 

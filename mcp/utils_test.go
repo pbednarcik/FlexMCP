@@ -29,7 +29,7 @@ func TestParseAnnotations(t *testing.T) {
 				"priority": 1.5,
 			},
 			expected: &Annotations{
-				Priority: ptr(1.5),
+				Priority: new(1.5),
 			},
 		},
 		{
@@ -48,7 +48,7 @@ func TestParseAnnotations(t *testing.T) {
 				"audience": []any{"user", "assistant", "system"},
 			},
 			expected: &Annotations{
-				Priority: ptr(2.0),
+				Priority: new(2.0),
 				Audience: []Role{"user", "assistant"},
 			},
 		},
@@ -116,7 +116,7 @@ func TestParseContent(t *testing.T) {
 				Text: "Hello, world!",
 				Annotated: Annotated{
 					Annotations: &Annotations{
-						Priority: ptr(1.5),
+						Priority: new(1.5),
 						Audience: []Role{"user"},
 					},
 				},
@@ -151,7 +151,7 @@ func TestParseContent(t *testing.T) {
 				MIMEType: "image/png",
 				Annotated: Annotated{
 					Annotations: &Annotations{
-						Priority: ptr(2.0),
+						Priority: new(2.0),
 					},
 				},
 			},
@@ -199,7 +199,7 @@ func TestParseContent(t *testing.T) {
 				MIMEType:    "text/plain",
 				Annotated: Annotated{
 					Annotations: &Annotations{
-						Priority: ptr(1.0),
+						Priority: new(1.0),
 					},
 				},
 			},
@@ -530,7 +530,7 @@ func TestParseContent(t *testing.T) {
 				Input: map[string]any{},
 				Annotated: Annotated{
 					Annotations: &Annotations{
-						Priority: ptr(1.0),
+						Priority: new(1.0),
 					},
 				},
 			},

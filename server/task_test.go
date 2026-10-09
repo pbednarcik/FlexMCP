@@ -1640,12 +1640,10 @@ func TestMCPServer_HandleTaskResult(t *testing.T) {
 
 		toolResult := &mcp.CallToolResult{
 			Content: []mcp.Content{mcp.NewTextContent("Result with meta")},
-			Result: mcp.Result{
-				Meta: &mcp.Meta{
-					AdditionalFields: map[string]any{
-						"custom-field":  "custom-value",
-						"another-field": 123,
-					},
+			Meta: &mcp.Meta{
+				AdditionalFields: map[string]any{
+					"custom-field":  "custom-value",
+					"another-field": 123,
 				},
 			},
 		}

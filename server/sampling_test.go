@@ -12,12 +12,10 @@ func TestMCPServer_RequestSampling_NoSession(t *testing.T) {
 	server.EnableSampling()
 
 	request := mcp.CreateMessageRequest{
-		CreateMessageParams: mcp.CreateMessageParams{
-			Messages: []mcp.SamplingMessage{
-				{Role: mcp.RoleUser, Content: mcp.TextContent{Type: "text", Text: "Test"}},
-			},
-			MaxTokens: 100,
+		Messages: []mcp.SamplingMessage{
+			{Role: mcp.RoleUser, Content: mcp.TextContent{Type: "text", Text: "Test"}},
 		},
+		MaxTokens: 100,
 	}
 
 	_, err := server.RequestSampling(t.Context(), request)
@@ -71,14 +69,12 @@ func TestMCPServer_RequestSampling_Success(t *testing.T) {
 
 	// Create a mock sampling session
 	mockSession := &mockSamplingSession{
-		mockSession: mockSession{sessionID: "test-session"},
+		sessionID: "test-session",
 		result: &mcp.CreateMessageResult{
-			SamplingMessage: mcp.SamplingMessage{
-				Role: mcp.RoleAssistant,
-				Content: mcp.TextContent{
-					Type: "text",
-					Text: "Test response",
-				},
+			Role: mcp.RoleAssistant,
+			Content: mcp.TextContent{
+				Type: "text",
+				Text: "Test response",
 			},
 			Model:      "test-model",
 			StopReason: "endTurn",
@@ -90,12 +86,10 @@ func TestMCPServer_RequestSampling_Success(t *testing.T) {
 	ctx = server.WithContext(ctx, mockSession)
 
 	request := mcp.CreateMessageRequest{
-		CreateMessageParams: mcp.CreateMessageParams{
-			Messages: []mcp.SamplingMessage{
-				{Role: mcp.RoleUser, Content: mcp.TextContent{Type: "text", Text: "Test"}},
-			},
-			MaxTokens: 100,
+		Messages: []mcp.SamplingMessage{
+			{Role: mcp.RoleUser, Content: mcp.TextContent{Type: "text", Text: "Test"}},
 		},
+		MaxTokens: 100,
 	}
 
 	result, err := server.RequestSampling(ctx, request)

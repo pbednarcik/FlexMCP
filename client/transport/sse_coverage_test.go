@@ -365,12 +365,10 @@ func TestSSE_SendNotification_MarshalError(t *testing.T) {
 
 	err := sse.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-			Params: mcp.NotificationParams{AdditionalFields: map[string]any{
-				"bad": make(chan int),
-			}},
-		},
+		Method:  "test",
+		Params: mcp.NotificationParams{AdditionalFields: map[string]any{
+			"bad": make(chan int),
+		}},
 	})
 	require.ErrorContains(t, err, "failed to marshal notification")
 }
@@ -384,9 +382,7 @@ func TestSSE_SendNotification_ConnectionError(t *testing.T) {
 
 	err := sse.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	require.ErrorContains(t, err, "failed to send notification")
 }
@@ -404,9 +400,7 @@ func TestSSE_SendNotification_UnauthorizedWithoutOAuth(t *testing.T) {
 
 	err := sse.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	var authErr *AuthorizationRequiredError
 	require.ErrorAs(t, err, &authErr)
@@ -424,9 +418,7 @@ func TestSSE_SendNotification_ServerError(t *testing.T) {
 
 	err := sse.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	require.ErrorContains(t, err, "notification failed with status 500")
 }
@@ -443,9 +435,7 @@ func TestSSE_SendNotification_Success(t *testing.T) {
 
 	err := sse.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	require.NoError(t, err)
 }

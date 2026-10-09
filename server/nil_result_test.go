@@ -57,10 +57,8 @@ func TestGetPromptNilResultOnBridgedRetryIsAnError(t *testing.T) {
 
 	session := newMRTRSession("legacy")
 	session.response = &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"topic": "go"},
-		},
+		Action:  mcp.ElicitationResponseActionAccept,
+		Content: map[string]any{"topic": "go"},
 	}
 	ctx := srv.WithContext(t.Context(), session)
 	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{})
@@ -118,10 +116,8 @@ func TestCallToolNilResultOnBridgedRetryIsAnError(t *testing.T) {
 
 	session := newMRTRSession("legacy")
 	session.response = &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"confirmed": true},
-		},
+		Action:  mcp.ElicitationResponseActionAccept,
+		Content: map[string]any{"confirmed": true},
 	}
 	ctx := srv.WithContext(t.Context(), session)
 	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{})

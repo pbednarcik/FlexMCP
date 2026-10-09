@@ -197,12 +197,12 @@ func TestSubscriptionsListen_OnlyOptedInNotificationsAreDelivered(t *testing.T) 
 
 	// The client opted in to tool list changes only.
 	srv.sendNotificationToAllClients(mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: mcp.MethodNotificationPromptsListChanged},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  mcp.MethodNotificationPromptsListChanged,
 	})
 	srv.sendNotificationToAllClients(mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: mcp.MethodNotificationToolsListChanged},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  mcp.MethodNotificationToolsListChanged,
 	})
 
 	select {
@@ -331,7 +331,7 @@ func TestPerRequestLogLevel(t *testing.T) {
 
 			ctx := WithRequestProtocolInfo(srv.WithContext(t.Context(), session), tt.info)
 			err := srv.SendLogMessageToClient(ctx, mcp.LoggingMessageNotification{
-				Notification: mcp.Notification{Method: string(mcp.MethodNotificationMessage)},
+				Method: string(mcp.MethodNotificationMessage),
 				Params: mcp.LoggingMessageNotificationParams{
 					Level: tt.level,
 					Data:  "hello",
@@ -389,16 +389,16 @@ func TestSubscriptionsListen_UnrequestedNotificationsAreRejected(t *testing.T) {
 	// delivered on a subscription stream, even though it is broadcast to
 	// every other session.
 	srv.sendNotificationToAllClients(mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: mcp.MethodNotificationTasksStatus},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  mcp.MethodNotificationTasksStatus,
 	})
 	srv.sendNotificationToAllClients(mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: "custom/broadcast"},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  "custom/broadcast",
 	})
 	srv.sendNotificationToAllClients(mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: mcp.MethodNotificationToolsListChanged},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  mcp.MethodNotificationToolsListChanged,
 	})
 
 	select {

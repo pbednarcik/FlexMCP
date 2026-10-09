@@ -1369,13 +1369,11 @@ func TestCallToolResultUnmarshalJSON(t *testing.T) {
 // TestCallToolResultRoundTrip tests that marshaling and unmarshaling preserves all data
 func TestCallToolResultRoundTrip(t *testing.T) {
 	original := CallToolResult{
-		Result: Result{
-			Meta: NewMetaFromMap(map[string]any{
-				"session_id": "12345",
-				"user_id":    "user123",
-				"timestamp":  "2024-01-01T00:00:00Z",
-			}),
-		},
+		Meta: NewMetaFromMap(map[string]any{
+			"session_id": "12345",
+			"user_id":    "user123",
+			"timestamp":  "2024-01-01T00:00:00Z",
+		}),
 		Content: []Content{
 			TextContent{Type: "text", Text: "Operation started"},
 			ImageContent{Type: "image", Data: "base64-encoded-chart-data", MIMEType: "image/png"},
@@ -2682,9 +2680,7 @@ func TestListToolsResult_Schema_Issue671(t *testing.T) {
 // TestCallToolRequest_WithTaskParams_RoundTrip tests that marshaling and unmarshaling preserves task params
 func TestCallToolRequest_WithTaskParams_RoundTrip(t *testing.T) {
 	original := CallToolRequest{
-		Request: Request{
-			Method: "tools/call",
-		},
+		Method: "tools/call",
 		Params: CallToolParams{
 			Name: "async-tool",
 			Arguments: map[string]any{

@@ -98,17 +98,13 @@ func TestMultiRoundTrip_ModernClientRetriesWithAnswer(t *testing.T) {
 	// Second call: the client has collected the name and retries, echoing the
 	// opaque request state back.
 	result := callToolInEra(t, srv, session, mcp.CallToolParams{
-		Name: "confirmThenGreet",
-		MultiRoundTripParams: mcp.MultiRoundTripParams{
-			RequestState: "step=1",
-			InputResponses: mcp.InputResponses{
-				"who": mcp.NewElicitationInputResponse(mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action:  mcp.ElicitationResponseActionAccept,
-						Content: map[string]any{"name": "MCP Go"},
-					},
-				}),
-			},
+		Name:         "confirmThenGreet",
+		RequestState: "step=1",
+		InputResponses: mcp.InputResponses{
+			"who": mcp.NewElicitationInputResponse(mcp.ElicitationResult{
+				Action:  mcp.ElicitationResponseActionAccept,
+				Content: map[string]any{"name": "MCP Go"},
+			}),
 		},
 	}, true)
 
@@ -125,10 +121,8 @@ func TestMultiRoundTrip_LegacyClientIsBridged(t *testing.T) {
 	// re-invokes the handler with the answer.
 	session := newMRTRSession("legacy")
 	session.response = &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"name": "Legacy"},
-		},
+		Action:  mcp.ElicitationResponseActionAccept,
+		Content: map[string]any{"name": "Legacy"},
 	}
 
 	result := callToolInEra(t, srv, session, mcp.CallToolParams{Name: "confirmThenGreet"}, false)
@@ -180,7 +174,7 @@ func TestMultiRoundTrip_LoadSheddingIsRejectedForLegacyClients(t *testing.T) {
 func TestMultiRoundTrip_InputResponseAccessors(t *testing.T) {
 	responses := mcp.InputResponses{
 		"elicit": mcp.NewElicitationInputResponse(mcp.ElicitationResult{
-			ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionDecline},
+			Action: mcp.ElicitationResponseActionDecline,
 		}),
 		"sample": mcp.NewSamplingInputResponse(mcp.CreateMessageResult{Model: "test-model"}),
 		"roots": mcp.NewRootsInputResponse(mcp.ListRootsResult{

@@ -38,12 +38,10 @@ func TestClient_HandleElicitationRequest(t *testing.T) {
 			name: "successful elicitation - accept",
 			handler: &mockElicitationHandler{
 				result: &mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionAccept,
-						Content: map[string]any{
-							"name":      "test-project",
-							"framework": "react",
-						},
+					Action: mcp.ElicitationResponseActionAccept,
+					Content: map[string]any{
+						"name":      "test-project",
+						"framework": "react",
 					},
 				},
 			},
@@ -52,9 +50,7 @@ func TestClient_HandleElicitationRequest(t *testing.T) {
 			name: "successful elicitation - decline",
 			handler: &mockElicitationHandler{
 				result: &mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionDecline,
-					},
+					Action: mcp.ElicitationResponseActionDecline,
 				},
 			},
 		},
@@ -62,9 +58,7 @@ func TestClient_HandleElicitationRequest(t *testing.T) {
 			name: "successful elicitation - cancel",
 			handler: &mockElicitationHandler{
 				result: &mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionCancel,
-					},
+					Action: mcp.ElicitationResponseActionCancel,
 				},
 			},
 		},

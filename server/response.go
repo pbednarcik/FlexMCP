@@ -158,20 +158,17 @@ func methodReturnsCacheableResult(method mcp.MCPMethod) bool {
 // errorResponseForProtocolError converts a protocol-level validation failure
 // into the JSON-RPC error the specification prescribes.
 func errorResponseForProtocolError(id any, err error) mcp.JSONRPCMessage {
-	var unsupported mcp.UnsupportedProtocolVersionError
-	if errors.As(err, &unsupported) {
+	if unsupported, ok := errors.AsType[mcp.UnsupportedProtocolVersionError](err); ok {
 		response := unsupported.JSONRPCError()
 		response.ID = mcp.NewRequestId(id)
 		return response
 	}
 
-	var mismatch mcp.HeaderMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok {
 		return createErrorResponse(id, mcp.HEADER_MISMATCH, mismatch.Error())
 	}
 
-	var missing mcp.MissingRequiredClientCapabilityError
-	if errors.As(err, &missing) {
+	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
 		return createErrorResponse(id, mcp.MISSING_REQUIRED_CLIENT_CAPABILITY, missing.Error())
 	}
 

@@ -26,10 +26,8 @@ func TestNewInProcessClientWithOptions_WiresAllHostHandlers(t *testing.T) {
 		mcp.NewTool("inspect_host"),
 		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			samplingResult, err := mcpServer.RequestSampling(ctx, mcp.CreateMessageRequest{
-				CreateMessageParams: mcp.CreateMessageParams{
-					SystemPrompt: "inspect the workspace",
-					MaxTokens:    64,
-				},
+				SystemPrompt: "inspect the workspace",
+				MaxTokens:    64,
 			})
 			if err != nil {
 				return nil, err
@@ -44,7 +42,7 @@ func TestNewInProcessClientWithOptions_WiresAllHostHandlers(t *testing.T) {
 				return nil, err
 			}
 			rootsResult, err := mcpServer.RequestRoots(ctx, mcp.ListRootsRequest{
-				Request: mcp.Request{Method: string(mcp.MethodListRoots)},
+				Method: string(mcp.MethodListRoots),
 			})
 			if err != nil {
 				return nil, err
@@ -130,11 +128,9 @@ func (h *inProcessTestSamplingHandler) CreateMessage(
 	h.calls++
 	h.lastRequest = request
 	return &mcp.CreateMessageResult{
-		SamplingMessage: mcp.SamplingMessage{
-			Role:    mcp.RoleAssistant,
-			Content: mcp.NewTextContent("sampled"),
-		},
-		Model: "test-model",
+		Role:    mcp.RoleAssistant,
+		Content: mcp.NewTextContent("sampled"),
+		Model:   "test-model",
 	}, nil
 }
 
@@ -150,7 +146,7 @@ func (h *inProcessTestElicitationHandler) Elicit(
 	h.calls++
 	h.lastRequest = request
 	return &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionAccept},
+		Action: mcp.ElicitationResponseActionAccept,
 	}, nil
 }
 

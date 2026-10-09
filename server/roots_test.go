@@ -59,12 +59,10 @@ func (m *mockRootsSession) ListRoots(ctx context.Context, request mcp.ListRootsR
 
 func TestMCPServer_RequestRoots_NoSession(t *testing.T) {
 	server := NewMCPServer("test", "1.0.0")
-	server.capabilities.roots = mcp.ToBoolPtr(true)
+	server.capabilities.roots = new(true)
 
 	request := mcp.ListRootsRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodListRoots),
-		},
+		Method: string(mcp.MethodListRoots),
 	}
 
 	_, err := server.RequestRoots(t.Context(), request)
@@ -88,9 +86,7 @@ func TestMCPServer_RequestRoots_SessionDoesNotSupportRoots(t *testing.T) {
 	ctx = server.WithContext(ctx, mockSession)
 
 	request := mcp.ListRootsRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodListRoots),
-		},
+		Method: string(mcp.MethodListRoots),
 	}
 
 	_, err := server.RequestRoots(ctx, request)
@@ -132,9 +128,7 @@ func TestMCPServer_RequestRoots_Success(t *testing.T) {
 	ctx = server.WithContext(ctx, mockSession)
 
 	request := mcp.ListRootsRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodListRoots),
-		},
+		Method: string(mcp.MethodListRoots),
 	}
 
 	result, err := server.RequestRoots(ctx, request)

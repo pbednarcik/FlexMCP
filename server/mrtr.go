@@ -87,7 +87,7 @@ func (b *InputRequestBuilder) add(id string, request mcp.InputRequest) {
 // the client for more input.
 func (b *InputRequestBuilder) ToolResult() *mcp.CallToolResult {
 	return &mcp.CallToolResult{
-		Result:               mcp.Result{ResultType: mcp.ResultTypeInputRequired},
+		ResultType:           mcp.ResultTypeInputRequired,
 		MultiRoundTripResult: b.multiRoundTripResult(),
 	}
 }
@@ -96,7 +96,7 @@ func (b *InputRequestBuilder) ToolResult() *mcp.CallToolResult {
 // the client for more input.
 func (b *InputRequestBuilder) PromptResult() *mcp.GetPromptResult {
 	return &mcp.GetPromptResult{
-		Result:               mcp.Result{ResultType: mcp.ResultTypeInputRequired},
+		ResultType:           mcp.ResultTypeInputRequired,
 		MultiRoundTripResult: b.multiRoundTripResult(),
 	}
 }
@@ -286,8 +286,8 @@ func (s *MCPServer) fulfillInputRequest(
 			return mcp.InputResponse{}, fmt.Errorf("elicitation input request has no params")
 		}
 		result, err := s.RequestElicitation(ctx, mcp.ElicitationRequest{
-			Request: mcp.Request{Method: string(mcp.MethodElicitationCreate)},
-			Params:  *request.Elicitation,
+			Method: string(mcp.MethodElicitationCreate),
+			Params: *request.Elicitation,
 		})
 		if err != nil {
 			return mcp.InputResponse{}, err
@@ -302,7 +302,7 @@ func (s *MCPServer) fulfillInputRequest(
 			return mcp.InputResponse{}, fmt.Errorf("sampling input request has no params")
 		}
 		result, err := s.RequestSampling(ctx, mcp.CreateMessageRequest{
-			Request:             mcp.Request{Method: string(mcp.MethodSamplingCreateMessage)},
+			Method:              string(mcp.MethodSamplingCreateMessage),
 			CreateMessageParams: *request.Sampling,
 		})
 		if err != nil {
@@ -315,7 +315,7 @@ func (s *MCPServer) fulfillInputRequest(
 
 	case mcp.MethodListRoots:
 		result, err := s.RequestRoots(ctx, mcp.ListRootsRequest{
-			Request: mcp.Request{Method: string(mcp.MethodListRoots)},
+			Method: string(mcp.MethodListRoots),
 		})
 		if err != nil {
 			return mcp.InputResponse{}, err

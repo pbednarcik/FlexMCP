@@ -70,9 +70,7 @@ func (s *MCPServer) RequestURLElicitation(
 	}
 
 	request := mcp.ElicitationRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodElicitationCreate),
-		},
+		Method: string(mcp.MethodElicitationCreate),
 		Params: params,
 	}
 

@@ -716,10 +716,8 @@ func (c *StreamableHTTP) SendRequest(
 			// If OAuth handler exists, return OAuth-specific error
 			if c.oauthHandler != nil {
 				return nil, &OAuthAuthorizationRequiredError{
-					Handler: c.oauthHandler,
-					AuthorizationRequiredError: AuthorizationRequiredError{
-						ResourceMetadataURL: metadataURL,
-					},
+					Handler:             c.oauthHandler,
+					ResourceMetadataURL: metadataURL,
 				}
 			}
 
@@ -1178,10 +1176,8 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 		// If OAuth handler exists, return OAuth-specific error
 		if c.oauthHandler != nil {
 			return &OAuthAuthorizationRequiredError{
-				Handler: c.oauthHandler,
-				AuthorizationRequiredError: AuthorizationRequiredError{
-					ResourceMetadataURL: metadataURL,
-				},
+				Handler:             c.oauthHandler,
+				ResourceMetadataURL: metadataURL,
 			}
 		}
 

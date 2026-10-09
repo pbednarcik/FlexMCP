@@ -169,14 +169,12 @@ func (m *mockHTTPTransport) SetProtocolVersion(version string) {
 func TestProtocolVersionHeaderSetting(t *testing.T) {
 	// Create mock HTTP transport
 	mockTransport := &mockHTTPTransport{
-		mockProtocolTransport: mockProtocolTransport{
-			responses: map[string]string{
-				"initialize": fmt.Sprintf(`{
+		responses: map[string]string{
+			"initialize": fmt.Sprintf(`{
 					"protocolVersion": "%s",
 					"capabilities": {},
 					"serverInfo": {"name": "test", "version": "1.0"}
 				}`, mcp.LATEST_PROTOCOL_VERSION),
-			},
 		},
 	}
 

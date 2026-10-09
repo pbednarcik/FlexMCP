@@ -1021,10 +1021,10 @@ func NewTool(name string, opts ...ToolOption) Tool {
 		},
 		Annotations: ToolAnnotation{
 			Title:           "",
-			ReadOnlyHint:    ToBoolPtr(false),
-			DestructiveHint: ToBoolPtr(true),
-			IdempotentHint:  ToBoolPtr(false),
-			OpenWorldHint:   ToBoolPtr(true),
+			ReadOnlyHint:    new(false),
+			DestructiveHint: new(true),
+			IdempotentHint:  new(false),
+			OpenWorldHint:   new(true),
 		},
 	}
 

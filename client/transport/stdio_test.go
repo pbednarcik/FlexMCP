@@ -176,11 +176,9 @@ func TestStdio(t *testing.T) {
 
 		notification := mcp.JSONRPCNotification{
 			JSONRPC: "2.0",
-			Notification: mcp.Notification{
-				Method: "debug/echo_notification",
-				Params: mcp.NotificationParams{
-					AdditionalFields: map[string]any{"test": "value"},
-				},
+			Method:  "debug/echo_notification",
+			Params: mcp.NotificationParams{
+				AdditionalFields: map[string]any{"test": "value"},
 			},
 		}
 		err := stdio.SendNotification(ctx, notification)

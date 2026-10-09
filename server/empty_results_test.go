@@ -214,10 +214,8 @@ func TestGetPromptBridgedRetryWithoutMessages(t *testing.T) {
 
 	session := newMRTRSession("legacy")
 	session.response = &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"topic": "go"},
-		},
+		Action:  mcp.ElicitationResponseActionAccept,
+		Content: map[string]any{"topic": "go"},
 	}
 	ctx := s.WithContext(t.Context(), session)
 	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{})

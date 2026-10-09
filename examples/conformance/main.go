@@ -88,11 +88,9 @@ func registerTools(mcpServer *server.MCPServer) {
 		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			prompt := request.GetString("prompt", "")
 			result, err := mcpServer.RequestSampling(ctx, mcp.CreateMessageRequest{
-				Request: mcp.Request{Method: string(mcp.MethodSamplingCreateMessage)},
-				CreateMessageParams: mcp.CreateMessageParams{
-					Messages:  []mcp.SamplingMessage{{Role: mcp.RoleUser, Content: mcp.TextContent{Type: "text", Text: prompt}}},
-					MaxTokens: 100,
-				},
+				Method:    string(mcp.MethodSamplingCreateMessage),
+				Messages:  []mcp.SamplingMessage{{Role: mcp.RoleUser, Content: mcp.TextContent{Type: "text", Text: prompt}}},
+				MaxTokens: 100,
 			})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
@@ -108,7 +106,7 @@ func registerTools(mcpServer *server.MCPServer) {
 		mcp.WithString("message", mcp.Description("Message to show the user"), mcp.Required())),
 		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{
-				Request: mcp.Request{Method: string(mcp.MethodElicitationCreate)},
+				Method: string(mcp.MethodElicitationCreate),
 				Params: mcp.ElicitationParams{
 					Message: request.GetString("message", ""),
 					RequestedSchema: map[string]any{
@@ -139,7 +137,7 @@ func registerTools(mcpServer *server.MCPServer) {
 					"verified": map[string]any{"type": "boolean", "default": true},
 				},
 			}
-			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Request: mcp.Request{Method: string(mcp.MethodElicitationCreate)}, Params: mcp.ElicitationParams{Message: "Provide your information", RequestedSchema: schema}})
+			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Method: string(mcp.MethodElicitationCreate), Params: mcp.ElicitationParams{Message: "Provide your information", RequestedSchema: schema}})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
@@ -158,7 +156,7 @@ func registerTools(mcpServer *server.MCPServer) {
 					"titledMulti":    map[string]any{"type": "array", "items": map[string]any{"anyOf": []any{map[string]any{"const": "value1", "title": "Value One"}, map[string]any{"const": "value2", "title": "Value Two"}}}},
 				},
 			}
-			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Request: mcp.Request{Method: string(mcp.MethodElicitationCreate)}, Params: mcp.ElicitationParams{Message: "Select options", RequestedSchema: schema}})
+			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Method: string(mcp.MethodElicitationCreate), Params: mcp.ElicitationParams{Message: "Select options", RequestedSchema: schema}})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}

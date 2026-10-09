@@ -17,10 +17,9 @@ import (
 type acceptingElicitationHandler struct{}
 
 func (acceptingElicitationHandler) Elicit(context.Context, mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
-	return &mcp.ElicitationResult{ElicitationResponse: mcp.ElicitationResponse{
+	return &mcp.ElicitationResult{
 		Action:  mcp.ElicitationResponseActionAccept,
-		Content: map[string]any{"confirmed": true},
-	}}, nil
+		Content: map[string]any{"confirmed": true}}, nil
 }
 
 // Other SDKs answer a tools/call that needs input with an InputRequiredResult,

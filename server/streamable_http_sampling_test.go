@@ -155,14 +155,12 @@ func TestStreamableHTTPServer_SamplingInterface(t *testing.T) {
 	defer cancel()
 
 	request := mcp.CreateMessageRequest{
-		CreateMessageParams: mcp.CreateMessageParams{
-			Messages: []mcp.SamplingMessage{
-				{
-					Role: mcp.RoleUser,
-					Content: mcp.TextContent{
-						Type: "text",
-						Text: "Test message",
-					},
+		Messages: []mcp.SamplingMessage{
+			{
+				Role: mcp.RoleUser,
+				Content: mcp.TextContent{
+					Type: "text",
+					Text: "Test message",
 				},
 			},
 		},
@@ -195,14 +193,12 @@ func TestStreamableHTTPServer_SamplingQueueFull(t *testing.T) {
 	// Try to add another request (should fail)
 	ctx := t.Context()
 	request := mcp.CreateMessageRequest{
-		CreateMessageParams: mcp.CreateMessageParams{
-			Messages: []mcp.SamplingMessage{
-				{
-					Role: mcp.RoleUser,
-					Content: mcp.TextContent{
-						Type: "text",
-						Text: "Test message",
-					},
+		Messages: []mcp.SamplingMessage{
+			{
+				Role: mcp.RoleUser,
+				Content: mcp.TextContent{
+					Type: "text",
+					Text: "Test message",
 				},
 			},
 		},
@@ -238,12 +234,10 @@ func TestStreamableHTTPServer_SamplingArrayContent(t *testing.T) {
 	}()
 
 	result, err := session.RequestSampling(t.Context(), mcp.CreateMessageRequest{
-		CreateMessageParams: mcp.CreateMessageParams{
-			Messages: []mcp.SamplingMessage{
-				{Role: mcp.RoleUser, Content: mcp.NewTextContent("What's the weather like in Paris and London?")},
-			},
-			MaxTokens: 1000,
+		Messages: []mcp.SamplingMessage{
+			{Role: mcp.RoleUser, Content: mcp.NewTextContent("What's the weather like in Paris and London?")},
 		},
+		MaxTokens: 1000,
 	})
 	require.NoError(t, err)
 	require.Equal(t, []mcp.Content{

@@ -674,8 +674,10 @@ func TestTaskToolTracerBullet(t *testing.T) {
 }
 
 // ptrInt64 is a helper to get a pointer to an int64
+//
+//go:fix inline
 func ptrInt64(i int64) *int64 {
-	return &i
+	return new(i)
 }
 
 func TestTaskTool_ModelImmediateResponse(t *testing.T) {
@@ -705,9 +707,7 @@ func TestTaskTool_ModelImmediateResponse(t *testing.T) {
 
 		result := mcp.CreateTaskResult{
 			Task: task,
-			Result: mcp.Result{
-				Meta: mcp.WithModelImmediateResponse(message),
-			},
+			Meta: mcp.WithModelImmediateResponse(message),
 		}
 
 		assert.NotNil(t, result.Meta)

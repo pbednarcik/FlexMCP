@@ -52,7 +52,7 @@ func TestNewResource(t *testing.T) {
 				Annotated: Annotated{
 					Annotations: &Annotations{
 						Audience: []Role{RoleUser, RoleAssistant},
-						Priority: ptr(0.5),
+						Priority: new(0.5),
 					},
 				},
 			},
@@ -71,7 +71,7 @@ func TestNewResource(t *testing.T) {
 				Annotated: Annotated{
 					Annotations: &Annotations{
 						Audience: []Role{RoleUser},
-						Priority: ptr(1.0),
+						Priority: new(1.0),
 					},
 				},
 			},
@@ -317,7 +317,8 @@ func TestTemplateAnnotationsCreationFromNil(t *testing.T) {
 	assert.Equal(t, 0.5, *template.Annotations.Priority)
 }
 
-func ptr(v float64) *float64 { return &v }
+//go:fix inline
+func ptr(v float64) *float64 { return new(v) }
 
 func TestWithResourceIcons(t *testing.T) {
 	resource := Resource{}

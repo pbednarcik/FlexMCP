@@ -175,9 +175,7 @@ func NewProgressNotification(
 	message *string,
 ) ProgressNotification {
 	notification := ProgressNotification{
-		Notification: Notification{
-			Method: string(MethodNotificationProgress),
-		},
+		Method: string(MethodNotificationProgress),
 		Params: struct {
 			ProgressToken ProgressToken `json:"progressToken"`
 			Progress      float64       `json:"progress"`
@@ -204,9 +202,7 @@ func NewLoggingMessageNotification(
 	data any,
 ) LoggingMessageNotification {
 	return LoggingMessageNotification{
-		Notification: Notification{
-			Method: string(MethodNotificationMessage),
-		},
+		Method: string(MethodNotificationMessage),
 		Params: struct {
 			Level  LoggingLevel `json:"level"`
 			Logger string       `json:"logger,omitempty"`
@@ -466,10 +462,8 @@ func NewListResourcesResult(
 	nextCursor Cursor,
 ) *ListResourcesResult {
 	return &ListResourcesResult{
-		PaginatedResult: PaginatedResult{
-			NextCursor: nextCursor,
-		},
-		Resources: resources,
+		NextCursor: nextCursor,
+		Resources:  resources,
 	}
 }
 
@@ -479,9 +473,7 @@ func NewListResourceTemplatesResult(
 	nextCursor Cursor,
 ) *ListResourceTemplatesResult {
 	return &ListResourceTemplatesResult{
-		PaginatedResult: PaginatedResult{
-			NextCursor: nextCursor,
-		},
+		NextCursor:        nextCursor,
 		ResourceTemplates: templates,
 	}
 }
@@ -503,10 +495,8 @@ func NewListPromptsResult(
 	nextCursor Cursor,
 ) *ListPromptsResult {
 	return &ListPromptsResult{
-		PaginatedResult: PaginatedResult{
-			NextCursor: nextCursor,
-		},
-		Prompts: prompts,
+		NextCursor: nextCursor,
+		Prompts:    prompts,
 	}
 }
 
@@ -524,10 +514,8 @@ func NewGetPromptResult(
 // NewListToolsResult creates a new ListToolsResult
 func NewListToolsResult(tools []Tool, nextCursor Cursor) *ListToolsResult {
 	return &ListToolsResult{
-		PaginatedResult: PaginatedResult{
-			NextCursor: nextCursor,
-		},
-		Tools: tools,
+		NextCursor: nextCursor,
+		Tools:      tools,
 	}
 }
 
@@ -793,10 +781,11 @@ func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error)
 		return nil, err
 	}
 
-	result := GetPromptResult{}
-	result.ResultType = envelope.ResultType
-	result.InputRequests = envelope.InputRequests
-	result.RequestState = envelope.RequestState
+	result := GetPromptResult{
+		ResultType:    envelope.ResultType,
+		InputRequests: envelope.InputRequests,
+		RequestState:  envelope.RequestState,
+	}
 
 	meta, ok := jsonContent["_meta"]
 	if ok {
@@ -1086,13 +1075,17 @@ func ParseStringMap(request CallToolRequest, key string, defaultValue map[string
 }
 
 // ToBoolPtr returns a pointer to the given boolean value
+//
+//go:fix inline
 func ToBoolPtr(b bool) *bool {
-	return &b
+	return new(b)
 }
 
 // ToInt64Ptr returns a pointer to the given int64 value
+//
+//go:fix inline
 func ToInt64Ptr(i int64) *int64 {
-	return &i
+	return new(i)
 }
 
 // GetTextFromContent extracts text from a Content interface that might be a TextContent struct
@@ -1265,7 +1258,8 @@ func ParseTaskResultResult(rawMessage *json.RawMessage) (*TaskResultResult, erro
 	}
 
 	resultResult := TaskResultResult{
-		Result:            Result{Meta: raw.Meta, ResultType: raw.ResultType},
+		Meta:              raw.Meta,
+		ResultType:        raw.ResultType,
 		StructuredContent: raw.StructuredContent,
 		IsError:           raw.IsError,
 	}

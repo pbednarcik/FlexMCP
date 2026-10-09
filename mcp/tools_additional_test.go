@@ -276,10 +276,10 @@ func TestToolAnnotations(t *testing.T) {
 		tool := NewTool("test")
 		annotation := ToolAnnotation{
 			Title:           "Custom Tool",
-			ReadOnlyHint:    ToBoolPtr(true),
-			DestructiveHint: ToBoolPtr(false),
-			IdempotentHint:  ToBoolPtr(true),
-			OpenWorldHint:   ToBoolPtr(false),
+			ReadOnlyHint:    new(true),
+			DestructiveHint: new(false),
+			IdempotentHint:  new(true),
+			OpenWorldHint:   new(false),
 		}
 		opt := WithToolAnnotation(annotation)
 		opt(&tool)

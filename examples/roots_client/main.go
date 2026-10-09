@@ -146,7 +146,7 @@ func main() {
 		for _, content := range result.Content {
 			switch tc := content.(type) {
 			case mcp.TextContent:
-				resultStr.WriteString(fmt.Sprintf("%s\n", tc.Text))
+				fmt.Fprintf(&resultStr, "%s\n", tc.Text)
 			}
 		}
 		fmt.Printf("client call tool result: %s\n", resultStr.String())

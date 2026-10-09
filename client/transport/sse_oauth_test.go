@@ -301,8 +301,7 @@ func TestSSE_OAuthMetadataFeedback(t *testing.T) {
 		t.Fatal("Expected error, got nil")
 	}
 
-	var oauthErr *OAuthAuthorizationRequiredError
-	if !errors.As(err, &oauthErr) {
+	if _, ok := errors.AsType[*OAuthAuthorizationRequiredError](err); !ok {
 		t.Fatalf("Expected OAuthAuthorizationRequiredError, got %T: %v", err, err)
 	}
 

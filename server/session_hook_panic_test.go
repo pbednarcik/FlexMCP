@@ -152,13 +152,11 @@ func TestAddSessionTools_HookPanicRecovery(t *testing.T) {
 
 	// Create a session that supports tools but has a full notification channel
 	session := &mockSessionForPanicWithTools{
-		mockSessionForPanic: mockSessionForPanic{
-			sessionID:   "add-tools-test",
-			initialized: true,
-			notifyChan:  make(chan mcp.JSONRPCNotification), // unbuffered blocks
-			doneOnce:    sync.Once{},
-		},
-		tools: make(map[string]ServerTool),
+		sessionID:   "add-tools-test",
+		initialized: true,
+		notifyChan:  make(chan mcp.JSONRPCNotification), // unbuffered blocks
+		doneOnce:    sync.Once{},
+		tools:       make(map[string]ServerTool),
 	}
 	server.sessions.Store(session.SessionID(), session)
 

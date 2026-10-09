@@ -99,7 +99,7 @@ func TestInProcessClientRejectsNilHandlerResult(t *testing.T) {
 		var err error
 		switch request.GetString("what", "") {
 		case "sampling":
-			_, err = mcpServer.RequestSampling(ctx, mcp.CreateMessageRequest{CreateMessageParams: mcp.CreateMessageParams{MaxTokens: 1}})
+			_, err = mcpServer.RequestSampling(ctx, mcp.CreateMessageRequest{MaxTokens: 1})
 		case "elicitation":
 			_, err = mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Params: mcp.ElicitationParams{
 				Message:         "hi",

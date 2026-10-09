@@ -43,7 +43,7 @@ func TestSSEServer_MessageHandlerPanicRecovery(t *testing.T) {
 	toolCall := mcp.JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      mcp.NewRequestId(int64(1)),
-		Request: mcp.Request{Method: string(mcp.MethodToolsCall)},
+		Method:  string(mcp.MethodToolsCall),
 	}
 	toolCall.Params = json.RawMessage(`{"name":"panic-tool","arguments":{}}`)
 

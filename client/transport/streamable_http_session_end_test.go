@@ -232,8 +232,8 @@ func initializeOn(t *testing.T, trans *StreamableHTTP) {
 	require.NoError(t, err)
 	require.Nil(t, response.Error)
 	require.NoError(t, trans.SendNotification(t.Context(), mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: string(mcp.MethodNotificationInitialized)},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  string(mcp.MethodNotificationInitialized),
 	}))
 }
 
@@ -294,8 +294,8 @@ func TestStreamableHTTP_ReportsAnEndedSessionUntilReinitialized(t *testing.T) {
 	err := listToolsOn(trans)
 	assert.ErrorIs(t, err, ErrSessionTerminated)
 	err = trans.SendNotification(t.Context(), mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: "notifications/roots/list_changed"},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  "notifications/roots/list_changed",
 	})
 	assert.ErrorIs(t, err, ErrSessionTerminated)
 	for _, entry := range server.entries() {
@@ -456,8 +456,8 @@ func TestStreamableHTTP_StreamedInitializeAfterTheSessionEnded(t *testing.T) {
 	// While the response is still coming, the server forgets the session.
 	server.restart()
 	err = trans.SendNotification(t.Context(), mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: string(mcp.MethodNotificationInitialized)},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  string(mcp.MethodNotificationInitialized),
 	})
 	require.ErrorIs(t, err, ErrSessionTerminated)
 	release()

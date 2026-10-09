@@ -311,27 +311,21 @@ func (s *StreamableHTTPServer) startListeningPump(session *streamableHttpSession
 				st.deliver(ctx, mcp.JSONRPCRequest{
 					JSONRPC: "2.0",
 					ID:      mcp.NewRequestId(samplingReq.requestID),
-					Request: mcp.Request{
-						Method: string(mcp.MethodSamplingCreateMessage),
-					},
-					Params: samplingReq.request.CreateMessageParams,
+					Method:  string(mcp.MethodSamplingCreateMessage),
+					Params:  samplingReq.request.CreateMessageParams,
 				}, false)
 			case elicitationReq := <-session.elicitationRequestChan:
 				st.deliver(ctx, mcp.JSONRPCRequest{
 					JSONRPC: "2.0",
 					ID:      mcp.NewRequestId(elicitationReq.requestID),
-					Request: mcp.Request{
-						Method: string(mcp.MethodElicitationCreate),
-					},
-					Params: elicitationReq.request.Params,
+					Method:  string(mcp.MethodElicitationCreate),
+					Params:  elicitationReq.request.Params,
 				}, false)
 			case rootsReq := <-session.rootsRequestChan:
 				st.deliver(ctx, mcp.JSONRPCRequest{
 					JSONRPC: "2.0",
 					ID:      mcp.NewRequestId(rootsReq.requestID),
-					Request: mcp.Request{
-						Method: string(mcp.MethodListRoots),
-					},
+					Method:  string(mcp.MethodListRoots),
 				}, false)
 			case <-stop:
 				return
@@ -445,9 +439,7 @@ func (s *StreamableHTTPServer) startConnHeartbeat(ctx context.Context, st *resum
 				st.deliverTransient(mcp.JSONRPCRequest{
 					JSONRPC: "2.0",
 					ID:      mcp.NewRequestId(s.nextRequestID(sessionID)),
-					Request: mcp.Request{
-						Method: string(mcp.MethodPing),
-					},
+					Method:  string(mcp.MethodPing),
 				})
 			case <-ctx.Done():
 				return

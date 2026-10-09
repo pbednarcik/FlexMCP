@@ -64,12 +64,10 @@ func (h *TestSamplingHandler) CreateMessage(ctx context.Context, request mcp.Cre
 	log.Printf("[TestSamplingHandler] CLIENT Question: %s -> Response: %s", userText, response)
 
 	result := &mcp.CreateMessageResult{
-		SamplingMessage: mcp.SamplingMessage{
-			Role: mcp.RoleAssistant,
-			Content: mcp.TextContent{
-				Type: "text",
-				Text: response,
-			},
+		Role: mcp.RoleAssistant,
+		Content: mcp.TextContent{
+			Type: "text",
+			Text: response,
 		},
 		Model:      "test-model-v1",
 		StopReason: "endTurn",
@@ -138,19 +136,17 @@ func TestSamplingHTTPE2E(t *testing.T) {
 
 		// Create sampling request to send back to client
 		samplingRequest := mcp.CreateMessageRequest{
-			CreateMessageParams: mcp.CreateMessageParams{
-				Messages: []mcp.SamplingMessage{
-					{
-						Role: mcp.RoleUser,
-						Content: mcp.TextContent{
-							Type: "text",
-							Text: question,
-						},
+			Messages: []mcp.SamplingMessage{
+				{
+					Role: mcp.RoleUser,
+					Content: mcp.TextContent{
+						Type: "text",
+						Text: question,
 					},
 				},
-				MaxTokens:   500,
-				Temperature: 0.7,
 			},
+			MaxTokens:   500,
+			Temperature: 0.7,
 		}
 
 		log.Printf("[E2E Test] *** SERVER SENDING SAMPLING REQUEST *** for question: %s", question)

@@ -166,9 +166,7 @@ func TestLoggingTransport_BasicInterface(t *testing.T) {
 
 	require.NoError(t, transport.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: "notifications/initialized",
-		},
+		Method:  "notifications/initialized",
 	}))
 
 	assert.Equal(t, "session-1", transport.GetSessionId())
@@ -270,9 +268,7 @@ func TestLoggingTransport_LogsIncomingNotifications(t *testing.T) {
 	require.NotNil(t, inner.notifyHandler, "wrapper should register a handler on inner transport")
 	notif := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: "notifications/tools/list_changed",
-		},
+		Method:  "notifications/tools/list_changed",
 	}
 	inner.notifyHandler(notif)
 	<-called
@@ -297,9 +293,7 @@ func TestLoggingTransport_NotificationDeliveredWithoutHandler(t *testing.T) {
 
 	inner.notifyHandler(mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: "notifications/progress",
-		},
+		Method:  "notifications/progress",
 	})
 
 	records := handler.snapshot()

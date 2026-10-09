@@ -1951,12 +1951,10 @@ type SamplingCapability struct {
 func NewElicitationCompleteNotification(elicitationID string) JSONRPCNotification {
 	return JSONRPCNotification{
 		JSONRPC: JSONRPC_VERSION,
-		Notification: Notification{
-			Method: string(MethodNotificationElicitationComplete),
-			Params: NotificationParams{
-				AdditionalFields: map[string]any{
-					"elicitationId": elicitationID,
-				},
+		Method:  string(MethodNotificationElicitationComplete),
+		Params: NotificationParams{
+			AdditionalFields: map[string]any{
+				"elicitationId": elicitationID,
 			},
 		},
 	}

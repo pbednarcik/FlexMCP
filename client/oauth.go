@@ -77,8 +77,7 @@ func IsOAuthAuthorizationRequiredError(err error) bool {
 
 // GetOAuthHandler extracts the OAuthHandler from an OAuthAuthorizationRequiredError
 func GetOAuthHandler(err error) *transport.OAuthHandler {
-	var oauthErr *OAuthAuthorizationRequiredError
-	if errors.As(err, &oauthErr) {
+	if oauthErr, ok := errors.AsType[*OAuthAuthorizationRequiredError](err); ok {
 		return oauthErr.Handler
 	}
 	return nil
@@ -90,14 +89,12 @@ func GetOAuthHandler(err error) *transport.OAuthHandler {
 // Returns empty string if no metadata URL was discovered.
 func GetResourceMetadataURL(err error) string {
 	// Try OAuthAuthorizationRequiredError first (contains AuthorizationRequiredError)
-	var oauthErr *OAuthAuthorizationRequiredError
-	if errors.As(err, &oauthErr) {
+	if oauthErr, ok := errors.AsType[*OAuthAuthorizationRequiredError](err); ok {
 		return oauthErr.ResourceMetadataURL
 	}
 
 	// Try base AuthorizationRequiredError
-	var authErr *AuthorizationRequiredError
-	if errors.As(err, &authErr) {
+	if authErr, ok := errors.AsType[*AuthorizationRequiredError](err); ok {
 		return authErr.ResourceMetadataURL
 	}
 

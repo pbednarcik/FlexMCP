@@ -53,12 +53,10 @@ func (h *MockSamplingHandler) CreateMessage(ctx context.Context, request mcp.Cre
 	log.Printf("Mock LLM generating response: %s", responseText)
 
 	result := &mcp.CreateMessageResult{
-		SamplingMessage: mcp.SamplingMessage{
-			Role: mcp.RoleAssistant,
-			Content: mcp.TextContent{
-				Type: "text",
-				Text: responseText,
-			},
+		Role: mcp.RoleAssistant,
+		Content: mcp.TextContent{
+			Type: "text",
+			Text: responseText,
 		},
 		Model:      "mock-llm-v1",
 		StopReason: "endTurn",

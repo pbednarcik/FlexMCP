@@ -68,10 +68,8 @@ type flushableHTTPResponseWriter struct {
 
 func newFlushableHTTPResponseWriter() *flushableHTTPResponseWriter {
 	return &flushableHTTPResponseWriter{
-		bufferingHTTPResponseWriter: bufferingHTTPResponseWriter{
-			header: make(http.Header),
-			status: http.StatusOK,
-		},
+		header: make(http.Header),
+		status: http.StatusOK,
 	}
 }
 

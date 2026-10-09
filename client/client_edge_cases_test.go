@@ -114,9 +114,7 @@ func TestClient_NotificationHandlers(t *testing.T) {
 		// Simulate notification via the handler
 		notif := mcp.JSONRPCNotification{
 			JSONRPC: mcp.JSONRPC_VERSION,
-			Notification: mcp.Notification{
-				Method: "test-method",
-			},
+			Method:  "test-method",
 		}
 
 		// Manually trigger the handlers we registered on the client

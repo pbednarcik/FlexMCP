@@ -64,9 +64,7 @@ func TestCreateTaskResultWithModelImmediateResponse(t *testing.T) {
 
 	result := CreateTaskResult{
 		Task: task,
-		Result: Result{
-			Meta: WithModelImmediateResponse(message),
-		},
+		Meta: WithModelImmediateResponse(message),
 	}
 
 	assert.Equal(t, task.TaskId, result.Task.TaskId)

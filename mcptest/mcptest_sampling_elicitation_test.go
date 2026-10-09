@@ -41,15 +41,13 @@ func TestServerWithSamplingHandler(t *testing.T) {
 			}
 
 			samplingReq := mcp.CreateMessageRequest{
-				CreateMessageParams: mcp.CreateMessageParams{
-					Messages: []mcp.SamplingMessage{
-						{
-							Role:    mcp.RoleUser,
-							Content: mcp.NewTextContent(question),
-						},
+				Messages: []mcp.SamplingMessage{
+					{
+						Role:    mcp.RoleUser,
+						Content: mcp.NewTextContent(question),
 					},
-					MaxTokens: 64,
 				},
+				MaxTokens: 64,
 			}
 
 			mcpServer := server.ServerFromContext(ctx)
@@ -233,10 +231,8 @@ type fixedSamplingHandler struct {
 func (h *fixedSamplingHandler) CreateMessage(_ context.Context, _ mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
 	h.recordCall()
 	return &mcp.CreateMessageResult{
-		SamplingMessage: mcp.SamplingMessage{
-			Role:    mcp.RoleAssistant,
-			Content: mcp.NewTextContent(h.reply),
-		},
+		Role:       mcp.RoleAssistant,
+		Content:    mcp.NewTextContent(h.reply),
 		Model:      "test-model",
 		StopReason: "endTurn",
 	}, nil
@@ -262,10 +258,8 @@ func (h *fixedRootsHandler) ListRoots(_ context.Context, _ mcp.ListRootsRequest)
 func (h *fixedElicitationHandler) Elicit(_ context.Context, _ mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
 	h.recordCall()
 	return &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: h.response,
-		},
+		Action:  mcp.ElicitationResponseActionAccept,
+		Content: h.response,
 	}, nil
 }
 

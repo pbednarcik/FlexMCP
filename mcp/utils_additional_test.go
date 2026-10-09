@@ -837,13 +837,13 @@ func TestParseString(t *testing.T) {
 
 func TestToBoolPtr(t *testing.T) {
 	t.Run("true", func(t *testing.T) {
-		result := ToBoolPtr(true)
+		result := new(true)
 		require.NotNil(t, result)
 		assert.True(t, *result)
 	})
 
 	t.Run("false", func(t *testing.T) {
-		result := ToBoolPtr(false)
+		result := new(false)
 		require.NotNil(t, result)
 		assert.False(t, *result)
 	})

@@ -121,12 +121,10 @@ func (s *MCPServer) handleSubscriptionsListen(
 	// client can correlate it.
 	ack := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: mcp.MethodNotificationSubscriptionsAcknowledged,
-			Params: mcp.NotificationParams{
-				Meta:             map[string]any{mcp.MetaKeySubscriptionID: id},
-				AdditionalFields: map[string]any{"notifications": allowed},
-			},
+		Method:  mcp.MethodNotificationSubscriptionsAcknowledged,
+		Params: mcp.NotificationParams{
+			Meta:             map[string]any{mcp.MetaKeySubscriptionID: id},
+			AdditionalFields: map[string]any{"notifications": allowed},
 		},
 	}
 	if err := s.sendNotificationToSpecificClient(session, ack); err != nil {

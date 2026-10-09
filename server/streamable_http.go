@@ -1148,10 +1148,8 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 				jsonrpcRequest := mcp.JSONRPCRequest{
 					JSONRPC: "2.0",
 					ID:      mcp.NewRequestId(samplingReq.requestID),
-					Request: mcp.Request{
-						Method: string(mcp.MethodSamplingCreateMessage),
-					},
-					Params: samplingReq.request.CreateMessageParams,
+					Method:  string(mcp.MethodSamplingCreateMessage),
+					Params:  samplingReq.request.CreateMessageParams,
 				}
 				select {
 				case writeChan <- jsonrpcRequest:
@@ -1163,10 +1161,8 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 				jsonrpcRequest := mcp.JSONRPCRequest{
 					JSONRPC: "2.0",
 					ID:      mcp.NewRequestId(elicitationReq.requestID),
-					Request: mcp.Request{
-						Method: string(mcp.MethodElicitationCreate),
-					},
-					Params: elicitationReq.request.Params,
+					Method:  string(mcp.MethodElicitationCreate),
+					Params:  elicitationReq.request.Params,
 				}
 				select {
 				case writeChan <- jsonrpcRequest:
@@ -1178,9 +1174,7 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 				jsonrpcRequest := mcp.JSONRPCRequest{
 					JSONRPC: "2.0",
 					ID:      mcp.NewRequestId(rootsReq.requestID),
-					Request: mcp.Request{
-						Method: string(mcp.MethodListRoots),
-					},
+					Method:  string(mcp.MethodListRoots),
 				}
 				select {
 				case writeChan <- jsonrpcRequest:
@@ -1209,9 +1203,7 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 					message := mcp.JSONRPCRequest{
 						JSONRPC: "2.0",
 						ID:      mcp.NewRequestId(s.nextRequestID(sessionID)),
-						Request: mcp.Request{
-							Method: string(mcp.MethodPing),
-						},
+						Method:  string(mcp.MethodPing),
 					}
 					select {
 					case writeChan <- message:
@@ -2044,10 +2036,8 @@ func (s *streamableHttpSession) RequestElicitation(ctx context.Context, request 
 	jsonrpcRequest := mcp.JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      mcp.NewRequestId(requestID),
-		Request: mcp.Request{
-			Method: string(mcp.MethodElicitationCreate),
-		},
-		Params: request.Params,
+		Method:  string(mcp.MethodElicitationCreate),
+		Params:  request.Params,
 	}
 	scoped, hasScoped := ctx.Value(requestScopedSSEKey{}).(*requestScopedSSE)
 	if !hasScoped || !scoped.trySend(ctx, jsonrpcRequest) {

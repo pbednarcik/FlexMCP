@@ -13,12 +13,10 @@ type MockSamplingHandler struct{}
 
 func (h *MockSamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
 	return &mcp.CreateMessageResult{
-		SamplingMessage: mcp.SamplingMessage{
-			Role: mcp.RoleAssistant,
-			Content: mcp.TextContent{
-				Type: "text",
-				Text: "Mock response from sampling handler",
-			},
+		Role: mcp.RoleAssistant,
+		Content: mcp.TextContent{
+			Type: "text",
+			Text: "Mock response from sampling handler",
 		},
 		Model:      "mock-model",
 		StopReason: "endTurn",
@@ -52,19 +50,17 @@ func TestInProcessSampling(t *testing.T) {
 
 		// Create sampling request
 		samplingRequest := mcp.CreateMessageRequest{
-			CreateMessageParams: mcp.CreateMessageParams{
-				Messages: []mcp.SamplingMessage{
-					{
-						Role: mcp.RoleUser,
-						Content: mcp.TextContent{
-							Type: "text",
-							Text: message,
-						},
+			Messages: []mcp.SamplingMessage{
+				{
+					Role: mcp.RoleUser,
+					Content: mcp.TextContent{
+						Type: "text",
+						Text: message,
 					},
 				},
-				MaxTokens:   100,
-				Temperature: 0.7,
 			},
+			MaxTokens:   100,
+			Temperature: 0.7,
 		}
 
 		// Request sampling from client

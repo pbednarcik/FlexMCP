@@ -65,7 +65,7 @@ func TestParseTaskResultResult(t *testing.T) {
 // marshals: TaskResultResult goes out as-is, so it has to come back intact.
 func TestParseTaskResultResultRoundTrip(t *testing.T) {
 	sent := TaskResultResult{
-		Result:            Result{Meta: NewMetaFromMap(map[string]any{"trace": "abc"}), ResultType: ResultTypeComplete},
+		Meta: NewMetaFromMap(map[string]any{"trace": "abc"}), ResultType: ResultTypeComplete,
 		Content:           []Content{TextContent{Type: "text", Text: "hello"}},
 		StructuredContent: map[string]any{"ok": true},
 		IsError:           true,

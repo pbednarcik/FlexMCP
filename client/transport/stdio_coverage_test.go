@@ -230,9 +230,7 @@ func TestStdio_SendRequest_ContextCanceledAfterWrite(t *testing.T) {
 func TestStdio_SendNotification_NotStarted(t *testing.T) {
 	err := newBareStdio().SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	require.EqualError(t, err, "stdio client not started")
 }
@@ -245,9 +243,7 @@ func TestStdio_SendNotification_ClosedTransport(t *testing.T) {
 
 	err := stdio.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	require.ErrorIs(t, err, ErrTransportClosed)
 }
@@ -260,9 +256,7 @@ func TestStdio_SendNotification_WriteError(t *testing.T) {
 
 	err := stdio.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	require.EqualError(t, err, "failed to write notification: stdin broken")
 }
@@ -276,9 +270,7 @@ func TestStdio_SendNotification_Success(t *testing.T) {
 
 	err := stdio.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test",
-		},
+		Method:  "test",
 	})
 	require.NoError(t, err)
 	require.Contains(t, sink.String(), `"method":"test"`)

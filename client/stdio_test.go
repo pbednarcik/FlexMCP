@@ -400,8 +400,8 @@ func TestStdio_SendNotificationReturnsWhenTransportClosed(t *testing.T) {
 
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-	}
-	notification.Method = "notifications/initialized"
+
+		Method: "notifications/initialized"}
 
 	err := stdioTransport.SendNotification(t.Context(), notification)
 	require.ErrorIs(t, err, transport.ErrTransportClosed)
@@ -424,8 +424,8 @@ func TestStdio_SendNotificationReturnsWhenContextCancelled(t *testing.T) {
 
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-	}
-	notification.Method = "notifications/initialized"
+
+		Method: "notifications/initialized"}
 
 	err := stdioTransport.SendNotification(ctx, notification)
 	require.Error(t, err)

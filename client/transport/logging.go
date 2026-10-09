@@ -74,8 +74,8 @@ func NewLogging(inner Interface, logger *slog.Logger, opts ...LoggingOption) Int
 	switch {
 	case isBidir && isHTTP:
 		return &loggingBidirHTTPTransport{
-			loggingBidirTransport: loggingBidirTransport{LoggingTransport: base, bidir: bidir},
-			http:                  httpConn,
+			LoggingTransport: base, bidir: bidir,
+			http: httpConn,
 		}
 	case isBidir:
 		return &loggingBidirTransport{LoggingTransport: base, bidir: bidir}

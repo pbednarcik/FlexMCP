@@ -351,11 +351,9 @@ func TestSSE(t *testing.T) {
 
 		notification := mcp.JSONRPCNotification{
 			JSONRPC: "2.0",
-			Notification: mcp.Notification{
-				Method: "debug/echo_notification",
-				Params: mcp.NotificationParams{
-					AdditionalFields: map[string]any{"test": "value"},
-				},
+			Method:  "debug/echo_notification",
+			Params: mcp.NotificationParams{
+				AdditionalFields: map[string]any{"test": "value"},
 			},
 		}
 		err := trans.SendNotification(ctx, notification)
@@ -1200,9 +1198,7 @@ func TestSSE_SendNotification_Unauthorized_StaticToken(t *testing.T) {
 	// Send a notification
 	err = transport.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test/notification",
-		},
+		Method:  "test/notification",
 	})
 
 	// Verify the error is ErrUnauthorized
@@ -1798,9 +1794,7 @@ func TestSSE_SendNotification_EndpointNotReceived(t *testing.T) {
 
 	err = trans.SendNotification(t.Context(), mcp.JSONRPCNotification{
 		JSONRPC: "2.0",
-		Notification: mcp.Notification{
-			Method: "test/notification",
-		},
+		Method:  "test/notification",
 	})
 	require.EqualError(t, err, "endpoint not received")
 }

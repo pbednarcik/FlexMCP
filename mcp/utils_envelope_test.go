@@ -95,8 +95,8 @@ func TestParseReadResourceResultEnvelope(t *testing.T) {
 // back through the client parsers.
 func TestParseResultsFromInputRequestBuilderWireForm(t *testing.T) {
 	promptResult := &GetPromptResult{
-		Result:               Result{ResultType: ResultTypeInputRequired},
-		MultiRoundTripResult: MultiRoundTripResult{RequestState: "state-token"},
+		ResultType:   ResultTypeInputRequired,
+		RequestState: "state-token",
 	}
 	rawPrompt, err := json.Marshal(promptResult)
 	require.NoError(t, err)
@@ -108,7 +108,7 @@ func TestParseResultsFromInputRequestBuilderWireForm(t *testing.T) {
 	assert.Equal(t, "state-token", parsedPrompt.RequestState)
 
 	resourceResult := &ReadResourceResult{
-		MultiRoundTripResult: MultiRoundTripResult{RequestState: "state-token"},
+		RequestState: "state-token",
 	}
 	resourceResult.ResultType = ResultTypeInputRequired
 	rawResource, err := json.Marshal(resourceResult)

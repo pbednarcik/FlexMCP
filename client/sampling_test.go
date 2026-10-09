@@ -42,12 +42,10 @@ func TestClient_HandleSamplingRequest(t *testing.T) {
 			name: "successful sampling",
 			handler: &mockSamplingHandler{
 				result: &mcp.CreateMessageResult{
-					SamplingMessage: mcp.SamplingMessage{
-						Role: mcp.RoleAssistant,
-						Content: mcp.TextContent{
-							Type: "text",
-							Text: "Hello, world!",
-						},
+					Role: mcp.RoleAssistant,
+					Content: mcp.TextContent{
+						Type: "text",
+						Text: "Hello, world!",
 					},
 					Model:      "test-model",
 					StopReason: "endTurn",
@@ -61,15 +59,13 @@ func TestClient_HandleSamplingRequest(t *testing.T) {
 			client := &Client{samplingHandler: tt.handler}
 
 			request := mcp.CreateMessageRequest{
-				CreateMessageParams: mcp.CreateMessageParams{
-					Messages: []mcp.SamplingMessage{
-						{
-							Role:    mcp.RoleUser,
-							Content: mcp.TextContent{Type: "text", Text: "Hello"},
-						},
+				Messages: []mcp.SamplingMessage{
+					{
+						Role:    mcp.RoleUser,
+						Content: mcp.TextContent{Type: "text", Text: "Hello"},
 					},
-					MaxTokens: 100,
 				},
+				MaxTokens: 100,
 			}
 
 			result, err := client.handleIncomingRequest(t.Context(), mockJSONRPCRequest(request))
@@ -95,11 +91,9 @@ func TestClient_HandleSamplingRequest(t *testing.T) {
 func TestClient_HandleSamplingRequestArrayContent(t *testing.T) {
 	handler := &mockSamplingHandler{
 		result: &mcp.CreateMessageResult{
-			SamplingMessage: mcp.SamplingMessage{
-				Role:    mcp.RoleAssistant,
-				Content: mcp.NewTextContent("Paris is warmer than London."),
-			},
-			Model: "test-model",
+			Role:    mcp.RoleAssistant,
+			Content: mcp.NewTextContent("Paris is warmer than London."),
+			Model:   "test-model",
 		},
 	}
 	client := &Client{samplingHandler: handler}
@@ -208,12 +202,10 @@ func (m *mockTransport) GetSessionId() string {
 func TestClient_Initialize_WithSampling(t *testing.T) {
 	handler := &mockSamplingHandler{
 		result: &mcp.CreateMessageResult{
-			SamplingMessage: mcp.SamplingMessage{
-				Role: mcp.RoleAssistant,
-				Content: mcp.TextContent{
-					Type: "text",
-					Text: "Test response",
-				},
+			Role: mcp.RoleAssistant,
+			Content: mcp.TextContent{
+				Type: "text",
+				Text: "Test response",
 			},
 			Model:      "test-model",
 			StopReason: "endTurn",

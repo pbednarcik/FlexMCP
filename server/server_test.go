@@ -184,9 +184,7 @@ func TestMCPServer_ImplementationMetadata(t *testing.T) {
 			message := mcp.JSONRPCRequest{
 				JSONRPC: "2.0",
 				ID:      mcp.NewRequestId(int64(1)),
-				Request: mcp.Request{
-					Method: "initialize",
-				},
+				Method:  "initialize",
 			}
 			messageBytes, err := json.Marshal(message)
 			require.NoError(t, err)
@@ -217,9 +215,7 @@ func TestMCPServer_WithIcons_DefensiveCopy(t *testing.T) {
 	message := mcp.JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      mcp.NewRequestId(int64(1)),
-		Request: mcp.Request{
-			Method: "initialize",
-		},
+		Method:  "initialize",
 	}
 	messageBytes, err := json.Marshal(message)
 	require.NoError(t, err)
@@ -367,9 +363,7 @@ func TestMCPServer_Capabilities(t *testing.T) {
 			message := mcp.JSONRPCRequest{
 				JSONRPC: "2.0",
 				ID:      mcp.NewRequestId(int64(1)),
-				Request: mcp.Request{
-					Method: "initialize",
-				},
+				Method:  "initialize",
 			}
 			messageBytes, err := json.Marshal(message)
 			assert.NoError(t, err)
@@ -1596,10 +1590,10 @@ func TestMCPServer_HandleUndefinedHandlers(t *testing.T) {
 		},
 		Annotations: mcp.ToolAnnotation{
 			Title:           "test-tool",
-			ReadOnlyHint:    mcp.ToBoolPtr(true),
-			DestructiveHint: mcp.ToBoolPtr(false),
-			IdempotentHint:  mcp.ToBoolPtr(false),
-			OpenWorldHint:   mcp.ToBoolPtr(false),
+			ReadOnlyHint:    new(true),
+			DestructiveHint: new(false),
+			IdempotentHint:  new(false),
+			OpenWorldHint:   new(false),
 		},
 	}, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{}, nil
@@ -1840,9 +1834,7 @@ func TestMCPServer_Instructions(t *testing.T) {
 			message := mcp.JSONRPCRequest{
 				JSONRPC: "2.0",
 				ID:      mcp.NewRequestId(int64(1)),
-				Request: mcp.Request{
-					Method: "initialize",
-				},
+				Method:  "initialize",
 			}
 			messageBytes, err := json.Marshal(message)
 			assert.NoError(t, err)
@@ -2674,10 +2666,8 @@ func TestMCPServer_ProtocolNegotiation(t *testing.T) {
 			initRequest := mcp.JSONRPCRequest{
 				JSONRPC: "2.0",
 				ID:      mcp.NewRequestId(int64(1)),
-				Request: mcp.Request{
-					Method: "initialize",
-				},
-				Params: params,
+				Method:  "initialize",
+				Params:  params,
 			}
 
 			messageBytes, err := json.Marshal(initRequest)
@@ -2803,7 +2793,7 @@ func TestMCPServer_GetTool(t *testing.T) {
 			},
 			Annotations: mcp.ToolAnnotation{
 				Title:           "Complex Tool",
-				DestructiveHint: mcp.ToBoolPtr(true),
+				DestructiveHint: new(true),
 			},
 		}
 

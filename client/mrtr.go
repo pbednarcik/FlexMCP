@@ -163,8 +163,8 @@ func (c *Client) fulfillInputRequest(
 			return mcp.InputResponse{}, fmt.Errorf("elicitation input request has no params")
 		}
 		result, err := c.elicitationHandler.Elicit(ctx, mcp.ElicitationRequest{
-			Request: mcp.Request{Method: string(mcp.MethodElicitationCreate)},
-			Params:  *request.Elicitation,
+			Method: string(mcp.MethodElicitationCreate),
+			Params: *request.Elicitation,
 		})
 		if err != nil {
 			return mcp.InputResponse{}, err
@@ -182,7 +182,7 @@ func (c *Client) fulfillInputRequest(
 			return mcp.InputResponse{}, fmt.Errorf("sampling input request has no params")
 		}
 		result, err := c.samplingHandler.CreateMessage(ctx, mcp.CreateMessageRequest{
-			Request:             mcp.Request{Method: string(mcp.MethodSamplingCreateMessage)},
+			Method:              string(mcp.MethodSamplingCreateMessage),
 			CreateMessageParams: *request.Sampling,
 		})
 		if err != nil {
@@ -198,7 +198,7 @@ func (c *Client) fulfillInputRequest(
 			return mcp.InputResponse{}, fmt.Errorf("no roots handler configured")
 		}
 		result, err := c.rootsHandler.ListRoots(ctx, mcp.ListRootsRequest{
-			Request: mcp.Request{Method: string(mcp.MethodListRoots)},
+			Method: string(mcp.MethodListRoots),
 		})
 		if err != nil {
 			return mcp.InputResponse{}, err

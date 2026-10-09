@@ -618,21 +618,21 @@ func WithToolCapabilities(listChanged bool) ServerOption {
 // WithLogging enables logging capabilities for the server
 func WithLogging() ServerOption {
 	return func(s *MCPServer) {
-		s.capabilities.logging = mcp.ToBoolPtr(true)
+		s.capabilities.logging = new(true)
 	}
 }
 
 // WithElicitation enables elicitation capabilities for the server
 func WithElicitation() ServerOption {
 	return func(s *MCPServer) {
-		s.capabilities.elicitation = mcp.ToBoolPtr(true)
+		s.capabilities.elicitation = new(true)
 	}
 }
 
 // WithRoots returns a ServerOption that enables the roots capability on the MCPServer
 func WithRoots() ServerOption {
 	return func(s *MCPServer) {
-		s.capabilities.roots = mcp.ToBoolPtr(true)
+		s.capabilities.roots = new(true)
 	}
 }
 
@@ -658,7 +658,7 @@ func WithInstructions(instructions string) ServerOption {
 // WithCompletions enables the completion capability
 func WithCompletions() ServerOption {
 	return func(s *MCPServer) {
-		s.capabilities.completions = mcp.ToBoolPtr(true)
+		s.capabilities.completions = new(true)
 	}
 }
 
@@ -1580,10 +1580,8 @@ func (s *MCPServer) handleListResources(
 	}
 
 	result := mcp.ListResourcesResult{
-		Resources: resourcesToReturn,
-		PaginatedResult: mcp.PaginatedResult{
-			NextCursor: nextCursor,
-		},
+		Resources:  resourcesToReturn,
+		NextCursor: nextCursor,
 	}
 	return &result, nil
 }
@@ -1639,9 +1637,7 @@ func (s *MCPServer) handleListResourceTemplates(
 	}
 	result := mcp.ListResourceTemplatesResult{
 		ResourceTemplates: templatesToReturn,
-		PaginatedResult: mcp.PaginatedResult{
-			NextCursor: nextCursor,
-		},
+		NextCursor:        nextCursor,
 	}
 	return &result, nil
 }
@@ -1865,10 +1861,8 @@ func (s *MCPServer) handleListPrompts(
 		}
 	}
 	result := mcp.ListPromptsResult{
-		Prompts: promptsToReturn,
-		PaginatedResult: mcp.PaginatedResult{
-			NextCursor: nextCursor,
-		},
+		Prompts:    promptsToReturn,
+		NextCursor: nextCursor,
 	}
 	return &result, nil
 }
@@ -2075,10 +2069,8 @@ func (s *MCPServer) handleListTools(
 	}
 
 	result := mcp.ListToolsResult{
-		Tools: toolsToReturn,
-		PaginatedResult: mcp.PaginatedResult{
-			NextCursor: nextCursor,
-		},
+		Tools:      toolsToReturn,
+		NextCursor: nextCursor,
 	}
 	return &result, nil
 }
@@ -2669,10 +2661,8 @@ func (s *MCPServer) handleListTasks(
 	}
 
 	result := mcp.ListTasksResult{
-		Tasks: tasksToReturn,
-		PaginatedResult: mcp.PaginatedResult{
-			NextCursor: nextCursor,
-		},
+		Tasks:      tasksToReturn,
+		NextCursor: nextCursor,
 	}
 	return &result, nil
 }
@@ -2734,9 +2724,7 @@ func (s *MCPServer) handleTaskResult(
 
 	// Extract the CallToolResult and populate TaskResultResult
 	result := &mcp.TaskResultResult{
-		Result: mcp.Result{
-			Meta: mcp.WithRelatedTask(taskID),
-		},
+		Meta: mcp.WithRelatedTask(taskID),
 	}
 
 	switch taskResult := storedResult.(type) {

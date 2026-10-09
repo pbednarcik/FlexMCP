@@ -67,7 +67,7 @@ func (m *mockElicitationSession) RequestElicitation(ctx context.Context, request
 
 func TestMCPServer_RequestElicitation_NoSession(t *testing.T) {
 	server := NewMCPServer("test", "1.0.0")
-	server.capabilities.elicitation = mcp.ToBoolPtr(true)
+	server.capabilities.elicitation = new(true)
 
 	request := mcp.ElicitationRequest{
 		Params: mcp.ElicitationParams{
@@ -115,12 +115,10 @@ func TestMCPServer_RequestElicitation_Success(t *testing.T) {
 	mockSession := &mockElicitationSession{
 		sessionID: "test-session",
 		result: &mcp.ElicitationResult{
-			ElicitationResponse: mcp.ElicitationResponse{
-				Action: mcp.ElicitationResponseActionAccept,
-				Content: map[string]any{
-					"projectName": "my-project",
-					"framework":   "react",
-				},
+			Action: mcp.ElicitationResponseActionAccept,
+			Content: map[string]any{
+				"projectName": "my-project",
+				"framework":   "react",
 			},
 		},
 	}
@@ -166,12 +164,10 @@ func TestRequestElicitation(t *testing.T) {
 			session: &mockElicitationSession{
 				sessionID: "test-1",
 				result: &mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionAccept,
-						Content: map[string]any{
-							"name":      "test-project",
-							"framework": "react",
-						},
+					Action: mcp.ElicitationResponseActionAccept,
+					Content: map[string]any{
+						"name":      "test-project",
+						"framework": "react",
 					},
 				},
 			},
@@ -194,9 +190,7 @@ func TestRequestElicitation(t *testing.T) {
 			session: &mockElicitationSession{
 				sessionID: "test-2",
 				result: &mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionDecline,
-					},
+					Action: mcp.ElicitationResponseActionDecline,
 				},
 			},
 			request: mcp.ElicitationRequest{
@@ -250,9 +244,7 @@ func TestRequestURLElicitation(t *testing.T) {
 	mockSession := &mockElicitationSession{
 		sessionID: "test-url-1",
 		result: &mcp.ElicitationResult{
-			ElicitationResponse: mcp.ElicitationResponse{
-				Action: mcp.ElicitationResponseActionAccept,
-			},
+			Action: mcp.ElicitationResponseActionAccept,
 		},
 	}
 

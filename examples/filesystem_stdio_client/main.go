@@ -62,9 +62,7 @@ func main() {
 	// List allowed directories
 	fmt.Println("Listing allowed directories...")
 	listDirRequest := mcp.CallToolRequest{
-		Request: mcp.Request{
-			Method: "tools/call",
-		},
+		Method: "tools/call",
 	}
 	listDirRequest.Params.Name = "list_allowed_directories"
 

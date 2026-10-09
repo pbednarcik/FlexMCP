@@ -66,10 +66,8 @@ func TestMCPServer_VersionNegotiation_Explicit(t *testing.T) {
 			initReq := mcp.JSONRPCRequest{
 				JSONRPC: mcp.JSONRPC_VERSION,
 				ID:      mcp.NewRequestId(int64(1)),
-				Request: mcp.Request{
-					Method: "initialize",
-				},
-				Params: params,
+				Method:  "initialize",
+				Params:  params,
 			}
 
 			messageBytes, err := json.Marshal(initReq)

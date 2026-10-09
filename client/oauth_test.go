@@ -130,10 +130,8 @@ func TestGetResourceMetadataURL(t *testing.T) {
 	// Test with error containing metadata URL
 	metadataURL := "https://auth.example.com/.well-known/oauth-protected-resource"
 	err := &transport.OAuthAuthorizationRequiredError{
-		Handler: transport.NewOAuthHandler(transport.OAuthConfig{}),
-		AuthorizationRequiredError: transport.AuthorizationRequiredError{
-			ResourceMetadataURL: metadataURL,
-		},
+		Handler:             transport.NewOAuthHandler(transport.OAuthConfig{}),
+		ResourceMetadataURL: metadataURL,
 	}
 
 	// Verify GetResourceMetadataURL returns the correct URL
@@ -144,10 +142,8 @@ func TestGetResourceMetadataURL(t *testing.T) {
 
 	// Test with error containing no metadata URL
 	err2 := &transport.OAuthAuthorizationRequiredError{
-		Handler: transport.NewOAuthHandler(transport.OAuthConfig{}),
-		AuthorizationRequiredError: transport.AuthorizationRequiredError{
-			ResourceMetadataURL: "",
-		},
+		Handler:             transport.NewOAuthHandler(transport.OAuthConfig{}),
+		ResourceMetadataURL: "",
 	}
 
 	result2 := GetResourceMetadataURL(err2)
@@ -184,10 +180,8 @@ func TestIsAuthorizationRequiredError(t *testing.T) {
 
 	// Test with OAuthAuthorizationRequiredError (different type)
 	oauthErr := &transport.OAuthAuthorizationRequiredError{
-		Handler: transport.NewOAuthHandler(transport.OAuthConfig{}),
-		AuthorizationRequiredError: transport.AuthorizationRequiredError{
-			ResourceMetadataURL: metadataURL,
-		},
+		Handler:             transport.NewOAuthHandler(transport.OAuthConfig{}),
+		ResourceMetadataURL: metadataURL,
 	}
 
 	// Verify IsOAuthAuthorizationRequiredError returns true

@@ -313,11 +313,9 @@ func (c *Client) cancelRequest(ctx context.Context, request transport.JSONRPCReq
 	}
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: string(mcp.MethodNotificationCancelled),
-			Params: mcp.NotificationParams{
-				AdditionalFields: map[string]any{"requestId": request.ID, "reason": ctx.Err().Error()},
-			},
+		Method:  string(mcp.MethodNotificationCancelled),
+		Params: mcp.NotificationParams{
+			AdditionalFields: map[string]any{"requestId": request.ID, "reason": ctx.Err().Error()},
 		},
 	}
 	// The request's context has ended, so send with one of our own, and off
@@ -451,9 +449,7 @@ func (c *Client) initializeLegacy(
 	// Send initialized notification
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: string(mcp.MethodNotificationInitialized),
-		},
+		Method:  string(mcp.MethodNotificationInitialized),
 	}
 
 	err = c.transport.SendNotification(ctx, notification)
@@ -792,9 +788,7 @@ func (c *Client) RootListChanges(
 	// Send root list changes notification
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: mcp.MethodNotificationRootsListChanged,
-		},
+		Method:  mcp.MethodNotificationRootsListChanged,
 	}
 
 	err := c.transport.SendNotification(ctx, notification)
@@ -854,9 +848,7 @@ func (c *Client) handleSamplingRequestTransport(ctx context.Context, request tra
 
 	// Create the MCP request
 	mcpRequest := mcp.CreateMessageRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodSamplingCreateMessage),
-		},
+		Method:              string(mcp.MethodSamplingCreateMessage),
 		CreateMessageParams: params,
 	}
 
@@ -901,9 +893,7 @@ func (c *Client) handleListRootsRequestTransport(ctx context.Context, request tr
 
 	// Create the MCP request
 	mcpRequest := mcp.ListRootsRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodListRoots),
-		},
+		Method: string(mcp.MethodListRoots),
 	}
 
 	// Call the list roots handler
@@ -952,9 +942,7 @@ func (c *Client) handleElicitationRequestTransport(ctx context.Context, request 
 
 	// Create the MCP request
 	mcpRequest := mcp.ElicitationRequest{
-		Request: mcp.Request{
-			Method: string(mcp.MethodElicitationCreate),
-		},
+		Method: string(mcp.MethodElicitationCreate),
 		Params: params,
 	}
 

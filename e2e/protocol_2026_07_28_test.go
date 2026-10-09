@@ -24,10 +24,8 @@ type elicitOnce struct {
 func (e *elicitOnce) Elicit(_ context.Context, request mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
 	e.calls.Add(1)
 	return &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"name": e.name},
-		},
+		Action:  mcp.ElicitationResponseActionAccept,
+		Content: map[string]any{"name": e.name},
 	}, nil
 }
 

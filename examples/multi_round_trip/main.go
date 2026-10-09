@@ -151,9 +151,7 @@ func (*autoApprover) Elicit(
 	fmt.Println("client answers: yes")
 
 	return &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"approve": true},
-		},
+		Action:  mcp.ElicitationResponseActionAccept,
+		Content: map[string]any{"approve": true},
 	}, nil
 }

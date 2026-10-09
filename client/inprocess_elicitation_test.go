@@ -23,12 +23,10 @@ func (h *MockElicitationHandler) Elicit(ctx context.Context, request mcp.Elicita
 
 	// Simulate user accepting and providing data
 	return &mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action: mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{
-				"confirm": true,
-				"details": "User provided additional details",
-			},
+		Action: mcp.ElicitationResponseActionAccept,
+		Content: map[string]any{
+			"confirm": true,
+			"details": "User provided additional details",
 		},
 	}, nil
 }

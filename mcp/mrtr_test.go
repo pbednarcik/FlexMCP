@@ -104,10 +104,8 @@ func TestInputResponseDecodesAgainstItsRequest(t *testing.T) {
 
 func TestInputResponseRoundTrip(t *testing.T) {
 	response := NewElicitationInputResponse(ElicitationResult{
-		ElicitationResponse: ElicitationResponse{
-			Action:  ElicitationResponseActionAccept,
-			Content: map[string]any{"name": "Ada"},
-		},
+		Action:  ElicitationResponseActionAccept,
+		Content: map[string]any{"name": "Ada"},
 	})
 
 	encoded, err := json.Marshal(response)
@@ -154,11 +152,9 @@ func TestNewInputRequiredResult(t *testing.T) {
 
 func TestCallToolResultCarriesMultiRoundTripFields(t *testing.T) {
 	result := &CallToolResult{
-		Result: Result{ResultType: ResultTypeInputRequired},
-		MultiRoundTripResult: MultiRoundTripResult{
-			InputRequests: InputRequests{"who": NewRootsInputRequest()},
-			RequestState:  "step=1",
-		},
+		ResultType:    ResultTypeInputRequired,
+		InputRequests: InputRequests{"who": NewRootsInputRequest()},
+		RequestState:  "step=1",
 	}
 	assert.True(t, result.NeedsInput())
 
@@ -186,15 +182,13 @@ func TestCallToolResultOmitsMultiRoundTripFieldsWhenUnused(t *testing.T) {
 
 func TestCallToolParamsCarryInputResponses(t *testing.T) {
 	params := CallToolParams{
-		Name:      "greet",
-		Arguments: map[string]any{"formal": true},
-		MultiRoundTripParams: MultiRoundTripParams{
-			RequestState: "step=1",
-			InputResponses: InputResponses{
-				"who": NewElicitationInputResponse(ElicitationResult{
-					ElicitationResponse: ElicitationResponse{Action: ElicitationResponseActionAccept},
-				}),
-			},
+		Name:         "greet",
+		Arguments:    map[string]any{"formal": true},
+		RequestState: "step=1",
+		InputResponses: InputResponses{
+			"who": NewElicitationInputResponse(ElicitationResult{
+				Action: ElicitationResponseActionAccept,
+			}),
 		},
 	}
 

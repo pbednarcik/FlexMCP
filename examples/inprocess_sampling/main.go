@@ -29,12 +29,10 @@ func (h *MockSamplingHandler) CreateMessage(ctx context.Context, request mcp.Cre
 	mockResponse := fmt.Sprintf("Mock LLM response to: '%s'", userMessage)
 
 	return &mcp.CreateMessageResult{
-		SamplingMessage: mcp.SamplingMessage{
-			Role: mcp.RoleAssistant,
-			Content: mcp.TextContent{
-				Type: "text",
-				Text: mockResponse,
-			},
+		Role: mcp.RoleAssistant,
+		Content: mcp.TextContent{
+			Type: "text",
+			Text: mockResponse,
 		},
 		Model:      "mock-llm-v1",
 		StopReason: "endTurn",
@@ -74,20 +72,18 @@ func main() {
 
 		// Create sampling request
 		samplingRequest := mcp.CreateMessageRequest{
-			CreateMessageParams: mcp.CreateMessageParams{
-				Messages: []mcp.SamplingMessage{
-					{
-						Role: mcp.RoleUser,
-						Content: mcp.TextContent{
-							Type: "text",
-							Text: question,
-						},
+			Messages: []mcp.SamplingMessage{
+				{
+					Role: mcp.RoleUser,
+					Content: mcp.TextContent{
+						Type: "text",
+						Text: question,
 					},
 				},
-				SystemPrompt: systemPrompt,
-				MaxTokens:    1000,
-				Temperature:  0.7,
 			},
+			SystemPrompt: systemPrompt,
+			MaxTokens:    1000,
+			Temperature:  0.7,
 		}
 
 		// Request sampling from client

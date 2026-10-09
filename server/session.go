@@ -185,14 +185,12 @@ func (s *MCPServer) RegisterSession(
 func (s *MCPServer) buildLogNotification(notification mcp.LoggingMessageNotification) mcp.JSONRPCNotification {
 	return mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: notification.Method,
-			Params: mcp.NotificationParams{
-				AdditionalFields: map[string]any{
-					"level":  notification.Params.Level,
-					"logger": notification.Params.Logger,
-					"data":   notification.Params.Data,
-				},
+		Method:  notification.Method,
+		Params: mcp.NotificationParams{
+			AdditionalFields: map[string]any{
+				"level":  notification.Params.Level,
+				"logger": notification.Params.Logger,
+				"data":   notification.Params.Data,
 			},
 		},
 	}
@@ -348,11 +346,9 @@ func (s *MCPServer) SendNotificationToAllClients(
 ) {
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: method,
-			Params: mcp.NotificationParams{
-				AdditionalFields: params,
-			},
+		Method:  method,
+		Params: mcp.NotificationParams{
+			AdditionalFields: params,
 		},
 	}
 	s.sendNotificationToAllClients(notification)
@@ -407,11 +403,9 @@ func (s *MCPServer) SendNotificationToClient(
 	}
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: method,
-			Params: mcp.NotificationParams{
-				AdditionalFields: params,
-			},
+		Method:  method,
+		Params: mcp.NotificationParams{
+			AdditionalFields: params,
 		},
 	}
 	return s.sendNotificationCore(ctx, session, notification)
@@ -433,11 +427,9 @@ func (s *MCPServer) SendNotificationToSpecificClient(
 	}
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{
-			Method: method,
-			Params: mcp.NotificationParams{
-				AdditionalFields: params,
-			},
+		Method:  method,
+		Params: mcp.NotificationParams{
+			AdditionalFields: params,
 		},
 	}
 	return s.sendNotificationToSpecificClient(session, notification)

@@ -306,10 +306,8 @@ func (c *SSE) start(ctx context.Context) error {
 			// If OAuth handler exists, return OAuth-specific error
 			if c.oauthHandler != nil {
 				return &OAuthAuthorizationRequiredError{
-					Handler: c.oauthHandler,
-					AuthorizationRequiredError: AuthorizationRequiredError{
-						ResourceMetadataURL: metadataURL,
-					},
+					Handler:             c.oauthHandler,
+					ResourceMetadataURL: metadataURL,
 				}
 			}
 
@@ -650,10 +648,8 @@ func (c *SSE) SendRequest(
 			// If OAuth handler exists, return OAuth-specific error
 			if c.oauthHandler != nil {
 				return nil, &OAuthAuthorizationRequiredError{
-					Handler: c.oauthHandler,
-					AuthorizationRequiredError: AuthorizationRequiredError{
-						ResourceMetadataURL: metadataURL,
-					},
+					Handler:             c.oauthHandler,
+					ResourceMetadataURL: metadataURL,
 				}
 			}
 
@@ -830,10 +826,8 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 			// If OAuth handler exists, return OAuth-specific error
 			if c.oauthHandler != nil {
 				return &OAuthAuthorizationRequiredError{
-					Handler: c.oauthHandler,
-					AuthorizationRequiredError: AuthorizationRequiredError{
-						ResourceMetadataURL: metadataURL,
-					},
+					Handler:             c.oauthHandler,
+					ResourceMetadataURL: metadataURL,
 				}
 			}
 
