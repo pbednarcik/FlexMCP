@@ -215,8 +215,8 @@ func WithProtectedResourceMetadata(config ProtectedResourceMetadataConfig) Strea
 
 // WithSessionIdleTTL sets the idle TTL for per-session transport state.
 // When enabled, a background sweeper periodically removes entries from
-// per-session stores (tools, resources, resource templates, log levels,
-// request IDs) for sessions that have been idle longer than the given
+// per-session stores (tools, resources, resource templates) for sessions
+// that have been idle longer than the given
 // duration. This prevents memory leaks when clients disconnect without
 // sending a DELETE request. A zero or negative value disables the sweeper
 // (the default).
@@ -302,7 +302,6 @@ type StreamableHTTPServer struct {
 	sessionIdManager         SessionIdManager // for non-request contexts (sweeper)
 	listenHeartbeatInterval  time.Duration
 	logger                   *slog.Logger
-	sessionLogLevels         *sessionLogLevelsStore
 	disableStreaming         bool
 
 	// disableLocalhostProtection, when true, turns off the automatic DNS
@@ -339,7 +338,6 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 	s := &StreamableHTTPServer{
 		server:                   server,
 		sessionTools:             newSessionMapStore[ServerTool](),
-		sessionLogLevels:         newSessionLogLevelsStore(),
 		endpointPath:             "/mcp",
 		sessionIdManagerResolver: NewDefaultSessionIdManagerResolver(&StatelessGeneratingSessionIdManager{}),
 		logger:                   slog.Default(),
@@ -675,7 +673,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// Create ephemeral session if no persistent session exists
 	if session == nil {
-		session = newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates, s.sessionLogLevels)
+		session = newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates)
 	}
 
 	// Broadcasts only reach sessions the server knows of, and a modern
@@ -948,7 +946,7 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 	// Get or create session atomically to prevent TOCTOU races
 	// where concurrent GETs could both create and register duplicate sessions
 	var session *streamableHttpSession
-	newSession := newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates, s.sessionLogLevels)
+	newSession := newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates)
 	actual, loaded := s.activeSessions.LoadOrStore(sessionID, newSession)
 	session = actual.(*streamableHttpSession)
 
@@ -1167,7 +1165,6 @@ func (s *StreamableHTTPServer) cleanupSessionState(ctx context.Context, sessionI
 	s.sessionTools.delete(sessionID)
 	s.sessionResources.delete(sessionID)
 	s.sessionResourceTemplates.delete(sessionID)
-	s.sessionLogLevels.delete(sessionID)
 	s.sessionLastActive.Delete(sessionID)
 }
 
@@ -1239,39 +1236,6 @@ func (s *StreamableHTTPServer) sweepExpiredSessions() {
 }
 
 // --- session ---
-type sessionLogLevelsStore struct {
-	mu   sync.RWMutex
-	logs map[string]mcp.LoggingLevel
-}
-
-func newSessionLogLevelsStore() *sessionLogLevelsStore {
-	return &sessionLogLevelsStore{
-		logs: make(map[string]mcp.LoggingLevel),
-	}
-}
-
-func (s *sessionLogLevelsStore) get(sessionID string) mcp.LoggingLevel {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	val, ok := s.logs[sessionID]
-	if !ok {
-		return mcp.LoggingLevelError
-	}
-	return val
-}
-
-func (s *sessionLogLevelsStore) set(sessionID string, level mcp.LoggingLevel) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.logs[sessionID] = level
-}
-
-func (s *sessionLogLevelsStore) delete(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.logs, sessionID)
-}
-
 // sessionMapStore keeps one map of values per session and hands out copies,
 // so no caller ever shares a map with the store. get on an unknown session
 // answers an empty, non-nil map.
@@ -1319,7 +1283,6 @@ type streamableHttpSession struct {
 	resources           *sessionMapStore[ServerResource]
 	resourceTemplates   *sessionMapStore[ServerResourceTemplate]
 	upgradeToSSE        atomic.Bool
-	logLevels           *sessionLogLevelsStore
 
 	// Whether the session serves a subscriptions/listen stream, and the
 	// notification types that stream opted in to.
@@ -1328,7 +1291,7 @@ type streamableHttpSession struct {
 	subscriptionFilter mcp.SubscriptionFilter
 }
 
-func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[ServerTool], resourcesStore *sessionMapStore[ServerResource], templatesStore *sessionMapStore[ServerResourceTemplate], levels *sessionLogLevelsStore) *streamableHttpSession {
+func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[ServerTool], resourcesStore *sessionMapStore[ServerResource], templatesStore *sessionMapStore[ServerResourceTemplate]) *streamableHttpSession {
 	s := &streamableHttpSession{
 		done:                make(chan struct{}),
 		sessionID:           sessionID,
@@ -1336,7 +1299,6 @@ func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[Serve
 		tools:               toolStore,
 		resources:           resourcesStore,
 		resourceTemplates:   templatesStore,
-		logLevels:           levels,
 	}
 	return s
 }
@@ -1365,14 +1327,6 @@ func (s *streamableHttpSession) Initialize() {
 func (s *streamableHttpSession) Initialized() bool {
 	// the session is ephemeral, no real initialized action needed
 	return true
-}
-
-func (s *streamableHttpSession) SetLogLevel(level mcp.LoggingLevel) {
-	s.logLevels.set(s.sessionID, level)
-}
-
-func (s *streamableHttpSession) GetLogLevel() mcp.LoggingLevel {
-	return s.logLevels.get(s.sessionID)
 }
 
 var _ ClientSession = (*streamableHttpSession)(nil)
@@ -1405,7 +1359,6 @@ var (
 	_ SessionWithTools             = (*streamableHttpSession)(nil)
 	_ SessionWithResources         = (*streamableHttpSession)(nil)
 	_ SessionWithResourceTemplates = (*streamableHttpSession)(nil)
-	_ SessionWithLogging           = (*streamableHttpSession)(nil)
 	_ SessionWithClientInfo        = (*streamableHttpSession)(nil)
 )
 

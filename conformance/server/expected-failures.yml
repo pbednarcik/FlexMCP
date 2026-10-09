@@ -12,9 +12,15 @@
 # to the client, which FlexMCP's server no longer does. Protocol version
 # 2026-07-28 replaced server-initiated requests with multi round-trip
 # requests, and the suite's fixture tools for them are gone with the feature.
+#
+# resources-subscribe, resources-unsubscribe: protocol version 2026-07-28
+# removed both methods, and FlexMCP's server no longer serves them in either
+# era; resource subscriptions come through subscriptions/listen.
 server:
   - tools-call-with-progress
   - tools-call-sampling
   - tools-call-elicitation
   - elicitation-sep1034-defaults
   - elicitation-sep1330-enums
+  - resources-subscribe
+  - resources-unsubscribe

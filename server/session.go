@@ -22,15 +22,6 @@ type ClientSession interface {
 	SessionID() string
 }
 
-// SessionWithLogging is an extension of ClientSession that can receive log message notifications and set log level
-type SessionWithLogging interface {
-	ClientSession
-	// SetLogLevel sets the minimum log level
-	SetLogLevel(level mcp.LoggingLevel)
-	// GetLogLevel retrieves the minimum log level
-	GetLogLevel() mcp.LoggingLevel
-}
-
 // SessionWithTools is an extension of ClientSession that can store session-specific tool data
 type SessionWithTools interface {
 	ClientSession
@@ -54,11 +45,11 @@ type SessionWithResources interface {
 }
 
 // SessionWithResourceSubscriptions is an optional extension of ClientSession
-// implemented by sessions that track resources/subscribe state. When the
-// default subscribe/unsubscribe handlers in MCPServer service a request, they
-// will invoke SubscribeToResource or UnsubscribeFromResource on the active
-// session if it implements this interface, allowing servers to later target
-// notifications/resources/updated only at sessions that asked for updates.
+// implemented by sessions that track resource subscriptions. While a
+// subscriptions/listen stream asks for resourceSubscriptions, the server calls
+// SubscribeToResource for each URI and UnsubscribeFromResource when the stream
+// ends, so notifications/resources/updated can be targeted at the sessions
+// that asked for updates.
 //
 // Implementations must be safe for concurrent use because requests and
 // notifications may run on independent goroutines.
@@ -83,8 +74,8 @@ type SessionWithResourceSubscriptions interface {
 // SessionWithResourceSubscriptionsErr is an optional extension of
 // SessionWithResourceSubscriptions whose SubscribeToResourceErr method can
 // reject a subscription. When a session implements this interface, MCPServer
-// uses SubscribeToResourceErr in preference to SubscribeToResource and returns
-// RESOURCE_NOT_FOUND if it reports an error.
+// uses SubscribeToResourceErr in preference to SubscribeToResource, and
+// subscriptions/listen fails with INVALID_PARAMS if it reports an error.
 //
 // Implementations must be safe for concurrent use because requests and
 // notifications may run on independent goroutines.
@@ -182,29 +173,28 @@ func (s *MCPServer) buildLogNotification(notification mcp.LoggingMessageNotifica
 	}
 }
 
+// legacyLogLevel is the log threshold of a handshake-era client, which has no
+// logging/setLevel to choose one: error and worse, the level every session
+// started at when it did.
+const legacyLogLevel = mcp.LoggingLevelError
+
+// SendLogMessageToClient sends a log message to the client of the request in
+// ctx if its level reaches the request's threshold: the log level a modern
+// request declares in _meta, or legacyLogLevel for a legacy one.
 func (s *MCPServer) SendLogMessageToClient(ctx context.Context, notification mcp.LoggingMessageNotification) error {
 	session := ClientSessionFromContext(ctx)
 	if session == nil || !session.Initialized() {
 		return ErrNotificationNotInitialized
 	}
-	// Protocol version 2026-07-28 removed logging/setLevel: the level is
-	// declared per request, and a server MUST NOT emit log notifications for a
-	// request that did not ask for them (SEP-2575).
+	threshold := legacyLogLevel
+	// A modern request that declares no level gets no log notifications (SEP-2575).
 	if info := RequestProtocolInfoFromContext(ctx); info != nil && info.Modern {
 		if info.LogLevel == "" {
 			return nil
 		}
-		if !notification.Params.Level.ShouldSendTo(info.LogLevel) {
-			return nil
-		}
-		return s.sendNotificationCore(ctx, session, s.buildLogNotification(notification))
+		threshold = info.LogLevel
 	}
-
-	sessionLogging, ok := session.(SessionWithLogging)
-	if !ok {
-		return ErrSessionDoesNotSupportLogging
-	}
-	if !notification.Params.Level.ShouldSendTo(sessionLogging.GetLogLevel()) {
+	if !notification.Params.Level.ShouldSendTo(threshold) {
 		return nil
 	}
 	return s.sendNotificationCore(ctx, session, s.buildLogNotification(notification))
@@ -301,11 +291,7 @@ func (s *MCPServer) SendLogMessageToSpecificClient(sessionID string, notificatio
 	if !ok || !session.Initialized() {
 		return ErrSessionNotInitialized
 	}
-	sessionLogging, ok := session.(SessionWithLogging)
-	if !ok {
-		return ErrSessionDoesNotSupportLogging
-	}
-	if !notification.Params.Level.ShouldSendTo(sessionLogging.GetLogLevel()) {
+	if !notification.Params.Level.ShouldSendTo(legacyLogLevel) {
 		return nil
 	}
 	return s.sendNotificationToSpecificClient(session, s.buildLogNotification(notification))

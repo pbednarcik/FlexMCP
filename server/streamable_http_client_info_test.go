@@ -11,10 +11,9 @@ func TestStreamableHttpSessionImplementsSessionWithClientInfo(t *testing.T) {
 	toolStore := newSessionMapStore[ServerTool]()
 	resourceStore := newSessionMapStore[ServerResource]()
 	templatesStore := newSessionMapStore[ServerResourceTemplate]()
-	logStore := newSessionLogLevelsStore()
 
 	// Create a streamable HTTP session
-	session := newStreamableHttpSession("test-session", toolStore, resourceStore, templatesStore, logStore)
+	session := newStreamableHttpSession("test-session", toolStore, resourceStore, templatesStore)
 
 	// Verify it implements SessionWithClientInfo
 	var clientSession ClientSession = session

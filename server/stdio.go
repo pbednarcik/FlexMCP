@@ -98,7 +98,6 @@ type stdioSession struct {
 
 	notifications chan mcp.JSONRPCNotification
 	initialized   atomic.Bool
-	loggingLevel  atomic.Value
 }
 
 func (s *stdioSession) SessionID() string {
@@ -110,8 +109,6 @@ func (s *stdioSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
 }
 
 func (s *stdioSession) Initialize() {
-	// set default logging level
-	s.loggingLevel.Store(mcp.LoggingLevelError)
 	s.initialized.Store(true)
 }
 
@@ -119,21 +116,8 @@ func (s *stdioSession) Initialized() bool {
 	return s.initialized.Load()
 }
 
-func (s *stdioSession) SetLogLevel(level mcp.LoggingLevel) {
-	s.loggingLevel.Store(level)
-}
-
-func (s *stdioSession) GetLogLevel() mcp.LoggingLevel {
-	level := s.loggingLevel.Load()
-	if level == nil {
-		return mcp.LoggingLevelError
-	}
-	return level.(mcp.LoggingLevel)
-}
-
 var (
 	_ ClientSession         = (*stdioSession)(nil)
-	_ SessionWithLogging    = (*stdioSession)(nil)
 	_ SessionWithClientInfo = (*stdioSession)(nil)
 )
 

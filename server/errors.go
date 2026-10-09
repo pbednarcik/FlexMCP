@@ -21,7 +21,6 @@ var (
 	ErrSessionDoesNotSupportTools             = errors.New("session does not support per-session tools")
 	ErrSessionDoesNotSupportResources         = errors.New("session does not support per-session resources")
 	ErrSessionDoesNotSupportResourceTemplates = errors.New("session does not support resource templates")
-	ErrSessionDoesNotSupportLogging           = errors.New("session does not support setting logging level")
 
 	// Notification-related errors
 	ErrNotificationNotInitialized = errors.New("notification channel not initialized")

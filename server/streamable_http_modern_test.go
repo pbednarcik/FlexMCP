@@ -185,8 +185,6 @@ func TestModernProtocol_RemovedMethodsRejected(t *testing.T) {
 		mcp.MethodInitialize,
 		mcp.MethodPing,
 		mcp.MethodSetLogLevel,
-		mcp.MethodResourcesSubscribe,
-		mcp.MethodResourcesUnsubscribe,
 	} {
 		t.Run(string(method), func(t *testing.T) {
 			resp := postModern(t, srv.URL, method, nil)
@@ -596,7 +594,7 @@ func TestModernProtocol_ListenStreamReceivesListChanged(t *testing.T) {
 // A listen stream's session receives no broadcast before subscriptions/listen
 // has recorded what the client asked for, nor after it is cleared.
 func TestStreamableHTTPSessionListenStreamIsFilteredThroughout(t *testing.T) {
-	session := newStreamableHttpSession("", nil, nil, nil, nil)
+	session := newStreamableHttpSession("", nil, nil, nil)
 	assert.True(t, subscriptionAllowsNotification(session, mcp.MethodNotificationToolsListChanged),
 		"a session that serves no subscription stream is unfiltered")
 

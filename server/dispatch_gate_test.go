@@ -29,8 +29,6 @@ var dispatchGates = []dispatchGate{
 	{method: mcp.MethodResourcesList, capability: "resources"},
 	{method: mcp.MethodResourcesTemplatesList, capability: "resources"},
 	{method: mcp.MethodResourcesRead, capability: "resources"},
-	{method: mcp.MethodResourcesSubscribe, capability: "resources", removedInModern: true},
-	{method: mcp.MethodResourcesUnsubscribe, capability: "resources", removedInModern: true},
 	{method: mcp.MethodPromptsList, capability: "prompts"},
 	{method: mcp.MethodPromptsGet, capability: "prompts"},
 	{method: mcp.MethodToolsList, capability: "tools"},
@@ -84,6 +82,23 @@ func TestDispatchRemovedMethodsAreUnknownToModernRequests(t *testing.T) {
 			assert.Equal(t, mcp.METHOD_NOT_FOUND, details.Code)
 			assert.Equal(t, `"`+string(gate.method)+`" was removed in protocol version 2026-07-28`, details.Message)
 		})
+	}
+}
+
+func TestDispatchDroppedLegacyMethodsAreUnknownInBothEras(t *testing.T) {
+	srv := everyCapabilityServer()
+	eras := []struct{ name, params string }{
+		{"legacy", `{"uri":"file:///a"}`},
+		{"modern", modernParams(t)},
+	}
+	for _, method := range []mcp.MCPMethod{mcp.MethodResourcesSubscribe, mcp.MethodResourcesUnsubscribe} {
+		for _, era := range eras {
+			t.Run(string(method)+"/"+era.name, func(t *testing.T) {
+				details := dispatch(t, srv, method, era.params)
+				assert.Equal(t, mcp.METHOD_NOT_FOUND, details.Code)
+				assert.Equal(t, "Method "+string(method)+" not found", details.Message)
+			})
+		}
 	}
 }
 

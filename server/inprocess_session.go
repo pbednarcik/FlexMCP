@@ -16,7 +16,6 @@ type InProcessSession struct {
 	sessionID     string
 	notifications chan mcp.JSONRPCNotification
 	initialized   atomic.Bool
-	loggingLevel  atomic.Value
 }
 
 // NewInProcessSession creates a session for an in-process client.
@@ -45,24 +44,11 @@ func (s *InProcessSession) ClientNotifications() <-chan mcp.JSONRPCNotification 
 }
 
 func (s *InProcessSession) Initialize() {
-	s.loggingLevel.Store(mcp.LoggingLevelError)
 	s.initialized.Store(true)
 }
 
 func (s *InProcessSession) Initialized() bool {
 	return s.initialized.Load()
-}
-
-func (s *InProcessSession) SetLogLevel(level mcp.LoggingLevel) {
-	s.loggingLevel.Store(level)
-}
-
-func (s *InProcessSession) GetLogLevel() mcp.LoggingLevel {
-	level := s.loggingLevel.Load()
-	if level == nil {
-		return mcp.LoggingLevelError
-	}
-	return level.(mcp.LoggingLevel)
 }
 
 // GenerateInProcessSessionID generates a unique session ID for inprocess clients
@@ -73,6 +59,5 @@ func GenerateInProcessSessionID() string {
 // Ensure interface compliance
 var (
 	_ ClientSession         = (*InProcessSession)(nil)
-	_ SessionWithLogging    = (*InProcessSession)(nil)
 	_ SessionWithClientInfo = (*InProcessSession)(nil)
 )
