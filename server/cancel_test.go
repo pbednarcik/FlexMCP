@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,21 +26,14 @@ func blockingToolServer(t *testing.T) (*MCPServer, <-chan struct{}) {
 	return srv, started
 }
 
-func callBlockInBackground(srv *MCPServer, ctx context.Context) <-chan mcp.JSONRPCMessage {
+// callBlock sends tools/call "block" with request ID 7 on its own goroutine
+// and returns the channel its response lands on.
+func callBlock(srv *MCPServer, ctx context.Context) <-chan mcp.JSONRPCMessage {
 	responses := make(chan mcp.JSONRPCMessage, 1)
 	go func() {
 		responses <- srv.HandleMessage(ctx, json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"block"}}`))
 	}()
 	return responses
-}
-
-func waitStarted(t *testing.T, started <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the handler did not start")
-	}
 }
 
 func cancelTestSession(id string) *sessionTestClient {
@@ -49,51 +42,60 @@ func cancelTestSession(id string) *sessionTestClient {
 
 const cancelSeven = `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`
 
+// The tests run in a synctest bubble: synctest.Wait returns once every other
+// goroutine is done or durably blocked, so "the handler is still waiting" and
+// "the handler has returned" are facts, not sleeps.
+
 // TestCancelledNotificationCancelsInflightRequest pins the cancellation
 // contract: notifications/cancelled for an in-flight request ID ends that
 // request's context, the handler returns, and the caller gets an error
 // response instead of waiting for a result that will never come.
 func TestCancelledNotificationCancelsInflightRequest(t *testing.T) {
-	srv, started := blockingToolServer(t)
-	ctx := srv.WithContext(t.Context(), cancelTestSession("cancel-session"))
+	synctest.Test(t, func(t *testing.T) {
+		srv, started := blockingToolServer(t)
+		ctx := srv.WithContext(t.Context(), cancelTestSession("cancel-session"))
+		responses := callBlock(srv, ctx)
+		<-started
 
-	responses := callBlockInBackground(srv, ctx)
-	waitStarted(t, started)
+		require.Nil(t, srv.HandleMessage(ctx, json.RawMessage(cancelSeven)), "a notification has no response")
+		synctest.Wait()
 
-	require.Nil(t, srv.HandleMessage(ctx, json.RawMessage(cancelSeven)), "a notification has no response")
-
-	select {
-	case resp := <-responses:
-		errResp, ok := resp.(mcp.JSONRPCError)
-		require.True(t, ok, "expected an error response, got %T", resp)
-		assert.Equal(t, mcp.INTERNAL_ERROR, errResp.Error.Code)
-		assert.Contains(t, errResp.Error.Message, context.Canceled.Error())
-	case <-time.After(5 * time.Second):
-		t.Fatal("the request did not end after notifications/cancelled")
-	}
+		select {
+		case resp := <-responses:
+			errResp, ok := resp.(mcp.JSONRPCError)
+			require.True(t, ok, "expected an error response, got %T", resp)
+			assert.Equal(t, mcp.INTERNAL_ERROR, errResp.Error.Code)
+			assert.Contains(t, errResp.Error.Message, context.Canceled.Error())
+		default:
+			t.Fatal("the request did not end after notifications/cancelled")
+		}
+	})
 }
 
 // TestCancelledNotificationIsScopedToTheSession pins that the in-flight key
 // is session-scoped: a cancel for request 7 from another session leaves this
 // session's request 7 running.
 func TestCancelledNotificationIsScopedToTheSession(t *testing.T) {
-	srv, started := blockingToolServer(t)
-	ctx := srv.WithContext(t.Context(), cancelTestSession("mine"))
+	synctest.Test(t, func(t *testing.T) {
+		srv, started := blockingToolServer(t)
+		ctx := srv.WithContext(t.Context(), cancelTestSession("mine"))
+		responses := callBlock(srv, ctx)
+		<-started
 
-	responses := callBlockInBackground(srv, ctx)
-	waitStarted(t, started)
+		require.Nil(t, srv.HandleMessage(srv.WithContext(t.Context(), cancelTestSession("other")), json.RawMessage(cancelSeven)))
+		synctest.Wait()
+		select {
+		case resp := <-responses:
+			t.Fatalf("another session's cancel ended the request: %v", resp)
+		default:
+		}
 
-	require.Nil(t, srv.HandleMessage(srv.WithContext(t.Context(), cancelTestSession("other")), json.RawMessage(cancelSeven)))
-	select {
-	case resp := <-responses:
-		t.Fatalf("another session's cancel ended the request: %v", resp)
-	case <-time.After(200 * time.Millisecond):
-	}
-
-	require.Nil(t, srv.HandleMessage(ctx, json.RawMessage(cancelSeven)))
-	select {
-	case <-responses:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the request did not end after its own session's cancel")
-	}
+		require.Nil(t, srv.HandleMessage(ctx, json.RawMessage(cancelSeven)))
+		synctest.Wait()
+		select {
+		case <-responses:
+		default:
+			t.Fatal("the request did not end after its own session's cancel")
+		}
+	})
 }
