@@ -12,7 +12,7 @@ This client:
 
 ## Usage
 
-1. Start an MCP server that supports sampling (e.g., using the `sampling_server` example)
+1. Start an MCP server that sends sampling requests. FlexMCP's own server sends none: protocol version 2026-07-28 replaced server-initiated requests with multi round-trip requests (see `examples/multi_round_trip`).
 
 2. Update the server URL in `main.go`:
    ```go

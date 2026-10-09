@@ -30,17 +30,13 @@ Build the client:
 go build -o sampling_client
 ```
 
-Run with the sampling server:
-
-```bash
-./sampling_client ../sampling_server/sampling_server
-```
-
-Or with any other MCP server that supports sampling:
+Run it against an MCP server that sends sampling requests:
 
 ```bash
 ./sampling_client /path/to/your/mcp/server
 ```
+
+FlexMCP's own server sends none: protocol version 2026-07-28 replaced server-initiated requests with multi round-trip requests (see `examples/multi_round_trip`). The client keeps its sampling support for servers of earlier protocol versions. The sample output below is from such a server offering an `ask_llm` tool.
 
 ## Implementation Details
 

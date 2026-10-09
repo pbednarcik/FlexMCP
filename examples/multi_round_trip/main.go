@@ -7,10 +7,9 @@
 // the answers attached, and an opaque request state echoed back so the handler
 // can resume where it left off.
 //
-// The handler below is written once and serves clients of either protocol era:
-// against a client predating this revision, mcp-go issues the
-// elicitation/create that client understands and re-invokes the handler with
-// the answer.
+// The server sends no requests, so a client predating this revision cannot
+// answer the handler's question: its call fails with an error saying the tool
+// needs protocol version 2026-07-28.
 //
 // Run it with:
 //
