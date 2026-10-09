@@ -6,3 +6,16 @@
 coverage.out
 coverage.txt
 .vscode/launch.json
+
+# Local docs and agent instruction files
+/docs/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.cursor/
+.cursorrules
+.windsurfrules
+.codex/
+.gemini/
+.github/copilot-instructions.md
