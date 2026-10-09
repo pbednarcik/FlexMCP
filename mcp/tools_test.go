@@ -2423,7 +2423,7 @@ func TestCallToolRequest_WithTaskParams(t *testing.T) {
 						"input": "test",
 					},
 					Task: &TaskParams{
-						TTL: ToInt64Ptr(300),
+						TTL: new(int64(300)),
 					},
 				},
 			},
@@ -2688,7 +2688,7 @@ func TestCallToolRequest_WithTaskParams_RoundTrip(t *testing.T) {
 				"count":     42,
 			},
 			Task: &TaskParams{
-				TTL: ToInt64Ptr(600),
+				TTL: new(int64(600)),
 			},
 		},
 	}

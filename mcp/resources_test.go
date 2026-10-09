@@ -317,9 +317,6 @@ func TestTemplateAnnotationsCreationFromNil(t *testing.T) {
 	assert.Equal(t, 0.5, *template.Annotations.Priority)
 }
 
-//go:fix inline
-func ptr(v float64) *float64 { return new(v) }
-
 func TestWithResourceIcons(t *testing.T) {
 	resource := Resource{}
 	icons := []Icon{

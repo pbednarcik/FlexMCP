@@ -126,7 +126,7 @@ func TestTaskToolTracerBullet(t *testing.T) {
 					"delay_ms": 100,
 				},
 				Task: &mcp.TaskParams{
-					TTL: ptrInt64(60000),
+					TTL: new(int64(60000)),
 				},
 			},
 		}
@@ -671,13 +671,6 @@ func TestTaskToolTracerBullet(t *testing.T) {
 			assert.True(t, executed[i], "Task %d should have executed", i)
 		}
 	})
-}
-
-// ptrInt64 is a helper to get a pointer to an int64
-//
-//go:fix inline
-func ptrInt64(i int64) *int64 {
-	return new(i)
 }
 
 func TestTaskTool_ModelImmediateResponse(t *testing.T) {

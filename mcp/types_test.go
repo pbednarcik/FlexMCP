@@ -113,12 +113,12 @@ func TestResourceLinkTitleAndSize(t *testing.T) {
 		{
 			name:     "title and size round-trip when set",
 			title:    "X File",
-			size:     ToInt64Ptr(1024),
+			size:     new(int64(1024)),
 			wantJSON: []string{`"title":"X File"`, `"size":1024`},
 		},
 		{
 			name:     "explicit zero size is preserved",
-			size:     ToInt64Ptr(0),
+			size:     new(int64(0)),
 			wantJSON: []string{`"size":0`},
 		},
 	}
