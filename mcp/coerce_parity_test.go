@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -98,6 +99,14 @@ func TestCoerceParityWithCast(t *testing.T) {
 				Float32: toFloat32(in.v), Float64: toFloat64(in.v), String: toString(in.v),
 				Float64E: f64, Float64OK: f64err == nil, Int64E: i64, Int64OK: i64err == nil,
 				StringSlice: toStringSlice(in.v), StringMap: toStringMap(in.v),
+			}
+			// Go leaves an out-of-range float-to-integer conversion to the
+			// platform: amd64 answers the x86 "indefinite" value, arm64
+			// saturates, and cast differs the same way. The recording is
+			// amd64's, so the fields narrower than 64 bits are not compared.
+			if f, ok := in.v.(float64); ok && (f > math.MaxInt32 || f < math.MinInt32) {
+				want.Int32, want.Int16, want.Int8, want.Uint32, want.Uint16, want.Uint8 = 0, 0, 0, 0, 0, 0
+				got.Int32, got.Int16, got.Int8, got.Uint32, got.Uint16, got.Uint8 = 0, 0, 0, 0, 0, 0
 			}
 			assert.Equal(t, want, got)
 		})
