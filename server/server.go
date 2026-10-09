@@ -224,28 +224,24 @@ type MCPServer struct {
 	// extracted once at registration so a tools/call never re-reads the input
 	// schema. Keyed like tools and taskTools and kept in step with them under
 	// toolsMu; session tools are not cached here.
-	toolHeaderBindings map[string][]mcp.ParamHeaderBinding
-	// allowServerInitiatedRequests keeps RequestSampling, RequestElicitation,
-	// and RequestRoots usable against clients speaking protocol version
-	// 2026-07-28 or later. See WithLegacyServerInitiatedRequests.
-	allowServerInitiatedRequests bool
-	paginationLimit              *int
-	sessions                     sync.Map
-	listenSessions               sync.Map // see registerListenSession
-	hooks                        *Hooks
-	taskHooks                    *TaskHooks
-	tasks                        map[string]*taskEntry
-	expiredTasks                 map[string]time.Time // Tracks recently expired task IDs with expiration timestamp
-	maxConcurrentTasks           *int                 // Optional limit on concurrent running tasks
-	activeTasks                  int                  // Current count of running (non-terminal) tasks
-	inflightCancels              sync.Map             // Maps request ID -> context.CancelFunc for in-flight requests
-	inputValidator               *inputSchemaValidator
-	outputValidator              *outputSchemaValidator
-	strictInputSchemaDefault     bool
-	tracer                       tracing.Tracer
-	propagator                   tracing.Propagator
-	metaPropagator               tracing.MetaPropagator
-	requestLogger                *slog.Logger
+	toolHeaderBindings       map[string][]mcp.ParamHeaderBinding
+	paginationLimit          *int
+	sessions                 sync.Map
+	listenSessions           sync.Map // see registerListenSession
+	hooks                    *Hooks
+	taskHooks                *TaskHooks
+	tasks                    map[string]*taskEntry
+	expiredTasks             map[string]time.Time // Tracks recently expired task IDs with expiration timestamp
+	maxConcurrentTasks       *int                 // Optional limit on concurrent running tasks
+	activeTasks              int                  // Current count of running (non-terminal) tasks
+	inflightCancels          sync.Map             // Maps request ID -> context.CancelFunc for in-flight requests
+	inputValidator           *inputSchemaValidator
+	outputValidator          *outputSchemaValidator
+	strictInputSchemaDefault bool
+	tracer                   tracing.Tracer
+	propagator               tracing.Propagator
+	metaPropagator           tracing.MetaPropagator
+	requestLogger            *slog.Logger
 }
 
 // WithCacheHints sets the default SEP-2549 caching hints advertised on
@@ -283,27 +279,6 @@ func WithMethodCacheHints(method mcp.MCPMethod, ttlMs int64, scope mcp.CacheScop
 	}
 }
 
-// WithLegacyServerInitiatedRequests keeps [MCPServer.RequestSampling],
-// [MCPServer.RequestElicitation], and [MCPServer.RequestRoots] usable against
-// clients speaking protocol version 2026-07-28 or later.
-//
-// That revision replaced server-initiated requests with multi round-trip
-// requests (SEP-2322), so by default those methods return
-// [ErrServerInitiatedRequestUnsupported] rather than sending a request the
-// client is not obliged to answer. Enabling this option restores the old
-// behaviour, which still works over genuinely bidirectional transports such as
-// stdio and in-process, but not over stateless Streamable HTTP.
-//
-// Deprecated: server-initiated requests were removed in protocol version
-// 2026-07-28 (SEP-2322). Prefer [InputRequestBuilder], which produces handlers
-// that work against clients of either protocol era. This option exists to ease
-// migration and will be removed once the deprecation window closes.
-func WithLegacyServerInitiatedRequests() ServerOption {
-	return func(s *MCPServer) {
-		s.allowServerInitiatedRequests = true
-	}
-}
-
 // WithPaginationLimit sets the maximum page size for list results.
 // Zero and negative limits leave the list unpaged.
 func WithPaginationLimit(limit int) ServerOption {
@@ -318,9 +293,6 @@ type serverCapabilities struct {
 	resources    *resourceCapabilities
 	prompts      *promptCapabilities
 	logging      *bool
-	sampling     *bool
-	elicitation  *bool
-	roots        *bool
 	tasks        *taskCapabilities
 	completions  *bool
 	experimental map[string]any
@@ -622,20 +594,6 @@ func WithLogging() ServerOption {
 	}
 }
 
-// WithElicitation enables elicitation capabilities for the server
-func WithElicitation() ServerOption {
-	return func(s *MCPServer) {
-		s.capabilities.elicitation = new(true)
-	}
-}
-
-// WithRoots returns a ServerOption that enables the roots capability on the MCPServer
-func WithRoots() ServerOption {
-	return func(s *MCPServer) {
-		s.capabilities.roots = new(true)
-	}
-}
-
 // WithTaskCapabilities configures task-related server capabilities
 func WithTaskCapabilities(list, cancel, toolCallTasks bool) ServerOption {
 	return func(s *MCPServer) {
@@ -753,9 +711,6 @@ func NewMCPServer(
 			resources:   nil,
 			prompts:     nil,
 			logging:     nil,
-			sampling:    nil,
-			elicitation: nil,
-			roots:       nil,
 			tasks:       nil,
 			completions: nil,
 		},
@@ -1255,18 +1210,6 @@ func (s *MCPServer) serverCapabilitiesSnapshot() mcp.ServerCapabilities {
 
 	if s.capabilities.logging != nil && *s.capabilities.logging {
 		capabilities.Logging = &struct{}{}
-	}
-
-	if s.capabilities.sampling != nil && *s.capabilities.sampling {
-		capabilities.Sampling = &mcp.SamplingCapability{}
-	}
-
-	if s.capabilities.elicitation != nil && *s.capabilities.elicitation {
-		capabilities.Elicitation = &mcp.ElicitationCapability{}
-	}
-
-	if s.capabilities.roots != nil && *s.capabilities.roots {
-		capabilities.Roots = &struct{}{}
 	}
 
 	// Only add task capabilities if they're configured
@@ -1912,14 +1855,10 @@ func (s *MCPServer) handleGetPrompt(
 		return nil, handlerError(ctx, id, err)
 	}
 
-	// Bridge a handler asking for more input to clients that predate the
-	// multi round-trip pattern (SEP-2322).
-	result, err = resolveMultiRoundTrip(ctx, s, result, getPromptResultNeedsInput,
-		func(ctx context.Context, roundTrip mcp.MultiRoundTripParams) (*mcp.GetPromptResult, error) {
-			retried := request
-			retried.Params.MultiRoundTripParams = roundTrip
-			return finalHandler(ctx, retried)
-		})
+	// A handler may ask the client for more input (SEP-2322): a client on
+	// protocol version 2026-07-28 or later receives the request and retries;
+	// an older client cannot, and gets an error.
+	result, err = resolveMultiRoundTrip(ctx, result, getPromptResultNeedsInput)
 	if err != nil {
 		return nil, handlerError(ctx, id, err)
 	}
@@ -2195,16 +2134,9 @@ func (s *MCPServer) handleToolCall(
 	}
 
 	// A handler may ask the client for more input before it can finish
-	// (SEP-2322). Clients using protocol version 2026-07-28 or later receive
-	// the request and retry; for older clients the requests are fulfilled here
-	// with the server-initiated calls they understand, and the handler is
-	// re-invoked with the answers.
-	result, err = resolveMultiRoundTrip(ctx, s, result, callToolResultNeedsInput,
-		func(ctx context.Context, roundTrip mcp.MultiRoundTripParams) (*mcp.CallToolResult, error) {
-			retried := request
-			retried.Params.MultiRoundTripParams = roundTrip
-			return finalHandler(ctx, retried)
-		})
+	// (SEP-2322): a client on protocol version 2026-07-28 or later receives
+	// the request and retries; an older client cannot, and gets an error.
+	result, err = resolveMultiRoundTrip(ctx, result, callToolResultNeedsInput)
 	if err != nil {
 		return nil, handlerError(ctx, id, err)
 	}

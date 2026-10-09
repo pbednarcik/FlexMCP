@@ -28,9 +28,7 @@ func main() {
 		server.WithPromptCapabilities(true),
 		server.WithCompletions(),
 		server.WithLogging(),
-		server.WithElicitation(),
 	)
-	mcpServer.EnableSampling()
 	registerTools(mcpServer)
 	registerResources(mcpServer)
 	registerPrompts(mcpServer)
@@ -81,86 +79,6 @@ func registerTools(mcpServer *server.MCPServer) {
 		mcp.WithDescription("Returns an intentional tool error")),
 		func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultError("This tool intentionally returns an error for testing"), nil
-		})
-	mcpServer.AddTool(mcp.NewTool("test_sampling",
-		mcp.WithDescription("Requests an LLM response from the client"),
-		mcp.WithString("prompt", mcp.Description("Prompt to send to the LLM"), mcp.Required())),
-		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			prompt := request.GetString("prompt", "")
-			result, err := mcpServer.RequestSampling(ctx, mcp.CreateMessageRequest{
-				Method:    string(mcp.MethodSamplingCreateMessage),
-				Messages:  []mcp.SamplingMessage{{Role: mcp.RoleUser, Content: mcp.TextContent{Type: "text", Text: prompt}}},
-				MaxTokens: 100,
-			})
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			text := "No response"
-			if content, ok := result.Content.(mcp.TextContent); ok {
-				text = content.Text
-			}
-			return mcp.NewToolResultText("LLM response: " + text), nil
-		})
-	mcpServer.AddTool(mcp.NewTool("test_elicitation",
-		mcp.WithDescription("Requests information from the user"),
-		mcp.WithString("message", mcp.Description("Message to show the user"), mcp.Required())),
-		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{
-				Method: string(mcp.MethodElicitationCreate),
-				Params: mcp.ElicitationParams{
-					Message: request.GetString("message", ""),
-					RequestedSchema: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"username": map[string]any{"type": "string", "description": "User's response"},
-							"email":    map[string]any{"type": "string", "description": "User's email address"},
-						},
-						"required": []string{"username", "email"},
-					},
-				},
-			})
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			return mcp.NewToolResultText(fmt.Sprintf("User response: action=%s, content=%v", result.Action, result.Content)), nil
-		})
-	mcpServer.AddTool(mcp.NewTool("test_elicitation_sep1034_defaults",
-		mcp.WithDescription("Requests elicitation with primitive defaults")),
-		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			schema := map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name":     map[string]any{"type": "string", "default": "John Doe"},
-					"age":      map[string]any{"type": "integer", "default": 30},
-					"score":    map[string]any{"type": "number", "default": 95.5},
-					"status":   map[string]any{"type": "string", "enum": []string{"active", "inactive", "pending"}, "default": "active"},
-					"verified": map[string]any{"type": "boolean", "default": true},
-				},
-			}
-			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Method: string(mcp.MethodElicitationCreate), Params: mcp.ElicitationParams{Message: "Provide your information", RequestedSchema: schema}})
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			return mcp.NewToolResultText(fmt.Sprintf("Elicitation completed: action=%s, content=%v", result.Action, result.Content)), nil
-		})
-	mcpServer.AddTool(mcp.NewTool("test_elicitation_sep1330_enums",
-		mcp.WithDescription("Requests elicitation with enum schemas")),
-		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			schema := map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"untitledSingle": map[string]any{"type": "string", "enum": []string{"option1", "option2"}},
-					"titledSingle":   map[string]any{"type": "string", "oneOf": []any{map[string]any{"const": "value1", "title": "Value One"}, map[string]any{"const": "value2", "title": "Value Two"}}},
-					"legacyEnum":     map[string]any{"type": "string", "enum": []string{"opt1", "opt2"}, "enumNames": []string{"Option One", "Option Two"}},
-					"untitledMulti":  map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"option1", "option2"}}},
-					"titledMulti":    map[string]any{"type": "array", "items": map[string]any{"anyOf": []any{map[string]any{"const": "value1", "title": "Value One"}, map[string]any{"const": "value2", "title": "Value Two"}}}},
-				},
-			}
-			result, err := mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Method: string(mcp.MethodElicitationCreate), Params: mcp.ElicitationParams{Message: "Select options", RequestedSchema: schema}})
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			return mcp.NewToolResultText(fmt.Sprintf("Elicitation completed: action=%s, content=%v", result.Action, result.Content)), nil
 		})
 
 	mcpServer.AddTool(mcp.NewTool("test_tool_with_logging",

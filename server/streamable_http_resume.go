@@ -307,26 +307,6 @@ func (s *StreamableHTTPServer) startListeningPump(session *streamableHttpSession
 			select {
 			case nt := <-session.notificationChannel:
 				st.deliver(ctx, nt, false)
-			case samplingReq := <-session.samplingRequestChan:
-				st.deliver(ctx, mcp.JSONRPCRequest{
-					JSONRPC: "2.0",
-					ID:      mcp.NewRequestId(samplingReq.requestID),
-					Method:  string(mcp.MethodSamplingCreateMessage),
-					Params:  samplingReq.request.CreateMessageParams,
-				}, false)
-			case elicitationReq := <-session.elicitationRequestChan:
-				st.deliver(ctx, mcp.JSONRPCRequest{
-					JSONRPC: "2.0",
-					ID:      mcp.NewRequestId(elicitationReq.requestID),
-					Method:  string(mcp.MethodElicitationCreate),
-					Params:  elicitationReq.request.Params,
-				}, false)
-			case rootsReq := <-session.rootsRequestChan:
-				st.deliver(ctx, mcp.JSONRPCRequest{
-					JSONRPC: "2.0",
-					ID:      mcp.NewRequestId(rootsReq.requestID),
-					Method:  string(mcp.MethodListRoots),
-				}, false)
 			case <-stop:
 				return
 			}

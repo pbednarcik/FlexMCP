@@ -80,7 +80,6 @@ func main() {
 func newServer() *server.MCPServer {
 	srv := server.NewMCPServer("deploy-server", "1.0.0",
 		server.WithToolCapabilities(true),
-		server.WithElicitation(),
 	)
 
 	srv.AddTool(

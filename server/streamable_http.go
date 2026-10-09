@@ -609,36 +609,9 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		return
 	}
 
-	// Check if this is a sampling response (has result/error but no method)
-	isSamplingResponse := jsonMessage.Method == "" && jsonMessage.ID != nil &&
-		(jsonMessage.Result != nil || jsonMessage.Error != nil)
-
 	var requestID any
 	if len(jsonMessage.ID) > 0 {
 		_ = json.Unmarshal(jsonMessage.ID, &requestID)
-	}
-
-	// Handle sampling responses separately.
-	//
-	// A client-to-server response answers a server-initiated request, which
-	// protocol version 2026-07-28 replaced with multi round-trip requests
-	// (SEP-2322). Accepting one from a modern client would let a valid
-	// Mcp-Session-Id steer a modern message onto the legacy, session-scoped
-	// delivery path, so it is refused.
-	if isSamplingResponse {
-		if era.modern {
-			s.writeJSONRPCErrorStatus(w, requestID, mcp.INVALID_REQUEST,
-				"client-to-server responses are not supported in protocol version "+
-					mcp.ProtocolVersion20260728+
-					": server-initiated requests were replaced by multi round-trip requests",
-				http.StatusBadRequest)
-			return
-		}
-		if err := s.handleSamplingResponse(w, r, jsonMessage); err != nil {
-			s.logger.Error("Failed to handle sampling response", "err", err)
-			// HTTP Status code is already set in handleSamplingResponse, just return here
-		}
-		return
 	}
 
 	// Prepare the session for the mcp server
@@ -702,7 +675,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// Create ephemeral session if no persistent session exists
 	if session == nil {
-		session = newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates, s.sessionLogLevels, &s.requestIDCounter)
+		session = newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates, s.sessionLogLevels)
 	}
 
 	// Broadcasts only reach sessions the server knows of, and a modern
@@ -772,44 +745,6 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// longer be holding an undelivered notification.
 	forwarderExited := make(chan struct{})
 
-	// When the response can stream, server requests issued while this message
-	// is being handled (for example elicitation/create from a tool handler)
-	// are written to this POST's SSE stream, per the Streamable HTTP guidance
-	// that server requests on a POST stream should relate to the originating
-	// request. The standalone GET stream remains the path for everything else.
-	//
-	// Protocol version 2026-07-28 removed both mechanisms this block depends
-	// on: server-initiated requests (SEP-2322) and stream resumability
-	// (SEP-2575). A modern request also has no session ID, so registering it
-	// would key every concurrent request on "" and let a response reach the
-	// wrong one.
-	var scopedRequests chan mcp.JSONRPCRequest
-	if canStream && !era.modern {
-		scopedRequests = make(chan mcp.JSONRPCRequest, 8)
-		// Registration makes responses to request-scoped server requests
-		// routable when nothing else has registered the session (stateless
-		// mode without a standalone GET stream). It only happens once a
-		// request is actually sent on this stream, and only the POST that
-		// stored the registration removes it, so registrations made by the
-		// GET handler or by stateful initialization are never touched.
-		var ownsRegistration atomic.Bool
-		register := sync.OnceFunc(func() {
-			if _, loaded := s.activeSessions.LoadOrStore(sessionID, session); !loaded {
-				ownsRegistration.Store(true)
-			}
-		})
-		defer func() {
-			if ownsRegistration.Load() {
-				s.activeSessions.CompareAndDelete(sessionID, session)
-			}
-		}()
-		ctx = context.WithValue(ctx, requestScopedSSEKey{}, &requestScopedSSE{
-			requests: scopedRequests,
-			done:     done,
-			register: register,
-		})
-	}
-
 	go func() {
 		defer close(forwarderExited)
 		defer func() {
@@ -844,22 +779,6 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 					if err != nil {
 						s.logger.Error("Failed to write SSE event", "err", err)
 						return
-					}
-				}()
-			case req := <-scopedRequests:
-				func() {
-					mu.Lock()
-					defer mu.Unlock()
-					defer w.Flush()
-
-					if resumable {
-						deliverResumable(req, false)
-						return
-					}
-
-					upgrade()
-					if err := writeSSEEvent(w, req); err != nil {
-						s.logger.Error("Failed to write SSE event", "err", err)
 					}
 				}()
 			case <-done:
@@ -1029,7 +948,7 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 	// Get or create session atomically to prevent TOCTOU races
 	// where concurrent GETs could both create and register duplicate sessions
 	var session *streamableHttpSession
-	newSession := newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates, s.sessionLogLevels, &s.requestIDCounter)
+	newSession := newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates, s.sessionLogLevels)
 	actual, loaded := s.activeSessions.LoadOrStore(sessionID, newSession)
 	session = actual.(*streamableHttpSession)
 
@@ -1075,44 +994,6 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 			case nt := <-session.notificationChannel:
 				select {
 				case writeChan <- &nt:
-				case <-done:
-					return
-				}
-			case samplingReq := <-session.samplingRequestChan:
-				// Send sampling request to client via SSE
-				jsonrpcRequest := mcp.JSONRPCRequest{
-					JSONRPC: "2.0",
-					ID:      mcp.NewRequestId(samplingReq.requestID),
-					Method:  string(mcp.MethodSamplingCreateMessage),
-					Params:  samplingReq.request.CreateMessageParams,
-				}
-				select {
-				case writeChan <- jsonrpcRequest:
-				case <-done:
-					return
-				}
-			case elicitationReq := <-session.elicitationRequestChan:
-				// Send elicitation request to client via SSE
-				jsonrpcRequest := mcp.JSONRPCRequest{
-					JSONRPC: "2.0",
-					ID:      mcp.NewRequestId(elicitationReq.requestID),
-					Method:  string(mcp.MethodElicitationCreate),
-					Params:  elicitationReq.request.Params,
-				}
-				select {
-				case writeChan <- jsonrpcRequest:
-				case <-done:
-					return
-				}
-			case rootsReq := <-session.rootsRequestChan:
-				// Send list roots request to client via SSE
-				jsonrpcRequest := mcp.JSONRPCRequest{
-					JSONRPC: "2.0",
-					ID:      mcp.NewRequestId(rootsReq.requestID),
-					Method:  string(mcp.MethodListRoots),
-				}
-				select {
-				case writeChan <- jsonrpcRequest:
 				case <-done:
 					return
 				}
@@ -1238,131 +1119,6 @@ func startSSEResponse(w HTTPResponseWriter) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-}
-
-// handleSamplingResponse processes incoming sampling responses from clients
-func (s *StreamableHTTPServer) handleSamplingResponse(w HTTPResponseWriter, r *HTTPRequest, responseMessage struct {
-	ID     json.RawMessage `json:"id"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  json.RawMessage `json:"error,omitempty"`
-	Method mcp.MCPMethod   `json:"method,omitempty"`
-}) error {
-	// Get session ID from header
-	sessionID := r.header().Get(HeaderKeySessionID)
-	if sessionID == "" {
-		writeHTTPError(w, "Missing session ID for sampling response", http.StatusBadRequest)
-		return fmt.Errorf("missing session ID")
-	}
-
-	// Validate session
-	sessionIdManager := s.resolveSessionIdManager(r)
-	isTerminated, err := sessionIdManager.Validate(sessionID)
-	if err != nil {
-		writeHTTPError(w, "Invalid session ID", http.StatusNotFound)
-		return err
-	}
-	if isTerminated {
-		writeHTTPError(w, "Session terminated", http.StatusNotFound)
-		return fmt.Errorf("session terminated")
-	}
-
-	// Parse the request ID
-	var requestID int64
-	if err := json.Unmarshal(responseMessage.ID, &requestID); err != nil {
-		writeHTTPError(w, "Invalid request ID in sampling response", http.StatusBadRequest)
-		return err
-	}
-
-	// Create the sampling response item
-	response := samplingResponseItem{
-		requestID: requestID,
-	}
-
-	// Parse result or error
-	if responseMessage.Error != nil {
-		// Parse error
-		var jsonrpcError struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		}
-		if err := json.Unmarshal(responseMessage.Error, &jsonrpcError); err != nil {
-			response.err = fmt.Errorf("failed to parse error: %v", err)
-		} else {
-			// Defer building the final error to deliverSamplingResponse, which
-			// knows which method (sampling/createMessage, elicitation/create, or
-			// roots/list) this response corresponds to.
-			response.clientError = &clientJSONRPCError{code: jsonrpcError.Code, message: jsonrpcError.Message}
-		}
-	} else if responseMessage.Result != nil {
-		// Store the result to be unmarshaled later
-		response.result = responseMessage.Result
-	} else {
-		response.err = fmt.Errorf("sampling response has neither result nor error")
-	}
-
-	// Find the corresponding session and deliver the response
-	// The response is delivered to the specific session identified by sessionID
-	if err := s.deliverSamplingResponse(w, sessionID, response); err != nil {
-		// HTTP Status code is already set in deliverSamplingResponse, just return here
-		return fmt.Errorf("failed to deliver sampling response: %w", err)
-	}
-
-	// Acknowledge receipt
-	w.WriteHeader(http.StatusAccepted)
-	return nil
-}
-
-// deliverSamplingResponse delivers a sampling response to the appropriate session.
-// On failure it writes the HTTP error status directly to w.
-func (s *StreamableHTTPServer) deliverSamplingResponse(w HTTPResponseWriter, sessionID string, response samplingResponseItem) error {
-	// Look up the active session
-	sessionInterface, ok := s.activeSessions.Load(sessionID)
-	if !ok {
-		writeHTTPError(w, "No active session found for the given session ID", http.StatusNotFound)
-		return fmt.Errorf("no active session found for session %s", sessionID)
-	}
-
-	session, ok := sessionInterface.(*streamableHttpSession)
-	if !ok {
-		writeHTTPError(w, "Invalid session type for the given session ID", http.StatusInternalServerError)
-		return fmt.Errorf("invalid session type for session %s", sessionID)
-	}
-
-	// Look up the dedicated pending request for this specific request ID.
-	pendingInterface, exists := session.samplingRequests.Load(response.requestID)
-	if !exists {
-		writeHTTPError(w, "No pending sampling request found for the given request ID", http.StatusBadRequest)
-		return fmt.Errorf("no pending request found for session %s, request %d", sessionID, response.requestID)
-	}
-
-	pending, ok := pendingInterface.(pendingClientRequest)
-	if !ok {
-		writeHTTPError(w, "Failed to deliver response", http.StatusInternalServerError)
-		return fmt.Errorf("invalid pending request type for session %s, request %d", sessionID, response.requestID)
-	}
-	responseChan := pending.response
-
-	// If the client returned a JSON-RPC error, label it with the method that
-	// actually failed. This shared path serves sampling/createMessage,
-	// elicitation/create and roots/list, so a generic "sampling error" prefix
-	// would misattribute elicitation and roots failures (see #817).
-	if response.clientError != nil {
-		method := pending.method
-		if method == "" {
-			method = mcp.MethodSamplingCreateMessage
-		}
-		response.err = fmt.Errorf("%s error %d: %s", method, response.clientError.code, response.clientError.message)
-	}
-
-	// Attempt to deliver the response with timeout to prevent indefinite blocking
-	select {
-	case responseChan <- response:
-		s.logger.Info("Delivered sampling response", "session", sessionID, "request", response.requestID)
-		return nil
-	default:
-		writeHTTPError(w, "Failed to deliver response", http.StatusInternalServerError)
-		return fmt.Errorf("failed to deliver sampling response for session %s, request %d: channel full or blocked", sessionID, response.requestID)
-	}
 }
 
 // writeJSONRPCError writes a JSON-RPC error response with the given error details.
@@ -1550,90 +1306,6 @@ func (s *sessionMapStore[V]) delete(sessionID string) {
 	delete(s.m, sessionID)
 }
 
-// Sampling support types for HTTP transport
-type samplingRequestItem struct {
-	requestID int64
-	request   mcp.CreateMessageRequest
-	response  chan samplingResponseItem
-}
-
-type samplingResponseItem struct {
-	requestID int64
-	result    json.RawMessage
-	err       error
-	// clientError is set when the client returned a JSON-RPC error object.
-	// deliverSamplingResponse turns it into err, labeled with the pending
-	// request's method (sampling/createMessage, elicitation/create, roots/list).
-	clientError *clientJSONRPCError
-}
-
-// clientJSONRPCError holds a JSON-RPC error returned by the client in response
-// to a server-initiated request (sampling, elicitation, or roots).
-type clientJSONRPCError struct {
-	code    int
-	message string
-}
-
-// pendingClientRequest tracks a server-initiated request that is awaiting a
-// client response. Recording the method alongside the response channel lets
-// deliverSamplingResponse attribute a client-returned JSON-RPC error to the
-// method that actually failed instead of always reporting "sampling".
-type pendingClientRequest struct {
-	method   mcp.MCPMethod
-	response chan samplingResponseItem
-}
-
-// Elicitation support types for HTTP transport
-type elicitationRequestItem struct {
-	requestID int64
-	request   mcp.ElicitationRequest
-	response  chan samplingResponseItem
-}
-
-// Roots support types for HTTP transport
-type rootsRequestItem struct {
-	requestID int64
-	request   mcp.ListRootsRequest
-	response  chan samplingResponseItem
-}
-
-// streamableHttpSession is a session for streamable-http transport
-// requestScopedSSEKey carries a requestScopedSSE in the context of a POST
-// message handler whose response supports SSE.
-type requestScopedSSEKey struct{}
-
-// requestScopedSSE lets server requests issued while a POST message is being
-// handled be written to that POST's SSE response instead of the standalone
-// GET stream.
-type requestScopedSSE struct {
-	requests chan<- mcp.JSONRPCRequest
-	done     <-chan struct{}
-	register func()
-}
-
-// trySend queues the request for the originating POST stream. It reports
-// false when the POST has already finished or ctx expires, so the caller can
-// fall back to the standalone GET stream. While the POST stream is active it
-// waits for buffer space instead of treating backpressure as absence:
-// spilling to the GET stream mid-request would reintroduce the cross-stream
-// routing this type exists to avoid.
-func (r *requestScopedSSE) trySend(ctx context.Context, request mcp.JSONRPCRequest) bool {
-	select {
-	case <-r.done:
-		return false
-	default:
-	}
-	r.register()
-	select {
-	case r.requests <- request:
-		return true
-	case <-r.done:
-		return false
-	case <-ctx.Done():
-		return false
-	}
-}
-
 // When in POST handlers(request/notification), it's ephemeral, and only exists in the life of the request handler.
 // When in GET handlers(listening), it's a real session, and will be registered in the MCP server.
 type streamableHttpSession struct {
@@ -1649,14 +1321,6 @@ type streamableHttpSession struct {
 	upgradeToSSE        atomic.Bool
 	logLevels           *sessionLogLevelsStore
 
-	// Sampling support for bidirectional communication
-	samplingRequestChan    chan samplingRequestItem    // server -> client sampling requests
-	elicitationRequestChan chan elicitationRequestItem // server -> client elicitation requests
-	rootsRequestChan       chan rootsRequestItem       // server -> client list roots requests
-
-	samplingRequests sync.Map      // requestID -> pending sampling request context
-	requestIDCounter *atomic.Int64 // shared per server so IDs stay unique across sessions with the same session ID
-
 	// Whether the session serves a subscriptions/listen stream, and the
 	// notification types that stream opted in to.
 	subscriptionMu     sync.RWMutex
@@ -1664,19 +1328,15 @@ type streamableHttpSession struct {
 	subscriptionFilter mcp.SubscriptionFilter
 }
 
-func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[ServerTool], resourcesStore *sessionMapStore[ServerResource], templatesStore *sessionMapStore[ServerResourceTemplate], levels *sessionLogLevelsStore, requestIDCounter *atomic.Int64) *streamableHttpSession {
+func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[ServerTool], resourcesStore *sessionMapStore[ServerResource], templatesStore *sessionMapStore[ServerResourceTemplate], levels *sessionLogLevelsStore) *streamableHttpSession {
 	s := &streamableHttpSession{
-		done:                   make(chan struct{}),
-		sessionID:              sessionID,
-		notificationChannel:    make(chan mcp.JSONRPCNotification, 100),
-		tools:                  toolStore,
-		resources:              resourcesStore,
-		resourceTemplates:      templatesStore,
-		logLevels:              levels,
-		samplingRequestChan:    make(chan samplingRequestItem, 10),
-		elicitationRequestChan: make(chan elicitationRequestItem, 10),
-		rootsRequestChan:       make(chan rootsRequestItem, 10),
-		requestIDCounter:       requestIDCounter,
+		done:                make(chan struct{}),
+		sessionID:           sessionID,
+		notificationChannel: make(chan mcp.JSONRPCNotification, 100),
+		tools:               toolStore,
+		resources:           resourcesStore,
+		resourceTemplates:   templatesStore,
+		logLevels:           levels,
 	}
 	return s
 }
@@ -1779,177 +1439,6 @@ func (s *streamableHttpSession) serveSubscriptionStream() {
 }
 
 var _ SessionWithSubscriptionFilter = (*streamableHttpSession)(nil)
-
-// RequestSampling implements SessionWithSampling interface for HTTP transport
-func (s *streamableHttpSession) RequestSampling(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
-	// Generate unique request ID
-	requestID := s.requestIDCounter.Add(1)
-
-	// Create response channel for this specific request
-	responseChan := make(chan samplingResponseItem, 1)
-
-	// Create the sampling request item
-	samplingRequest := samplingRequestItem{
-		requestID: requestID,
-		request:   request,
-		response:  responseChan,
-	}
-
-	// Store the pending request
-	s.samplingRequests.Store(requestID, pendingClientRequest{
-		method:   mcp.MethodSamplingCreateMessage,
-		response: responseChan,
-	})
-	defer s.samplingRequests.Delete(requestID)
-
-	// Send the sampling request via the channel (non-blocking)
-	select {
-	case s.samplingRequestChan <- samplingRequest:
-		// Request queued successfully
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-		return nil, fmt.Errorf("sampling request queue is full - server overloaded")
-	}
-
-	// Wait for response or context cancellation
-	select {
-	case response := <-responseChan:
-		if response.err != nil {
-			return nil, response.err
-		}
-		var result mcp.CreateMessageResult
-		if err := json.Unmarshal(response.result, &result); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal sampling response: %v", err)
-		}
-
-		// Parse content from map[string]any to proper Content type (TextContent, ImageContent, AudioContent)
-		// HTTP transport unmarshals Content as map[string]any, we need to convert it to the proper type
-		content, err := mcp.ParseSamplingContent(result.Content)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse sampling response content: %w", err)
-		}
-		result.Content = content
-
-		return &result, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// ListRoots implements SessionWithRoots interface for HTTP transport.
-// It sends a list roots request to the client via SSE and waits for the response.
-func (s *streamableHttpSession) ListRoots(ctx context.Context, request mcp.ListRootsRequest) (*mcp.ListRootsResult, error) {
-	// Generate unique request ID
-	requestID := s.requestIDCounter.Add(1)
-
-	// Create response channel for this specific request
-	responseChan := make(chan samplingResponseItem, 1)
-
-	// Create the roots request item
-	rootsRequest := rootsRequestItem{
-		requestID: requestID,
-		request:   request,
-		response:  responseChan,
-	}
-
-	// Store the pending request
-	s.samplingRequests.Store(requestID, pendingClientRequest{
-		method:   mcp.MethodListRoots,
-		response: responseChan,
-	})
-	defer s.samplingRequests.Delete(requestID)
-
-	// Send the list roots request via the channel (non-blocking)
-	select {
-	case s.rootsRequestChan <- rootsRequest:
-		// Request queued successfully
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-		return nil, fmt.Errorf("list roots request queue is full - server overloaded")
-	}
-
-	// Wait for response or context cancellation
-	select {
-	case response := <-responseChan:
-		if response.err != nil {
-			return nil, response.err
-		}
-		var result mcp.ListRootsResult
-		if err := json.Unmarshal(response.result, &result); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal list roots response: %v", err)
-		}
-		return &result, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// RequestElicitation implements SessionWithElicitation interface for HTTP transport
-func (s *streamableHttpSession) RequestElicitation(ctx context.Context, request mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
-	// Generate unique request ID
-	requestID := s.requestIDCounter.Add(1)
-
-	// Create response channel for this specific request
-	responseChan := make(chan samplingResponseItem, 1)
-
-	// Create the sampling request item
-	elicitationRequest := elicitationRequestItem{
-		requestID: requestID,
-		request:   request,
-		response:  responseChan,
-	}
-
-	// Store the pending request
-	s.samplingRequests.Store(requestID, pendingClientRequest{
-		method:   mcp.MethodElicitationCreate,
-		response: responseChan,
-	})
-	defer s.samplingRequests.Delete(requestID)
-
-	// Prefer the originating POST's SSE stream when this call comes from an
-	// active POST handler with a streaming response, so a client that only
-	// dispatches server requests from that stream sees the elicitation before
-	// the final response. Fall back to the standalone GET stream otherwise.
-	jsonrpcRequest := mcp.JSONRPCRequest{
-		JSONRPC: "2.0",
-		ID:      mcp.NewRequestId(requestID),
-		Method:  string(mcp.MethodElicitationCreate),
-		Params:  request.Params,
-	}
-	scoped, hasScoped := ctx.Value(requestScopedSSEKey{}).(*requestScopedSSE)
-	if !hasScoped || !scoped.trySend(ctx, jsonrpcRequest) {
-		// Send the elicitation request via the channel (non-blocking)
-		select {
-		case s.elicitationRequestChan <- elicitationRequest:
-			// Request queued successfully
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-			return nil, fmt.Errorf("elicitation request queue is full - server overloaded")
-		}
-	}
-
-	// Wait for response or context cancellation
-	select {
-	case response := <-responseChan:
-		if response.err != nil {
-			return nil, response.err
-		}
-		var result mcp.ElicitationResult
-		if err := json.Unmarshal(response.result, &result); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal elicitation response: %v", err)
-		}
-		return &result, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-var _ SessionWithSampling = (*streamableHttpSession)(nil)
-var _ SessionWithElicitation = (*streamableHttpSession)(nil)
-var _ SessionWithRoots = (*streamableHttpSession)(nil)
 
 // --- session id manager ---
 

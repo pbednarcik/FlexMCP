@@ -27,10 +27,6 @@ type Server struct {
 	serverOpts        []server.ServerOption
 	clientInfo        mcp.Implementation
 
-	samplingHandler    client.SamplingHandler
-	elicitationHandler client.ElicitationHandler
-	rootsHandler       client.RootsHandler
-
 	cancel func()
 
 	serverReader *io.PipeReader
@@ -139,29 +135,6 @@ func (s *Server) SetClientInfo(info mcp.Implementation) {
 	s.clientInfo = info
 }
 
-// SetSamplingHandler registers a handler that responds to sampling requests
-// (server.RequestSampling) made by tools under test. Must be called before Start().
-// The test client will advertise the sampling capability during initialization so
-// that the server is allowed to issue sampling requests.
-func (s *Server) SetSamplingHandler(h client.SamplingHandler) {
-	s.samplingHandler = h
-}
-
-// SetElicitationHandler registers a handler that responds to elicitation requests
-// (server.RequestElicitation) made by tools under test. Must be called before Start().
-// The test client will advertise the elicitation capability during initialization so
-// that the server is allowed to issue elicitation requests.
-func (s *Server) SetElicitationHandler(h client.ElicitationHandler) {
-	s.elicitationHandler = h
-}
-
-// SetRootsHandler registers a handler that responds to roots/list requests
-// (server.RequestRoots) made by tools under test. Must be called before Start().
-// The test client will advertise the roots capability during initialization.
-func (s *Server) SetRootsHandler(h client.RootsHandler) {
-	s.rootsHandler = h
-}
-
 // Start starts the server in a goroutine. Make sure to defer Close() after Start().
 // When using NewServer(), the returned server is already started.
 func (s *Server) Start(ctx context.Context) error {
@@ -169,36 +142,16 @@ func (s *Server) Start(ctx context.Context) error {
 
 	ctx, s.cancel = context.WithCancel(ctx)
 
-	// Handler setters must be called before Start, so there is no data race.
-	samplingHandler := s.samplingHandler
-
 	// Start the MCP server in a goroutine
 	go func() {
 		defer s.wg.Done()
 
-		// Tools under test may still call server.RequestSampling,
-		// server.RequestElicitation, and server.RequestRoots directly.
-		// Protocol version 2026-07-28
-		// replaced that pattern with multi round-trip requests, but the
-		// harness runs over stdio, which is genuinely bidirectional, so the
-		// old pattern is kept working here.
-		serverOpts := append([]server.ServerOption{
-			server.WithLegacyServerInitiatedRequests(),
-		}, s.serverOpts...)
-
-		mcpServer := server.NewMCPServer(s.name, "1.0.0", serverOpts...)
+		mcpServer := server.NewMCPServer(s.name, "1.0.0", s.serverOpts...)
 
 		mcpServer.AddTools(s.tools...)
 		mcpServer.AddPrompts(s.prompts...)
 		mcpServer.AddResources(s.resources...)
 		mcpServer.AddResourceTemplates(s.resourceTemplates...)
-
-		// Automatically enable sampling on the server when the test supplies a
-		// sampling handler, so tools can call server.RequestSampling without
-		// any additional server-side setup.
-		if samplingHandler != nil {
-			mcpServer.EnableSampling()
-		}
 
 		logger := log.New(&s.logBuffer, "", 0)
 
@@ -212,22 +165,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.transport = transport.NewIO(s.clientReader, s.clientWriter, io.NopCloser(&s.logBuffer))
 
-	// Build client options from registered handlers.
-	var clientOpts []client.ClientOption
-	if s.samplingHandler != nil {
-		clientOpts = append(clientOpts, client.WithSamplingHandler(s.samplingHandler))
-	}
-	if s.elicitationHandler != nil {
-		clientOpts = append(clientOpts, client.WithElicitationHandler(s.elicitationHandler))
-	}
-	if s.rootsHandler != nil {
-		clientOpts = append(clientOpts, client.WithRootsHandler(s.rootsHandler))
-	}
+	s.client = client.NewClient(s.transport)
 
-	s.client = client.NewClient(s.transport, clientOpts...)
-
-	// Use client.Start instead of transport.Start so that bidirectional request
-	// handlers (sampling, elicitation, roots) are registered before the Initialize handshake.
 	if err := s.client.Start(ctx); err != nil {
 		return fmt.Errorf("client.Start(): %w", err)
 	}

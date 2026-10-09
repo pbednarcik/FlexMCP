@@ -596,7 +596,7 @@ func TestModernProtocol_ListenStreamReceivesListChanged(t *testing.T) {
 // A listen stream's session receives no broadcast before subscriptions/listen
 // has recorded what the client asked for, nor after it is cleared.
 func TestStreamableHTTPSessionListenStreamIsFilteredThroughout(t *testing.T) {
-	session := newStreamableHttpSession("", nil, nil, nil, nil, new(atomic.Int64))
+	session := newStreamableHttpSession("", nil, nil, nil, nil)
 	assert.True(t, subscriptionAllowsNotification(session, mcp.MethodNotificationToolsListChanged),
 		"a session that serves no subscription stream is unfiltered")
 
@@ -675,11 +675,11 @@ func establishLegacySession(t *testing.T, url string) string {
 }
 
 func TestClientToServerResponsesByProtocolEra(t *testing.T) {
-	// A POST carrying an id plus a result is a client-to-server response,
-	// answering a server-initiated request. Protocol version 2026-07-28
-	// replaced that pattern with multi round-trip requests, so a modern
-	// response is refused: otherwise a valid Mcp-Session-Id could steer a
-	// modern message onto the legacy, session-scoped delivery path.
+	// A POST carrying an id plus a result is a client-to-server response. The
+	// server sends no requests, so nothing awaits one: a modern response is a
+	// malformed modern message (it carries no _meta) and is rejected as such; a
+	// legacy response is accepted and dropped, as the handshake-era transport
+	// rules require.
 	tests := []struct {
 		name string
 		// stateful mints real sessions, so the replayed ID is genuinely valid.
@@ -689,23 +689,25 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 		withSession bool
 		// protocolVersion is sent in the Mcp-Protocol-Version header.
 		protocolVersion string
-		wantRejected    bool
+		wantStatus      int
 	}{
 		{
 			name:            "a modern response replaying a valid session is rejected",
 			stateful:        true,
 			withSession:     true,
 			protocolVersion: mcp.ProtocolVersion20260728,
-			wantRejected:    true,
+			wantStatus:      http.StatusBadRequest,
 		},
 		{
 			name:            "a modern response without a session is rejected",
 			protocolVersion: mcp.ProtocolVersion20260728,
-			wantRejected:    true,
+			wantStatus:      http.StatusBadRequest,
 		},
 		{
-			name:         "a legacy response still reaches the delivery path",
-			wantRejected: false,
+			name:        "a legacy response is accepted and dropped",
+			stateful:    true,
+			withSession: true,
+			wantStatus:  http.StatusAccepted,
 		},
 	}
 
@@ -748,23 +750,16 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 
 			payload, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
+			assert.Equal(t, tt.wantStatus, resp.StatusCode, "body: %s", payload)
 
-			if !tt.wantRejected {
-				// The legacy path reports its own outcome; what matters is
-				// that the modern-era rejection did not fire.
-				assert.NotContains(t, string(payload), "not supported in protocol version",
-					"legacy responses must still reach the session-scoped delivery path")
+			if tt.wantStatus != http.StatusBadRequest {
 				return
 			}
-
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
-				"a modern client-to-server response must not reach the session-scoped path")
-
 			var message map[string]any
 			require.NoError(t, json.Unmarshal(payload, &message))
 			errDetails := message["error"].(map[string]any)
-			assert.Equal(t, float64(mcp.INVALID_REQUEST), errDetails["code"])
-			assert.Contains(t, errDetails["message"], "not supported in protocol version")
+			assert.Equal(t, float64(mcp.INVALID_PARAMS), errDetails["code"])
+			assert.Contains(t, errDetails["message"], "missing or invalid _meta field")
 		})
 	}
 }

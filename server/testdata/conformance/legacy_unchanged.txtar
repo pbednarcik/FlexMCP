@@ -23,7 +23,6 @@ in 2026-07-28.
 	"jsonrpc": "2.0",
 	"result": {
 		"capabilities": {
-			"elicitation": {},
 			"prompts": {
 				"listChanged": true
 			},

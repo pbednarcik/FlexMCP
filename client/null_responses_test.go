@@ -7,7 +7,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -87,56 +86,4 @@ func TestListRootsWithoutRootsSendsEmptyArray(t *testing.T) {
 	encoded, err := json.Marshal(inputResponse)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"roots": []}`, string(encoded))
-}
-
-// An in-process client hands the server what its handler returns without
-// encoding it, so a missing result reached server code as a nil result
-// without an error. It is an error there too.
-func TestInProcessClientRejectsNilHandlerResult(t *testing.T) {
-	mcpServer := server.NewMCPServer("test-server", "1.0.0", server.WithElicitation(), server.WithRoots())
-	mcpServer.EnableSampling()
-	mcpServer.AddTool(mcp.NewTool("ask"), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		var err error
-		switch request.GetString("what", "") {
-		case "sampling":
-			_, err = mcpServer.RequestSampling(ctx, mcp.CreateMessageRequest{MaxTokens: 1})
-		case "elicitation":
-			_, err = mcpServer.RequestElicitation(ctx, mcp.ElicitationRequest{Params: mcp.ElicitationParams{
-				Message:         "hi",
-				RequestedSchema: map[string]any{"type": "object"},
-			}})
-		case "roots":
-			_, err = mcpServer.RequestRoots(ctx, mcp.ListRootsRequest{})
-		}
-		if err == nil {
-			return mcp.NewToolResultText("no error"), nil
-		}
-		return mcp.NewToolResultText(err.Error()), nil
-	})
-
-	client, err := NewInProcessClientWithOptions(mcpServer,
-		WithSamplingHandler(nilSamplingHandler{}),
-		WithElicitationHandler(nilElicitationHandler{}),
-		WithRootsHandler(nilRootsHandler{}),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	require.NoError(t, client.Start(t.Context()))
-	_, err = client.Initialize(t.Context(), mcp.InitializeRequest{Params: mcp.InitializeParams{
-		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-		ClientInfo:      mcp.Implementation{Name: "test-client", Version: "1.0.0"},
-	}})
-	require.NoError(t, err)
-
-	for _, what := range []string{"sampling", "elicitation", "roots"} {
-		t.Run(what, func(t *testing.T) {
-			result, err := client.CallTool(t.Context(), mcp.CallToolRequest{Params: mcp.CallToolParams{
-				Name:      "ask",
-				Arguments: map[string]any{"what": what},
-			}})
-			require.NoError(t, err)
-			require.Len(t, result.Content, 1)
-			assert.Equal(t, what+" handler returned no result", result.Content[0].(mcp.TextContent).Text)
-		})
-	}
 }

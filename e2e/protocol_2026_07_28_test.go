@@ -37,7 +37,6 @@ func newGreetServer(t *testing.T, opts ...server.ServerOption) *server.MCPServer
 	base := []server.ServerOption{
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
-		server.WithElicitation(),
 		server.WithInstructions("greets people"),
 	}
 	srv := server.NewMCPServer("e2e-greet", "1.0.0", append(base, opts...)...)
@@ -212,16 +211,16 @@ func TestE2E_LegacyClientAgainstModernServer(t *testing.T) {
 	assert.Equal(t, mcp.ProtocolVersion20251125, result.ProtocolVersion)
 	assert.NotEmpty(t, httpTransport.GetSessionId(), "legacy clients still get a session")
 
-	// The same greet tool works: the server fulfils its own input request by
-	// issuing the elicitation/create this client understands.
+	// The greet tool asks for input the way a modern client would be asked;
+	// this client cannot be, and the server no longer asks on its behalf, so
+	// the call fails and says why.
 	var call mcp.CallToolRequest
 	call.Params.Name = "greet"
 
-	greeting, err := c.CallTool(t.Context(), call)
-	require.NoError(t, err)
-	require.Len(t, greeting.Content, 1)
-	assert.Equal(t, "hello Grace", greeting.Content[0].(mcp.TextContent).Text)
-	assert.Equal(t, int32(1), handler.calls.Load())
+	_, err = c.CallTool(t.Context(), call)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs protocol version 2026-07-28")
+	assert.Equal(t, int32(0), handler.calls.Load(), "nothing was asked of the client")
 }
 
 func TestE2E_ModernClientAgainstLegacyOnlyServer(t *testing.T) {
@@ -241,22 +240,21 @@ func TestE2E_ModernClientAgainstLegacyOnlyServer(t *testing.T) {
 	assert.Equal(t, mcp.LATEST_LEGACY_PROTOCOL_VERSION, result.ProtocolVersion)
 	assert.Equal(t, mcp.LATEST_LEGACY_PROTOCOL_VERSION, c.ProtocolVersion())
 
+	// Negotiated down to the handshake, the client can no longer be asked for
+	// the greet tool's input, so the call fails and says why.
 	var call mcp.CallToolRequest
 	call.Params.Name = "greet"
 
-	greeting, err := c.CallTool(t.Context(), call)
-	require.NoError(t, err)
-	require.Len(t, greeting.Content, 1)
-	assert.Equal(t, "hello Alan", greeting.Content[0].(mcp.TextContent).Text)
+	_, err := c.CallTool(t.Context(), call)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs protocol version 2026-07-28")
+	assert.Equal(t, int32(0), handler.calls.Load(), "nothing was asked of the client")
 }
 
 func TestE2E_ModernProtocol_InProcess(t *testing.T) {
 	handler := &elicitOnce{name: "Edsger"}
 
-	inProcess := transport.NewInProcessTransportWithOptions(
-		newGreetServer(t),
-		transport.WithElicitationHandler(handler),
-	)
+	inProcess := transport.NewInProcessTransport(newGreetServer(t))
 
 	c := client.NewClient(inProcess, client.WithElicitationHandler(handler))
 	require.NoError(t, c.Start(t.Context()))

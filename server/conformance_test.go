@@ -185,7 +185,6 @@ func newConformanceServer() *MCPServer {
 		WithToolCapabilities(true),
 		WithResourceCapabilities(true, true),
 		WithPromptCapabilities(true),
-		WithElicitation(),
 	)
 
 	srv.AddTool(

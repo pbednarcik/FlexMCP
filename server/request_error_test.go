@@ -29,7 +29,6 @@ func newHandlerErrorServer() *MCPServer {
 		WithToolCapabilities(true),
 		WithPromptCapabilities(true),
 		WithResourceCapabilities(false, false),
-		WithElicitation(),
 	)
 	srv.AddTool(mcp.NewTool("protected_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Wrapped, as a handler that adds context to the error would.

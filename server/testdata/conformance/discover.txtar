@@ -31,7 +31,6 @@ every discover result.
 		},
 		"cacheScope": "private",
 		"capabilities": {
-			"elicitation": {},
 			"prompts": {
 				"listChanged": true
 			},

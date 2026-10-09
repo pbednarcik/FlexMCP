@@ -2,9 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -18,23 +15,9 @@ import (
 // an opaque RequestState. The client fulfils them and retries the original
 // request with the answers in InputResponses and the state echoed back.
 //
-// Handlers written this way also work against clients using an earlier
-// protocol version: this package performs the old server-initiated requests on
-// their behalf and re-invokes the handler with the answers, so a single
-// handler serves both eras.
-
-// maxLegacyInputRoundTrips bounds how many times the legacy bridge will
-// fulfil a handler's input requests and re-invoke it. It matches the client
-// side bound.
-const maxLegacyInputRoundTrips = 10
-
-// ErrLoadShedding is returned when a handler sheds load by asking the client
-// to retry later, but the client predates the multi round-trip pattern and has
-// no way to act on that signal.
-//
-// Callers may detect it with errors.Is to map the condition onto a transport
-// level backpressure response, such as HTTP 503 with Retry-After.
-var ErrLoadShedding = errors.New("the server is busy, retry later")
+// A client on an earlier protocol version cannot answer such a result, and
+// the server no longer issues the server-initiated requests it would need,
+// so the request fails with [ErrInputRequiresModernClient].
 
 // InputRequestBuilder accumulates the requests a handler needs answered before
 // it can complete, and renders them as an [mcp.InputRequiredResult].
@@ -184,150 +167,21 @@ func clientSupportsMultiRoundTrip(ctx context.Context) bool {
 	return mcp.IsModernProtocol(RequestProtocolVersion(ctx))
 }
 
-// resolveMultiRoundTrip bridges a handler that returned input requests to a
-// client that predates the multi round-trip pattern.
-//
-// It performs the server-initiated elicitation/create, sampling/createMessage,
-// and roots/list requests the handler asked for, then re-invokes the handler
-// with the answers attached, repeating until the handler produces a final
-// result.
-//
-// For clients that do support the pattern it is a no-op: the input_required
-// result is returned to them unchanged.
+// resolveMultiRoundTrip passes an input_required result through to a client
+// that understands the multi round-trip pattern, and refuses it for one that
+// predates protocol version 2026-07-28.
 func resolveMultiRoundTrip[T any](
 	ctx context.Context,
-	s *MCPServer,
 	result *T,
 	needsInput func(*T) (mcp.InputRequests, string, bool),
-	retry func(context.Context, mcp.MultiRoundTripParams) (*T, error),
 ) (*T, error) {
 	if clientSupportsMultiRoundTrip(ctx) {
 		return result, nil
 	}
-
-	for attempt := 0; ; attempt++ {
-		requests, state, pending := needsInput(result)
-		if !pending {
-			return result, nil
-		}
-		if len(requests) == 0 {
-			return nil, fmt.Errorf("multi round-trip: %w", ErrLoadShedding)
-		}
-		if attempt >= maxLegacyInputRoundTrips {
-			return nil, fmt.Errorf(
-				"multi round-trip: handler asked for input more than %d times",
-				maxLegacyInputRoundTrips)
-		}
-
-		responses, err := s.fulfillInputRequests(ctx, requests)
-		if err != nil {
-			return nil, err
-		}
-
-		result, err = retry(ctx, mcp.MultiRoundTripParams{
-			InputResponses: responses,
-			RequestState:   state,
-		})
-		if err != nil {
-			return nil, err
-		}
+	if _, _, pending := needsInput(result); pending {
+		return nil, ErrInputRequiresModernClient
 	}
-}
-
-// fulfillInputRequests answers a handler's input requests by issuing the
-// server-initiated requests that protocol versions before 2026-07-28 used.
-func (s *MCPServer) fulfillInputRequests(
-	ctx context.Context,
-	requests mcp.InputRequests,
-) (mcp.InputResponses, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var (
-		mu        sync.Mutex
-		wg        sync.WaitGroup
-		responses = make(mcp.InputResponses, len(requests))
-		firstErr  error
-	)
-
-	for id, request := range requests {
-		wg.Add(1)
-		go func(id string, request mcp.InputRequest) {
-			defer wg.Done()
-			response, err := s.fulfillInputRequest(ctx, request)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("fulfilling input request %q: %w", id, err)
-					cancel()
-				}
-				return
-			}
-			responses[id] = response
-		}(id, request)
-	}
-	wg.Wait()
-
-	if firstErr != nil {
-		return nil, fmt.Errorf("multi round-trip: %w", firstErr)
-	}
-	return responses, nil
-}
-
-// fulfillInputRequest issues a single server-initiated request.
-func (s *MCPServer) fulfillInputRequest(
-	ctx context.Context,
-	request mcp.InputRequest,
-) (mcp.InputResponse, error) {
-	switch request.Method {
-	case mcp.MethodElicitationCreate:
-		if request.Elicitation == nil {
-			return mcp.InputResponse{}, fmt.Errorf("elicitation input request has no params")
-		}
-		result, err := s.RequestElicitation(ctx, mcp.ElicitationRequest{
-			Method: string(mcp.MethodElicitationCreate),
-			Params: *request.Elicitation,
-		})
-		if err != nil {
-			return mcp.InputResponse{}, err
-		}
-		if result == nil {
-			return mcp.InputResponse{}, fmt.Errorf("session returned no elicitation result")
-		}
-		return mcp.NewElicitationInputResponse(*result), nil
-
-	case mcp.MethodSamplingCreateMessage:
-		if request.Sampling == nil {
-			return mcp.InputResponse{}, fmt.Errorf("sampling input request has no params")
-		}
-		result, err := s.RequestSampling(ctx, mcp.CreateMessageRequest{
-			Method:              string(mcp.MethodSamplingCreateMessage),
-			CreateMessageParams: *request.Sampling,
-		})
-		if err != nil {
-			return mcp.InputResponse{}, err
-		}
-		if result == nil {
-			return mcp.InputResponse{}, fmt.Errorf("session returned no sampling result")
-		}
-		return mcp.NewSamplingInputResponse(*result), nil
-
-	case mcp.MethodListRoots:
-		result, err := s.RequestRoots(ctx, mcp.ListRootsRequest{
-			Method: string(mcp.MethodListRoots),
-		})
-		if err != nil {
-			return mcp.InputResponse{}, err
-		}
-		if result == nil {
-			return mcp.InputResponse{}, fmt.Errorf("session returned no roots result")
-		}
-		return mcp.NewRootsInputResponse(*result), nil
-
-	default:
-		return mcp.InputResponse{}, fmt.Errorf("unsupported input request method %q", request.Method)
-	}
+	return result, nil
 }
 
 // callToolResultNeedsInput reports whether a tools/call result asks the client
@@ -346,25 +200,4 @@ func getPromptResultNeedsInput(result *mcp.GetPromptResult) (mcp.InputRequests, 
 		return nil, "", false
 	}
 	return result.InputRequests, result.RequestState, true
-}
-
-// assertServerInitiatedRequestAllowed rejects a server-initiated request on a
-// connection using protocol version 2026-07-28 or later, where the pattern was
-// replaced by multi round-trip requests.
-//
-// The check is skipped for servers that opted in to
-// [WithLegacyServerInitiatedRequests].
-func (s *MCPServer) assertServerInitiatedRequestAllowed(ctx context.Context, method mcp.MCPMethod) error {
-	if s != nil && s.allowServerInitiatedRequests {
-		return nil
-	}
-	if !clientSupportsMultiRoundTrip(ctx) {
-		return nil
-	}
-	// An in-process session dispatches to a handler directly, so no protocol
-	// message is sent and the restriction does not apply.
-	if session, ok := ClientSessionFromContext(ctx).(interface{ isInProcess() }); ok && session != nil {
-		return nil
-	}
-	return fmt.Errorf("%q: %w", method, ErrServerInitiatedRequestUnsupported)
 }

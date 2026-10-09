@@ -35,44 +35,6 @@ func TestGetPromptNilResultIsAnError(t *testing.T) {
 	assert.Equal(t, "prompt 'broken' handler returned no result", errorResponse.Error.Message)
 }
 
-// The retry a legacy client's request is bridged through can return nil too,
-// after the first call asked for input.
-func TestGetPromptNilResultOnBridgedRetryIsAnError(t *testing.T) {
-	srv := NewMCPServer("test-server", "1.0.0", WithPromptCapabilities(true), WithElicitation())
-	srv.AddPrompt(mcp.NewPrompt("askThenFail"), func(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		if ElicitationResponse(request.Params.InputResponses, "topic") != nil {
-			return nil, nil
-		}
-		return NewInputRequestBuilder("step=1").
-			Elicit("topic", mcp.ElicitationParams{
-				Mode:    mcp.ElicitationModeForm,
-				Message: "Which topic?",
-				RequestedSchema: map[string]any{
-					"type":       "object",
-					"properties": map[string]any{"topic": map[string]any{"type": "string"}},
-				},
-			}).
-			PromptResult(), nil
-	})
-
-	session := newMRTRSession("legacy")
-	session.response = &mcp.ElicitationResult{
-		Action:  mcp.ElicitationResponseActionAccept,
-		Content: map[string]any{"topic": "go"},
-	}
-	ctx := srv.WithContext(t.Context(), session)
-	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{})
-
-	result, reqErr := srv.handleGetPrompt(ctx, 1, mcp.GetPromptRequest{
-		Params: mcp.GetPromptParams{Name: "askThenFail"},
-	})
-	assert.Nil(t, result)
-	require.NotNil(t, reqErr)
-	assert.Equal(t, mcp.INTERNAL_ERROR, reqErr.code)
-	assert.EqualError(t, reqErr.err, "prompt 'askThenFail' handler returned no result")
-	assert.Equal(t, 1, session.calls, "the server should have elicited on the handler's behalf")
-}
-
 // A tool handler that returns neither a result nor an error used to be
 // answered with a null result, which clients reject as malformed.
 func TestCallToolNilResultIsAnError(t *testing.T) {
@@ -92,44 +54,6 @@ func TestCallToolNilResultIsAnError(t *testing.T) {
 	require.True(t, ok, "expected an error response, got %T", response)
 	assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
 	assert.Equal(t, "tool 'broken' handler returned no result", errorResponse.Error.Message)
-}
-
-// As with prompts, the retry a legacy client's call is bridged through can
-// return nil after the first call asked for input.
-func TestCallToolNilResultOnBridgedRetryIsAnError(t *testing.T) {
-	srv := NewMCPServer("test-server", "1.0.0", WithToolCapabilities(true), WithElicitation())
-	srv.AddTool(mcp.NewTool("askThenFail"), func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if ElicitationResponse(request.Params.InputResponses, "confirm") != nil {
-			return nil, nil
-		}
-		return NewInputRequestBuilder("step=1").
-			Elicit("confirm", mcp.ElicitationParams{
-				Mode:    mcp.ElicitationModeForm,
-				Message: "Continue?",
-				RequestedSchema: map[string]any{
-					"type":       "object",
-					"properties": map[string]any{"confirmed": map[string]any{"type": "boolean"}},
-				},
-			}).
-			ToolResult(), nil
-	})
-
-	session := newMRTRSession("legacy")
-	session.response = &mcp.ElicitationResult{
-		Action:  mcp.ElicitationResponseActionAccept,
-		Content: map[string]any{"confirmed": true},
-	}
-	ctx := srv.WithContext(t.Context(), session)
-	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{})
-
-	result, reqErr := srv.handleToolCall(ctx, 1, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{Name: "askThenFail"},
-	})
-	assert.Nil(t, result)
-	require.NotNil(t, reqErr)
-	assert.Equal(t, mcp.INTERNAL_ERROR, reqErr.code)
-	assert.EqualError(t, reqErr.err, "tool 'askThenFail' handler returned no result")
-	assert.Equal(t, 1, session.calls, "the server should have elicited on the handler's behalf")
 }
 
 // Run as a task, the same handler used to complete the task with a nil

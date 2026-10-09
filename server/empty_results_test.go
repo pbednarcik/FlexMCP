@@ -192,7 +192,7 @@ func askForTopic(_ context.Context, request mcp.GetPromptRequest) (*mcp.GetPromp
 // A prompt asking the client for more input has no messages yet, so it keeps
 // the shape it was given.
 func TestGetPromptLeavesInputRequestsWithoutMessages(t *testing.T) {
-	s := NewMCPServer("test", "1.0.0", WithPromptCapabilities(true), WithElicitation())
+	s := NewMCPServer("test", "1.0.0", WithPromptCapabilities(true))
 	s.AddPrompt(mcp.NewPrompt("ask"), askForTopic)
 
 	ctx := WithRequestProtocolInfo(t.Context(), &RequestProtocolInfo{
@@ -206,23 +206,17 @@ func TestGetPromptLeavesInputRequestsWithoutMessages(t *testing.T) {
 	assert.Nil(t, result.Messages)
 }
 
-// For a client that predates multi round-trip, the server answers the input
-// request itself and retries the handler; the retried result is the one sent.
-func TestGetPromptBridgedRetryWithoutMessages(t *testing.T) {
-	s := NewMCPServer("test", "1.0.0", WithPromptCapabilities(true), WithElicitation())
+// A client that predates multi round-trip cannot be asked, and the server no
+// longer asks on its behalf: the prompt fails with ErrInputRequiresModernClient.
+func TestGetPromptNeedingInputFailsForLegacyClients(t *testing.T) {
+	s := NewMCPServer("test", "1.0.0", WithPromptCapabilities(true))
 	s.AddPrompt(mcp.NewPrompt("ask"), askForTopic)
 
-	session := newMRTRSession("legacy")
-	session.response = &mcp.ElicitationResult{
-		Action:  mcp.ElicitationResponseActionAccept,
-		Content: map[string]any{"topic": "go"},
-	}
-	ctx := s.WithContext(t.Context(), session)
+	ctx := s.WithContext(t.Context(), newMRTRSession("legacy"))
 	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{})
 
 	result, reqErr := s.handleGetPrompt(ctx, 1, mcp.GetPromptRequest{Params: mcp.GetPromptParams{Name: "ask"}})
-	require.Nil(t, reqErr)
-	assert.Equal(t, 1, session.calls, "the server should have elicited on the handler's behalf")
-	assert.Equal(t, "no messages for this topic", result.Description)
-	assert.Equal(t, []mcp.PromptMessage{}, result.Messages)
+	assert.Nil(t, result)
+	require.NotNil(t, reqErr)
+	assert.ErrorIs(t, reqErr, ErrInputRequiresModernClient)
 }

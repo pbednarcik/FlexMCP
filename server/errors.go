@@ -39,12 +39,13 @@ var (
 	// in its _meta.
 	ErrRequiresModernProtocol = errors.New("requires protocol version " + mcp.ProtocolVersion20260728 + " or later")
 
-	// ErrServerInitiatedRequestUnsupported indicates the server tried to send a
-	// request to a client using protocol version 2026-07-28 or later, where
-	// server-initiated requests were replaced by multi round-trip requests.
-	ErrServerInitiatedRequestUnsupported = errors.New(
-		"server-initiated requests are not supported in protocol version " + mcp.ProtocolVersion20260728 +
-			" or later: return an InputRequests map from the handler instead (multi round-trip requests, SEP-2322)")
+	// ErrInputRequiresModernClient is returned when a handler asks the client
+	// for input through a multi round-trip result and the client predates
+	// protocol version 2026-07-28: the server issues no server-initiated
+	// requests, so the question cannot reach that client.
+	ErrInputRequiresModernClient = errors.New(
+		"the handler asked the client for input, which needs protocol version " + mcp.ProtocolVersion20260728 +
+			" or later (multi round-trip requests, SEP-2322)")
 )
 
 // ErrDynamicPathConfig is returned when attempting to use static path methods with dynamic path configuration

@@ -10,13 +10,13 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// InProcessTransport calls an MCPServer directly, with no wire in between:
+// requests go to HandleMessage, and the server's notifications are forwarded
+// from the session to the client's handler.
 type InProcessTransport struct {
-	server             *server.MCPServer
-	samplingHandler    server.SamplingHandler
-	elicitationHandler server.ElicitationHandler
-	rootsHandler       server.RootsHandler
-	session            *server.InProcessSession
-	sessionID          string
+	server    *server.MCPServer
+	session   *server.InProcessSession
+	sessionID string
 
 	onNotification func(mcp.JSONRPCNotification)
 	notifyMu       sync.RWMutex
@@ -28,25 +28,8 @@ type InProcessTransport struct {
 	closeOnce sync.Once
 }
 
+// InProcessOption configures an InProcessTransport.
 type InProcessOption func(*InProcessTransport)
-
-func WithSamplingHandler(handler server.SamplingHandler) InProcessOption {
-	return func(t *InProcessTransport) {
-		t.samplingHandler = handler
-	}
-}
-
-func WithElicitationHandler(handler server.ElicitationHandler) InProcessOption {
-	return func(t *InProcessTransport) {
-		t.elicitationHandler = handler
-	}
-}
-
-func WithRootsHandler(handler server.RootsHandler) InProcessOption {
-	return func(t *InProcessTransport) {
-		t.rootsHandler = handler
-	}
-}
 
 func NewInProcessTransport(server *server.MCPServer) *InProcessTransport {
 	return &InProcessTransport{
@@ -57,16 +40,10 @@ func NewInProcessTransport(server *server.MCPServer) *InProcessTransport {
 }
 
 func NewInProcessTransportWithOptions(server *server.MCPServer, opts ...InProcessOption) *InProcessTransport {
-	t := &InProcessTransport{
-		server:    server,
-		sessionID: server.GenerateInProcessSessionID(),
-		done:      make(chan struct{}),
-	}
-
+	t := NewInProcessTransport(server)
 	for _, opt := range opts {
 		opt(t)
 	}
-
 	return t
 }
 
@@ -82,8 +59,7 @@ func (c *InProcessTransport) Start(ctx context.Context) error {
 	}
 
 	// Always create and register a session so server-to-client notifications
-	// (progress, list-changed, resource updates, etc.) have somewhere to land,
-	// in addition to any sampling/elicitation/roots handlers.
+	// (progress, list-changed, resource updates, etc.) have somewhere to land.
 	//
 	// Registration and the c.session/c.started assignments all happen under a
 	// single startedMu hold so that Start and Close are mutually exclusive:
@@ -95,7 +71,7 @@ func (c *InProcessTransport) Start(ctx context.Context) error {
 	// sync.Map store plus runs synchronous OnRegisterSession hooks; neither
 	// re-enters this transport's lock (safe from deadlock); slow user hooks
 	// only extend the lock hold.
-	session := server.NewInProcessSessionWithHandlers(c.sessionID, c.samplingHandler, c.elicitationHandler, c.rootsHandler)
+	session := server.NewInProcessSession(c.sessionID)
 	if err := c.server.RegisterSession(ctx, session); err != nil {
 		c.startedMu.Unlock()
 		return fmt.Errorf("failed to register session: %w", err)
