@@ -1,6 +1,6 @@
 module github.com/mark3labs/mcp-go/otel
 
-go 1.25.5
+go 1.27.2
 
 require (
 	github.com/mark3labs/mcp-go v1.0.0

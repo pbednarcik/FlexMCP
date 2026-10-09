@@ -18,7 +18,7 @@ func TestStructuredToolHandlerURLElicitationRequiredError(t *testing.T) {
 		{name: "value", err: urlElicitationRequired},
 		{name: "pointer", err: &urlElicitationRequired},
 		{name: "wrapped value", err: fmt.Errorf("checking access: %w", urlElicitationRequired)},
-		{name: "wrapped pointer", err: fmt.Errorf("checking access: %w", &urlElicitationRequired)},
+		{name: "wrapped pointer", err: fmt.Errorf("checking access: %w", urlElicitationRequiredPointer)},
 	}
 
 	for _, tt := range tests {

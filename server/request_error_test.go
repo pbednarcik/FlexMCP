@@ -20,6 +20,10 @@ var urlElicitationRequired = mcp.URLElicitationRequiredError{
 	}},
 }
 
+// The pointer form as an error value: vet's printf check rejects %w on a
+// pointer to a value-receiver error, but the server must unwrap it too.
+var urlElicitationRequiredPointer error = &urlElicitationRequired
+
 func newHandlerErrorServer() *MCPServer {
 	srv := NewMCPServer("test-server", "1.0.0",
 		WithToolCapabilities(true),
@@ -32,7 +36,7 @@ func newHandlerErrorServer() *MCPServer {
 		return nil, fmt.Errorf("checking access: %w", urlElicitationRequired)
 	})
 	srv.AddTool(mcp.NewTool("protected_pointer_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return nil, fmt.Errorf("checking access: %w", &urlElicitationRequired)
+		return nil, fmt.Errorf("checking access: %w", urlElicitationRequiredPointer)
 	})
 	srv.AddTool(mcp.NewTool("failing_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return nil, errors.New("backend unavailable")
