@@ -28,23 +28,13 @@ type InProcessTransport struct {
 	closeOnce sync.Once
 }
 
-// InProcessOption configures an InProcessTransport.
-type InProcessOption func(*InProcessTransport)
-
+// NewInProcessTransport returns a transport that calls server directly.
 func NewInProcessTransport(server *server.MCPServer) *InProcessTransport {
 	return &InProcessTransport{
 		server:    server,
 		sessionID: server.GenerateInProcessSessionID(),
 		done:      make(chan struct{}),
 	}
-}
-
-func NewInProcessTransportWithOptions(server *server.MCPServer, opts ...InProcessOption) *InProcessTransport {
-	t := NewInProcessTransport(server)
-	for _, opt := range opts {
-		opt(t)
-	}
-	return t
 }
 
 func (c *InProcessTransport) Start(ctx context.Context) error {
