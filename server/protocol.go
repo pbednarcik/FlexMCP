@@ -98,9 +98,20 @@ type SessionWithProtocolVersion interface {
 // required client capabilities are missing, or a well-known key holds a value
 // of the wrong shape.
 func extractRequestProtocolInfo(message json.RawMessage) (*RequestProtocolInfo, error) {
+	// One typed partial decode of the four well-known keys. Decoding _meta
+	// as a *mcp.Meta builds a generic map and every typed accessor then
+	// re-marshals its value, which was the largest allocation block of a
+	// request. The tags spell mcp.MetaKeyProtocolVersion, MetaKeyClientInfo,
+	// MetaKeyClientCapabilities and MetaKeyLogLevel; each value is decoded on
+	// its own so a malformed one is ignored, as the accessors ignored it.
 	var wrapper struct {
 		Params struct {
-			Meta *mcp.Meta `json:"_meta"`
+			Meta struct {
+				ProtocolVersion    json.RawMessage `json:"io.modelcontextprotocol/protocolVersion"`
+				ClientInfo         json.RawMessage `json:"io.modelcontextprotocol/clientInfo"`
+				ClientCapabilities json.RawMessage `json:"io.modelcontextprotocol/clientCapabilities"`
+				LogLevel           json.RawMessage `json:"io.modelcontextprotocol/logLevel"`
+			} `json:"_meta"`
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(message, &wrapper); err != nil {
@@ -110,7 +121,10 @@ func extractRequestProtocolInfo(message json.RawMessage) (*RequestProtocolInfo, 
 	}
 
 	meta := wrapper.Params.Meta
-	version := meta.ProtocolVersion()
+	var version string
+	if len(meta.ProtocolVersion) > 0 {
+		_ = json.Unmarshal(meta.ProtocolVersion, &version)
+	}
 	if !mcp.IsModernProtocol(version) {
 		// Either no version at all, or an older one: legacy era.
 		return &RequestProtocolInfo{ProtocolVersion: version}, nil
@@ -119,8 +133,15 @@ func extractRequestProtocolInfo(message json.RawMessage) (*RequestProtocolInfo, 
 	info := &RequestProtocolInfo{
 		Modern:          true,
 		ProtocolVersion: version,
-		ClientInfo:      meta.ClientInfo(),
-		LogLevel:        meta.LogLevel(),
+	}
+	if len(meta.ClientInfo) > 0 {
+		var clientInfo mcp.Implementation
+		if json.Unmarshal(meta.ClientInfo, &clientInfo) == nil {
+			info.ClientInfo = &clientInfo
+		}
+	}
+	if len(meta.LogLevel) > 0 {
+		_ = json.Unmarshal(meta.LogLevel, &info.LogLevel)
 	}
 
 	// Client capabilities are required on every modern request. An empty
@@ -129,11 +150,12 @@ func extractRequestProtocolInfo(message json.RawMessage) (*RequestProtocolInfo, 
 	// and is rejected as invalid params (-32602).
 	// MissingRequiredClientCapabilityError is for a request that needs a
 	// capability the client did not declare.
-	caps := meta.ClientCapabilities()
-	if caps == nil {
+	var caps mcp.ClientCapabilities
+	if len(meta.ClientCapabilities) == 0 || string(meta.ClientCapabilities) == "null" ||
+		json.Unmarshal(meta.ClientCapabilities, &caps) != nil {
 		return nil, errors.New("missing or invalid _meta field " + mcp.MetaKeyClientCapabilities)
 	}
-	info.ClientCapabilities = caps
+	info.ClientCapabilities = &caps
 
 	return info, nil
 }

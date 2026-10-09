@@ -122,7 +122,8 @@ func (s *MCPServer) HandleMessage(
 
 	// Extract trace context from _meta before opening the server span so the span
 	// inherits the correct parent (SEP-414, transport-agnostic propagation).
-	{
+	// Only a server with a meta propagator pays the decode.
+	if s.metaPropagator != nil {
 		var metaWrapper struct {
 			Params struct {
 				Meta *mcp.Meta `json:"_meta"`

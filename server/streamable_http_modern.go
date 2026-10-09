@@ -78,13 +78,17 @@ type requestEra struct {
 func detectRequestEra(header http.Header, body []byte) requestEra {
 	era := requestEra{headerVersion: header.Get(mcp.HeaderProtocolVersion)}
 
+	// Only the version is read, typed, so no generic _meta map is built for
+	// a decision that needs one string. The tag spells mcp.MetaKeyProtocolVersion.
 	var wrapper struct {
 		Params struct {
-			Meta *mcp.Meta `json:"_meta"`
+			Meta struct {
+				ProtocolVersion string `json:"io.modelcontextprotocol/protocolVersion"`
+			} `json:"_meta"`
 		} `json:"params"`
 	}
 	if json.Unmarshal(body, &wrapper) == nil {
-		era.metaVersion = wrapper.Params.Meta.ProtocolVersion()
+		era.metaVersion = wrapper.Params.Meta.ProtocolVersion
 	}
 
 	era.modern = mcp.IsModernProtocol(era.metaVersion) || mcp.IsModernProtocol(era.headerVersion)
