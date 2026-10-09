@@ -1,0 +1,51 @@
+name: Bug report
+description: Something in FlexMCP does not work as it should
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. FlexMCP is maintained in spare time, so a reply may take a while.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The smallest Go program or test that shows the problem.
+      render: go
+  - type: textarea
+    id: logs
+    attributes:
+      label: Errors or logs
+      render: text
+  - type: dropdown
+    id: upstream
+    attributes:
+      label: Does upstream mcp-go have the same problem?
+      description: If it does, it may belong upstream at github.com/mark3labs/mcp-go.
+      options:
+        - Not checked
+        - "Yes"
+        - No, only FlexMCP
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: FlexMCP version
+      description: The tag or commit you use.
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Go version and OS
+      placeholder: go1.25.5, Windows 11 amd64

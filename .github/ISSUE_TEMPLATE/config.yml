@@ -1,8 +1,5 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
-  - name: Ask a Question
-    url: https://github.com/mark3labs/mcp-go/discussions/categories/q-a
-    about: Ask any question about the project.
-  - name: Join the Community
-    url: https://discord.gg/RqSS2NQVsY
-    about: Join the community on Discord.
+  - name: General mcp-go questions
+    url: https://github.com/mark3labs/mcp-go/discussions
+    about: FlexMCP is a fork of mcp-go. Questions about the library in general are best asked upstream.

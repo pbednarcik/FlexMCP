@@ -1,76 +1,46 @@
 # Contributing
 
-Thank you for your interest in contributing to the MCP Go SDK! We welcome contributions of all kinds, including bug fixes, new features, and documentation improvements. This document outlines the process for contributing to the project.
+Thanks for your interest in FlexMCP.
 
-## Development Guidelines
+**A note on response times:** FlexMCP is maintained by one person in spare time. Issues and pull requests are welcome, but replies and reviews can take a while, sometimes weeks. If something is urgent for you, a fork is the fastest path.
 
-### Prerequisites
+## Before you start
 
-Make sure you have Go 1.25 or later installed on your machine. You can check your Go version by running:
+FlexMCP is a fork of [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go). If a bug or feature applies to mcp-go as well, it usually belongs upstream first; FlexMCP takes upstream changes in from time to time.
+
+For anything larger than a small fix, please open an issue first so we can agree on the approach before you spend time on it.
+
+## Development
+
+Go 1.25 or later. The repository holds two modules: the core at the root, and the OpenTelemetry adapter in `otel/` with its own `go.mod`.
 
 ```bash
-go version
+go test ./... -race
+cd otel && go test ./... -race
+golangci-lint run
 ```
 
-### Setup
+`go generate ./...` regenerates the request handler and hooks in `server/` from the templates in `server/internal/gen/`; run it after changing a template and commit the result.
 
-1. Fork the repository
-2. Clone your fork:
-   
-   ```bash
-    git clone https://github.com/YOUR_USERNAME/mcp-go.git
-    cd mcp-go
-    ```
-3. Install the required packages:
+## Pull requests
 
-    ```bash
-    go mod tidy
-    ```
-
-### Workflow
-
-1. Create a new branch.
-2. Make your changes.
-3. Ensure you have added tests for any new functionality.
-4. Run the tests as shown below from the root directory:
-
-    ```bash
-    go test -v './...'
-    ```
-
-    The `otel` submodule has its own `go.mod`. To test it:
-
-    ```bash
-    cd otel && go test -v './...'
-    ```
-5. Submit a pull request to the main branch.
+- One change per pull request, with a test that fails without it.
+- A change that claims a performance effect comes with a benchmark and its before and after numbers (benchstat).
+- Commit messages follow `type: summary` (`fix:`, `feat:`, `perf:`, `docs:`, `test:`, `chore:`).
+- Pull requests target `master`.
 
 ## Releasing
 
-The repository contains two Go modules:
-
-- `github.com/mark3labs/mcp-go` (root) — core, no OpenTelemetry deps.
-- `github.com/mark3labs/mcp-go/otel` — OpenTelemetry adapter, has its own
-  `go.mod`.
-
-Tag the core module first, then bump `otel/go.mod`'s `require` line to the new
-core tag (replacing the `replace` directive used during development), then tag
-the submodule:
+Tag the core module first, then point `otel/go.mod` at the new core tag (dropping the development `replace`), then tag the submodule:
 
 ```bash
-# 1. Tag the core
-git tag v0.X.Y
-git push origin v0.X.Y
+git tag vX.Y.Z
+git push origin vX.Y.Z
 
-# 2. Bump otel/go.mod and remove the replace directive
 cd otel
-go mod edit -require=github.com/mark3labs/mcp-go@v0.X.Y -dropreplace=github.com/mark3labs/mcp-go
+go mod edit -require=<core module path>@vX.Y.Z -dropreplace=<core module path>
 go mod tidy
-
-# 3. Commit and tag the submodule
-git commit -am "otel: pin core to v0.X.Y"
-git tag otel/v0.X.Y
-git push origin otel/v0.X.Y
+git commit -m "otel: pin core to vX.Y.Z" -- go.mod go.sum
+git tag otel/vX.Y.Z
+git push origin otel/vX.Y.Z
 ```
-
-Feel free to reach out if you have any questions or need help either by [opening an issue](https://github.com/mark3labs/mcp-go/issues) or by reaching out in the [Discord channel](https://discord.gg/RqSS2NQVsY).

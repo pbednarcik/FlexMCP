@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest something FlexMCP should do
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. FlexMCP is maintained in spare time, so a reply may take a while.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do and what gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: The behaviour or API you have in mind. A short usage example helps.
+    validations:
+      required: true
+  - type: input
+    id: spec
+    attributes:
+      label: MCP specification reference
+      description: A link to the section of the spec, if the feature comes from it.
+      placeholder: https://modelcontextprotocol.io/specification/...
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

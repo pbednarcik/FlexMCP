@@ -1,37 +1,19 @@
-## Description
-<!-- Provide a concise description of the changes in this PR -->
+## What and why
 
-Fixes #<issue_number> (if applicable)
+<!-- What this changes and the problem it solves. Link the issue: Fixes #123 -->
 
-## Type of Change
-<!-- Please select all the relevant options by replacing [ ] with [x] -->
+## Measurement
 
-- [ ] Bug fix (non-breaking change that fixes an issue)
-- [ ] New feature (non-breaking change that adds functionality)
-- [ ] MCP spec compatibility implementation
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
-- [ ] Code refactoring (no functional changes)
-- [ ] Performance improvement
-- [ ] Tests only (no functional changes)
-- [ ] Other (please describe):
+<!-- For a change that claims a performance effect: the benchmark, before and after (benchstat output).
+     Delete this section if the change makes no performance claim. -->
+
+## Upstream
+
+<!-- Could mark3labs/mcp-go take this too? Link the upstream PR or issue, or say why it is FlexMCP-only. -->
 
 ## Checklist
-<!-- Please select all that apply by replacing [ ] with [x] -->
 
-- [ ] My code follows the code style of this project
-- [ ] I have performed a self-review of my own code
-- [ ] I have added tests that prove my fix is effective or that my feature works
-- [ ] I have updated the documentation accordingly
-
-## MCP Spec Compliance
-<!-- If this PR implements a feature from the MCP specification, please answer the following -->
-<!-- If not applicable, remove this section -->
-
-- [ ] This PR implements a feature defined in the MCP specification
-- [ ] Link to relevant spec section: [Link text](https://modelcontextprotocol.io/specification/path-to-section)
-- [ ] Implementation follows the specification exactly
-
-## Additional Information
-<!-- Any additional information that might be useful for reviewers -->
-<!-- If not applicable, remove this section -->
+- [ ] Tests cover the change (a failing test first for a bug fix)
+- [ ] `go test ./... -race` passes (and in `otel/` if it is touched)
+- [ ] `golangci-lint run` is clean
+- [ ] `go generate ./...` leaves no diff, if a generator template changed
