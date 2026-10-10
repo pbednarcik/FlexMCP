@@ -442,6 +442,56 @@ func TestStreamableHTTP_GETIsNotServed(t *testing.T) {
 	}
 }
 
+// GET and DELETE have nothing to serve in either era, so both verbs answer
+// through one path: the same 405 with the same body whatever protocol version
+// the client names, after the one check every verb makes, that the version is
+// one this SDK implements (Transports.md row 28).
+func TestStreamableHTTP_GETAndDELETEAnswerOnePathInBothEras(t *testing.T) {
+	mcpServer := NewMCPServer("test-mcp-server", "1.0")
+	server := NewTestStreamableHTTPServer(mcpServer)
+
+	send := func(t *testing.T, method, version string) (*http.Response, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, method, server.URL, nil)
+		require.NoError(t, err)
+		if version != "" {
+			req.Header.Set(mcp.HeaderProtocolVersion, version)
+		}
+		resp, err := server.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp, string(body)
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			t.Run("one answer in both eras", func(t *testing.T) {
+				resp, legacyBody := send(t, method, mcp.LATEST_LEGACY_PROTOCOL_VERSION)
+				require.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+				for _, version := range []string{"", mcp.ProtocolVersion20260728} {
+					resp, body := send(t, method, version)
+					assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode, "version %q", version)
+					// RFC 9110 section 15.5.6 requires an Allow header on a 405.
+					assert.Equal(t, http.MethodPost, resp.Header.Get("Allow"), "version %q", version)
+					assert.Equal(t, legacyBody, body, "version %q answers through another path", version)
+				}
+			})
+
+			t.Run("an unknown version is rejected first, on either side of 2026-07-28", func(t *testing.T) {
+				for _, version := range []string{"2025-01-01", "2027-01-01"} {
+					resp, body := send(t, method, version)
+					assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "version %q", version)
+					assert.Contains(t, body, "Unsupported protocol version: "+version)
+				}
+			})
+		})
+	}
+}
+
 func TestStreamableHTTP_HttpHandler(t *testing.T) {
 	t.Run("Works with custom mux", func(t *testing.T) {
 		mcpServer := NewMCPServer("test", "1.0.0")

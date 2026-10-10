@@ -582,37 +582,29 @@ drainLoop:
 	}
 }
 
-// handleGet answers 405 with Allow: POST in both eras: protocol version
-// 2026-07-28 removed the standalone GET stream, and a legacy client is not
-// served one either. A legacy client's unsupported protocol version is still
-// reported first, as on every other verb.
+// handleGet answers 405 in both eras: protocol version 2026-07-28 removed the
+// standalone GET stream, and a legacy client is not served one either.
 func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
-	if isModernHTTPRequest(r) {
-		s.rejectModernSessionMethod(w, http.MethodGet)
-		return
-	}
-	if rejectUnsupportedProtocolVersion(w, r.header().Get(mcp.HeaderProtocolVersion)) {
-		return
-	}
-	// RFC 9110 section 15.5.6 requires an Allow header on 405 responses.
-	w.Header().Set("Allow", http.MethodPost)
-	writeHTTPError(w, "GET is not supported: this server opens no standalone stream", http.StatusMethodNotAllowed)
+	methodNotAllowed(w, r, "GET is not supported: this server opens no standalone stream")
 }
 
-// handleDelete answers 405 with Allow: POST in both eras: protocol version
-// 2026-07-28 removed protocol-level sessions, and the server keeps none for a
-// legacy client either, so there is nothing for a DELETE to terminate.
+// handleDelete answers 405 in both eras: protocol version 2026-07-28 removed
+// protocol-level sessions, and the server keeps none for a legacy client
+// either, so there is nothing for a DELETE to terminate.
 func (s *StreamableHTTPServer) handleDelete(w HTTPResponseWriter, r *HTTPRequest) {
-	if isModernHTTPRequest(r) {
-		s.rejectModernSessionMethod(w, http.MethodDelete)
-		return
-	}
+	methodNotAllowed(w, r, "DELETE is not supported: this server keeps no sessions")
+}
+
+// methodNotAllowed answers a verb the endpoint does not serve in either era,
+// through the one path every verb shares: a protocol version this SDK does not
+// implement is reported first, then 405 with Allow: POST and reason as the body.
+func methodNotAllowed(w HTTPResponseWriter, r *HTTPRequest, reason string) {
 	if rejectUnsupportedProtocolVersion(w, r.header().Get(mcp.HeaderProtocolVersion)) {
 		return
 	}
 	// RFC 9110 section 15.5.6 requires an Allow header on 405 responses.
 	w.Header().Set("Allow", http.MethodPost)
-	writeHTTPError(w, "DELETE is not supported: this server keeps no sessions", http.StatusMethodNotAllowed)
+	writeHTTPError(w, reason, http.StatusMethodNotAllowed)
 }
 
 // tagSubscription tags a notification with the ID of the

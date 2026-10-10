@@ -199,29 +199,12 @@ func (s *StreamableHTTPServer) writeJSONRPCMessage(w HTTPResponseWriter, message
 	}
 }
 
-// rejectModernSessionMethod answers a GET or DELETE from a client using
-// protocol version 2026-07-28 or later, where neither verb is part of the
-// transport any more.
-func (s *StreamableHTTPServer) rejectModernSessionMethod(w HTTPResponseWriter, verb string) {
-	// RFC 9110 section 15.5.6 requires an Allow header on 405 responses.
-	w.Header().Set("Allow", http.MethodPost)
-	writeHTTPError(w,
-		verb+" is not supported in protocol version "+mcp.ProtocolVersion20260728+
-			": server-to-client messages use subscriptions/listen",
-		http.StatusMethodNotAllowed)
-}
-
-// isModernHTTPRequest reports whether a request without a body - a GET or
-// DELETE - came from a client using protocol version 2026-07-28 or later.
-func isModernHTTPRequest(r *HTTPRequest) bool {
-	return mcp.IsModernProtocol(r.header().Get(mcp.HeaderProtocolVersion))
-}
-
-// rejectUnsupportedProtocolVersion answers a request from a client using a
-// protocol version before 2026-07-28 with 400 Bad Request when its
-// Mcp-Protocol-Version header names a version this SDK does not implement, and
-// reports whether it did. A missing header is accepted, as clients on
-// 2025-03-26 do not send it.
+// rejectUnsupportedProtocolVersion answers 400 Bad Request when a request's
+// Mcp-Protocol-Version header names a version this SDK does not implement,
+// whichever era it sorts into, and reports whether it did. A missing header is
+// accepted, as clients on 2025-03-26 do not send it. A modern POST is checked
+// by [StreamableHTTPServer.validateModernRequest] instead, which answers with
+// the JSON-RPC body that era prescribes.
 func rejectUnsupportedProtocolVersion(w HTTPResponseWriter, version string) bool {
 	if version == "" || mcp.IsValidProtocolVersion(version) {
 		return false
