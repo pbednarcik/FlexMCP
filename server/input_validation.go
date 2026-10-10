@@ -22,10 +22,9 @@ import (
 // tool name. Compilation is performed lazily on first use and the resulting
 // schema is cached for the lifetime of the cache.
 //
-// The cache is two-level: tool name -> schema digest -> compiled entry. Two
-// sessions can expose the same tool name with different schemas (via
-// SessionWithTools) and a global tool can be re-registered with a different
-// schema; each distinct schema is compiled once. Name-level invalidation
+// The cache is two-level: tool name -> schema digest -> compiled entry. A
+// tool can be re-registered with a different schema; each distinct schema is
+// compiled once. Name-level invalidation
 // drops every entry registered for that name in a single map delete, which
 // keeps DeleteTools / SetTools cleanup cheap.
 //

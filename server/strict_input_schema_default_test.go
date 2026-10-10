@@ -164,36 +164,3 @@ func TestStrictInputSchemaDefault_AppliesToSetTools(t *testing.T) {
 	require.NotNil(t, stored)
 	assert.Equal(t, false, stored.Tool.InputSchema.AdditionalProperties)
 }
-
-// TestStrictInputSchemaDefault_AppliesToSessionTools covers session-scoped
-// tools so a session that shadows a global tool inherits the strict default.
-func TestStrictInputSchemaDefault_AppliesToSessionTools(t *testing.T) {
-	srv := NewMCPServer("test", "1.0.0", WithStrictInputSchemaDefault())
-	sess := &fakeSessionWithTools{
-		id:    "s1",
-		ready: true,
-		tools: map[string]ServerTool{},
-	}
-	require.NoError(t, srv.RegisterSession(t.Context(), sess))
-
-	require.NoError(t, srv.AddSessionTool("s1",
-		mcp.NewTool("t", mcp.WithString("name")), okHandler))
-
-	got := sess.GetSessionTools()["t"]
-	assert.Equal(t, false, got.Tool.InputSchema.AdditionalProperties)
-}
-
-// fakeSessionWithTools is a minimal SessionWithTools used to exercise the
-// session-scoped registration path without spinning up a full transport.
-type fakeSessionWithTools struct {
-	id    string
-	ready bool
-	tools map[string]ServerTool
-}
-
-func (f *fakeSessionWithTools) SessionID() string                                   { return f.id }
-func (f *fakeSessionWithTools) NotificationChannel() chan<- mcp.JSONRPCNotification { return nil }
-func (f *fakeSessionWithTools) Initialize()                                         { f.ready = true }
-func (f *fakeSessionWithTools) Initialized() bool                                   { return f.ready }
-func (f *fakeSessionWithTools) GetSessionTools() map[string]ServerTool              { return f.tools }
-func (f *fakeSessionWithTools) SetSessionTools(tools map[string]ServerTool)         { f.tools = tools }

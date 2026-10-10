@@ -15,12 +15,9 @@ var (
 	ErrToolNotFound     = errors.New("tool not found")
 
 	// Session-related errors
-	ErrSessionNotFound                        = errors.New("session not found")
-	ErrSessionExists                          = errors.New("session already exists")
-	ErrSessionNotInitialized                  = errors.New("session not properly initialized")
-	ErrSessionDoesNotSupportTools             = errors.New("session does not support per-session tools")
-	ErrSessionDoesNotSupportResources         = errors.New("session does not support per-session resources")
-	ErrSessionDoesNotSupportResourceTemplates = errors.New("session does not support resource templates")
+	ErrSessionNotFound       = errors.New("session not found")
+	ErrSessionExists         = errors.New("session already exists")
+	ErrSessionNotInitialized = errors.New("session not properly initialized")
 
 	// Notification-related errors
 	ErrNotificationNotInitialized = errors.New("notification channel not initialized")

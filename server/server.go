@@ -223,7 +223,7 @@ type MCPServer struct {
 	// toolHeaderBindings holds each registered tool's x-mcp-header bindings,
 	// extracted once at registration so a tools/call never re-reads the input
 	// schema. Keyed like tools and taskTools and kept in step with them under
-	// toolsMu; session tools are not cached here.
+	// toolsMu.
 	toolHeaderBindings       map[string][]mcp.ParamHeaderBinding
 	paginationLimit          *int
 	sessions                 sync.Map
@@ -1392,19 +1392,6 @@ func (s *MCPServer) handleListResources(
 	}
 	s.resourcesMu.RUnlock()
 
-	// Check if there are session-specific resources
-	session := ClientSessionFromContext(ctx)
-	if session != nil {
-		if sessionWithResources, ok := session.(SessionWithResources); ok {
-			if sessionResources := sessionWithResources.GetSessionResources(); sessionResources != nil {
-				// Merge session-specific resources with global resources
-				for uri, serverResource := range sessionResources {
-					resourceMap[uri] = serverResource.Resource
-				}
-			}
-		}
-	}
-
 	// Sort the resources by name
 	resourcesList := slices.SortedFunc(maps.Values(resourceMap), func(a, b mcp.Resource) int {
 		return cmp.Compare(a.Name, b.Name)
@@ -1445,20 +1432,6 @@ func (s *MCPServer) handleListResourceTemplates(
 	}
 	s.resourcesMu.RUnlock()
 
-	// Check if there are session-specific resource templates
-	session := ClientSessionFromContext(ctx)
-	if session != nil {
-		if sessionWithTemplates, ok := session.(SessionWithResourceTemplates); ok {
-			if sessionTemplates := sessionWithTemplates.GetSessionResourceTemplates(); sessionTemplates != nil {
-				// Merge session-specific templates with global templates
-				// Session templates override global ones
-				for uriTemplate, serverTemplate := range sessionTemplates {
-					templateMap[uriTemplate] = serverTemplate.Template
-				}
-			}
-		}
-	}
-
 	// Convert map to slice for sorting and pagination
 	templates := make([]mcp.ResourceTemplate, 0, len(templateMap))
 	for _, template := range templateMap {
@@ -1495,34 +1468,9 @@ func (s *MCPServer) handleReadResource(
 ) (*mcp.ReadResourceResult, *requestError) {
 	s.resourcesMu.RLock()
 
-	// First check session-specific resources
-	var handler ResourceHandlerFunc
-	var ok bool
-
-	session := ClientSessionFromContext(ctx)
-	if session != nil {
-		if sessionWithResources, typeAssertOk := session.(SessionWithResources); typeAssertOk {
-			if sessionResources := sessionWithResources.GetSessionResources(); sessionResources != nil {
-				resource, sessionOk := sessionResources[request.Params.URI]
-				if sessionOk {
-					handler = resource.Handler
-					ok = true
-				}
-			}
-		}
-	}
-
-	// If not found in session tools, check global tools
-	if !ok {
-		globalResource, rok := s.resources[request.Params.URI]
-		if rok {
-			handler = globalResource.handler
-			ok = true
-		}
-	}
-
 	// First try direct resource handlers
-	if ok {
+	if globalResource, ok := s.resources[request.Params.URI]; ok {
+		handler := globalResource.handler
 		s.resourcesMu.RUnlock()
 
 		finalHandler := handler
@@ -1544,48 +1492,21 @@ func (s *MCPServer) handleReadResource(
 	// If no direct handler found, try matching against templates
 	var matchedHandler ResourceTemplateHandlerFunc
 	var matched bool
-
-	// First check session templates if available
-	if session != nil {
-		if sessionWithTemplates, ok := session.(SessionWithResourceTemplates); ok {
-			sessionTemplates := sessionWithTemplates.GetSessionResourceTemplates()
-			for _, serverTemplate := range sessionTemplates {
-				if serverTemplate.Template.URITemplate == nil {
-					continue
-				}
-				if matchesTemplate(request.Params.URI, serverTemplate.Template.URITemplate) {
-					matchedHandler = serverTemplate.Handler
-					matched = true
-					matchedVars := serverTemplate.Template.URITemplate.Match(request.Params.URI)
-					// Convert matched variables to a map
-					request.Params.Arguments = make(map[string]any, len(matchedVars))
-					for name, value := range matchedVars {
-						request.Params.Arguments[name] = value.V
-					}
-					break
-				}
-			}
+	for _, entry := range s.resourceTemplates {
+		template := entry.template
+		if template.URITemplate == nil {
+			continue
 		}
-	}
-
-	// If not found in session templates, check global templates
-	if !matched {
-		for _, entry := range s.resourceTemplates {
-			template := entry.template
-			if template.URITemplate == nil {
-				continue
+		if matchesTemplate(request.Params.URI, template.URITemplate) {
+			matchedHandler = entry.handler
+			matched = true
+			matchedVars := template.URITemplate.Match(request.Params.URI)
+			// Convert matched variables to a map
+			request.Params.Arguments = make(map[string]any, len(matchedVars))
+			for name, value := range matchedVars {
+				request.Params.Arguments[name] = value.V
 			}
-			if matchesTemplate(request.Params.URI, template.URITemplate) {
-				matchedHandler = entry.handler
-				matched = true
-				matchedVars := template.URITemplate.Match(request.Params.URI)
-				// Convert matched variables to a map
-				request.Params.Arguments = make(map[string]any, len(matchedVars))
-				for name, value := range matchedVars {
-					request.Params.Arguments[name] = value.V
-				}
-				break
-			}
+			break
 		}
 	}
 	s.resourcesMu.RUnlock()
@@ -1789,8 +1710,8 @@ func (s *MCPServer) handleGetPrompt(
 	return result, nil
 }
 
-// filteredTools builds the full tool candidate set (global + task + session)
-// and applies all registered tool filters. This is the single source of truth
+// filteredTools builds the full tool candidate set (global + task) and
+// applies all registered tool filters. This is the single source of truth
 // for which tools are visible in a given context, used by both handleListTools
 // and handleToolCall to guarantee consistent behavior.
 func (s *MCPServer) filteredTools(ctx context.Context) []mcp.Tool {
@@ -1819,39 +1740,6 @@ func (s *MCPServer) filteredTools(ctx context.Context) []mcp.Tool {
 		}
 	}
 	s.toolsMu.RUnlock()
-
-	// Check if there are session-specific tools
-	session := ClientSessionFromContext(ctx)
-	if session != nil {
-		if sessionWithTools, ok := session.(SessionWithTools); ok {
-			if sessionTools := sessionWithTools.GetSessionTools(); sessionTools != nil {
-				// Override or add session-specific tools
-				// We need to create a map first to merge the tools properly
-				toolMap := make(map[string]mcp.Tool)
-
-				// Add global tools first
-				for _, tool := range tools {
-					toolMap[tool.Name] = tool
-				}
-
-				// Then override with session-specific tools
-				for name, serverTool := range sessionTools {
-					toolMap[name] = serverTool.Tool
-				}
-
-				// Convert back to slice
-				tools = make([]mcp.Tool, 0, len(toolMap))
-				for _, tool := range toolMap {
-					tools = append(tools, tool)
-				}
-
-				// Sort again to maintain consistent ordering
-				sort.Slice(tools, func(i, j int) bool {
-					return tools[i].Name < tools[j].Name
-				})
-			}
-		}
-	}
 
 	// Apply tool filters if any are defined
 	s.toolFiltersMu.RLock()
@@ -1922,43 +1810,23 @@ func (s *MCPServer) handleToolCall(
 	id any,
 	request mcp.CallToolRequest,
 ) (any, *requestError) {
-	// First check session-specific tools
-	var tool ServerTool
-	var ok bool
+	// Find the tool: the server's own first, then the task tools.
 	var taskToolOnly bool
-
-	session := ClientSessionFromContext(ctx)
-	if session != nil {
-		if sessionWithTools, typeAssertOk := session.(SessionWithTools); typeAssertOk {
-			if sessionTools := sessionWithTools.GetSessionTools(); sessionTools != nil {
-				var sessionOk bool
-				tool, sessionOk = sessionTools[request.Params.Name]
-				if sessionOk {
-					ok = true
-				}
-			}
-		}
-	}
-
-	// If not found in session tools, check global tools
+	s.toolsMu.RLock()
+	tool, ok := s.tools[request.Params.Name]
 	if !ok {
-		s.toolsMu.RLock()
-		tool, ok = s.tools[request.Params.Name]
-		// If not in regular tools, check task tools
-		if !ok {
-			if taskTool, taskOk := s.taskTools[request.Params.Name]; taskOk {
-				// Convert ServerTaskTool to ServerTool for validation
-				// The tool metadata is the same, we just need it for checking task support
-				tool = ServerTool{
-					Tool:    taskTool.Tool,
-					Handler: nil, // Handler will be used from taskTool in handleTaskAugmentedToolCall
-				}
-				ok = true
-				taskToolOnly = true
+		if taskTool, taskOk := s.taskTools[request.Params.Name]; taskOk {
+			// Convert ServerTaskTool to ServerTool for validation
+			// The tool metadata is the same, we just need it for checking task support
+			tool = ServerTool{
+				Tool:    taskTool.Tool,
+				Handler: nil, // Handler will be used from taskTool in handleTaskAugmentedToolCall
 			}
+			ok = true
+			taskToolOnly = true
 		}
-		s.toolsMu.RUnlock()
 	}
+	s.toolsMu.RUnlock()
 
 	if !ok {
 		return nil, &requestError{
@@ -2081,17 +1949,6 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	taskTool, isTaskTool := s.taskTools[request.Params.Name]
 	regularTool, isRegularTool := s.tools[request.Params.Name]
 	s.toolsMu.RUnlock()
-
-	// A session's own tool takes precedence over the server's, as it does in
-	// handleToolCall, which routed this call here after finding it there.
-	if session := ClientSessionFromContext(ctx); session != nil {
-		if sessionWithTools, ok := session.(SessionWithTools); ok {
-			if sessionTool, ok := sessionWithTools.GetSessionTools()[request.Params.Name]; ok {
-				regularTool, isRegularTool = sessionTool, true
-				isTaskTool = false
-			}
-		}
-	}
 
 	// Determine which tool to use and validate task support
 	var toolToUse ServerTaskTool

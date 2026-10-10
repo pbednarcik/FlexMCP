@@ -115,7 +115,6 @@ func TestStreamableHTTP_LocalhostProtection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mcpServer := NewMCPServer("test", "1.0.0")
 			httpServer := NewStreamableHTTPServer(mcpServer,
-				WithStateLess(true),
 				WithDisableLocalhostProtection(tt.disableProtection),
 			)
 			addr, client := startLoopbackServer(t, httpServer)
@@ -149,7 +148,7 @@ func TestStreamableHTTP_LocalhostProtection(t *testing.T) {
 // without a loopback local address must not reject foreign Host headers.
 func TestStreamableHTTP_LocalhostProtection_NonLoopbackUnaffected(t *testing.T) {
 	mcpServer := NewMCPServer("test", "1.0.0")
-	httpServer := NewStreamableHTTPServer(mcpServer, WithStateLess(true))
+	httpServer := NewStreamableHTTPServer(mcpServer)
 
 	// Simulate a request that arrived on a non-loopback interface.
 	body, err := json.Marshal(initRequest)

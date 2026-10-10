@@ -14,10 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unicode"
-
-	"github.com/google/uuid"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -33,59 +30,6 @@ func WithEndpointPath(endpointPath string) StreamableHTTPOption {
 		// Normalize the endpoint path to ensure it starts with a slash and doesn't end with one
 		normalizedPath := "/" + strings.Trim(endpointPath, "/")
 		s.endpointPath = normalizedPath
-	}
-}
-
-// WithStateLess sets the server to stateless mode.
-// If true, the server will manage no session information. Every request will be treated
-// as a new session. No session id returned to the client.
-// The default is false.
-//
-// Note: This is a convenience method. It's identical to set WithSessionIdManager option
-// to StatelessSessionIdManager.
-func WithStateLess(stateLess bool) StreamableHTTPOption {
-	return func(s *StreamableHTTPServer) {
-		if stateLess {
-			s.sessionIdManagerResolver = NewDefaultSessionIdManagerResolver(&StatelessSessionIdManager{})
-		}
-	}
-}
-
-// WithSessionIdManager sets a custom session id generator for the server.
-// By default, the server uses StatelessGeneratingSessionIdManager (generates IDs but no local validation).
-// Note: Options are applied in order; the last one wins. If combined with
-// WithStateLess or WithSessionIdManagerResolver, whichever is applied last takes effect.
-func WithSessionIdManager(manager SessionIdManager) StreamableHTTPOption {
-	return func(s *StreamableHTTPServer) {
-		if manager == nil {
-			s.sessionIdManagerResolver = NewDefaultSessionIdManagerResolver(&StatelessSessionIdManager{})
-			return
-		}
-		s.sessionIdManagerResolver = NewDefaultSessionIdManagerResolver(manager)
-	}
-}
-
-// WithSessionIdManagerResolver sets a custom session id manager resolver for the server.
-// This allows for request-based session id management strategies.
-// Note: Options are applied in order; the last one wins. If combined with
-// WithStateLess or WithSessionIdManager, whichever is applied last takes effect.
-func WithSessionIdManagerResolver(resolver SessionIdManagerResolver) StreamableHTTPOption {
-	return func(s *StreamableHTTPServer) {
-		if resolver == nil {
-			s.sessionIdManagerResolver = NewDefaultSessionIdManagerResolver(&StatelessSessionIdManager{})
-			return
-		}
-		s.sessionIdManagerResolver = resolver
-	}
-}
-
-// WithStateful enables stateful session management using InsecureStatefulSessionIdManager.
-// This requires sticky sessions in multi-instance deployments.
-func WithStateful(stateful bool) StreamableHTTPOption {
-	return func(s *StreamableHTTPServer) {
-		if stateful {
-			s.sessionIdManagerResolver = NewDefaultSessionIdManagerResolver(&InsecureStatefulSessionIdManager{})
-		}
 	}
 }
 
@@ -172,18 +116,6 @@ func WithProtectedResourceMetadata(config ProtectedResourceMetadataConfig) Strea
 	}
 }
 
-// WithSessionIdleTTL sets the idle TTL for per-session transport state.
-// When enabled, a background sweeper periodically removes entries from
-// per-session stores (tools, resources, resource templates) for sessions
-// that have been idle longer than the given duration. This prevents memory
-// leaks when clients disconnect without sending a DELETE request. A zero or
-// negative value disables the sweeper (the default).
-func WithSessionIdleTTL(ttl time.Duration) StreamableHTTPOption {
-	return func(s *StreamableHTTPServer) {
-		s.sessionIdleTTL = ttl
-	}
-}
-
 // WithStreamableHTTPCORS configures Cross-Origin Resource Sharing for the
 // Streamable HTTP server.
 //
@@ -231,25 +163,21 @@ func WithStreamableHTTPCORS(opts ...CORSOption) StreamableHTTPOption {
 //	http.Handle("/streamable-http", handler)
 //	http.ListenAndServe(":8080", nil)
 //
-// Notice:
-// A legacy client's session is registered by its initialize request, so
-// `SendNotificationToSpecificClient` and `hooks.onRegisterSession` see it from
-// then on. There is no standalone GET stream: a GET answers 405.
+// The server keeps no sessions. Protocol version 2026-07-28 removed them
+// (SEP-2567), and a legacy client is served the same way: its initialize is
+// answered for real with no session ID, every later request is served
+// whatever Mcp-Session-Id it carries, and GET and DELETE answer 405. Every
+// request runs on its own ephemeral session, so no HTTP client is registered
+// with the MCPServer and none is reachable by ID.
 type StreamableHTTPServer struct {
-	server                   *MCPServer
-	sessionTools             *sessionMapStore[ServerTool]
-	sessionResources         *sessionMapStore[ServerResource]
-	sessionResourceTemplates *sessionMapStore[ServerResourceTemplate]
-	activeSessions           sync.Map // sessionId --> *streamableHttpSession registered by initialize
+	server *MCPServer
 
 	httpServer *http.Server
 	mu         sync.RWMutex
 
-	endpointPath             string
-	contextFunc              HTTPContextFunc
-	sessionIdManagerResolver SessionIdManagerResolver
-	sessionIdManager         SessionIdManager // for non-request contexts (sweeper)
-	logger                   *slog.Logger
+	endpointPath string
+	contextFunc  HTTPContextFunc
+	logger       *slog.Logger
 
 	// disableLocalhostProtection, when true, turns off the automatic DNS
 	// rebinding protection applied to requests arriving over loopback
@@ -258,10 +186,6 @@ type StreamableHTTPServer struct {
 
 	tlsCertFile string
 	tlsKeyFile  string
-
-	sessionIdleTTL    time.Duration
-	sessionLastActive sync.Map // sessionID → *atomic.Int64 (unix nanos)
-	sweeperCancel     context.CancelFunc
 
 	// protectedResourceMetadata, when non-nil, is served as RFC 9728 OAuth
 	// 2.0 Protected Resource Metadata. The well-known path is derived from
@@ -283,31 +207,14 @@ type StreamableHTTPServer struct {
 // NewStreamableHTTPServer creates a new streamable-http server instance
 func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *StreamableHTTPServer {
 	s := &StreamableHTTPServer{
-		server:                   server,
-		sessionTools:             newSessionMapStore[ServerTool](),
-		endpointPath:             "/mcp",
-		sessionIdManagerResolver: NewDefaultSessionIdManagerResolver(&StatelessGeneratingSessionIdManager{}),
-		logger:                   slog.Default(),
-		sessionResources:         newSessionMapStore[ServerResource](),
-		sessionResourceTemplates: newSessionMapStore[ServerResourceTemplate](),
+		server:       server,
+		endpointPath: "/mcp",
+		logger:       slog.Default(),
 	}
 
 	// Apply all options
 	for _, opt := range opts {
 		opt(s)
-	}
-
-	// Cache the session ID manager for use in non-request contexts (sweeper).
-	// DefaultSessionIdManagerResolver always returns the same manager,
-	// so resolving it once at startup is semantically identical.
-	if r, ok := s.sessionIdManagerResolver.(*DefaultSessionIdManagerResolver); ok {
-		s.sessionIdManager = r.manager
-	}
-
-	if s.sessionIdleTTL > 0 {
-		ctx, cancel := context.WithCancel(context.Background())
-		s.sweeperCancel = cancel
-		s.startSessionSweeper(ctx)
 	}
 
 	return s
@@ -426,67 +333,17 @@ func (s *StreamableHTTPServer) Start(addr string) error {
 	return srv.ListenAndServe()
 }
 
-// Shutdown gracefully stops the server, closing all active sessions
-// and shutting down the HTTP server.
+// Shutdown gracefully stops the HTTP server, if this server started one or
+// was given one; as a bare http.Handler there is nothing to stop. In-flight
+// requests end with their connections, as net/http's Shutdown arranges.
 func (s *StreamableHTTPServer) Shutdown(ctx context.Context) error {
-	if s.sweeperCancel != nil {
-		s.sweeperCancel()
-	}
-
-	s.CloseSessions(ctx)
-
-	// shutdown the server if needed (may use as a http.Handler)
 	s.mu.RLock()
 	srv := s.httpServer
 	s.mu.RUnlock()
 	if srv == nil {
 		return nil
 	}
-
-	shutdownDone := make(chan error, 1)
-	go func() {
-		shutdownDone <- srv.Shutdown(ctx)
-	}()
-
-	drainTicker := time.NewTicker(5 * time.Millisecond)
-	defer drainTicker.Stop()
-
-	for {
-		select {
-		case err := <-shutdownDone:
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-drainTicker.C:
-			// Drain sessions registered after the initial CloseSessions snapshot.
-			s.CloseSessions(ctx)
-		}
-	}
-}
-
-// CloseSessions terminates every active streamable HTTP session without
-// stopping the HTTP server: each is terminated with the session ID manager
-// and its transport state is dropped.
-func (s *StreamableHTTPServer) CloseSessions(ctx context.Context) {
-	sessionIDs := make([]string, 0)
-	s.activeSessions.Range(func(key, _ any) bool {
-		if sessionID, ok := key.(string); ok {
-			sessionIDs = append(sessionIDs, sessionID)
-		}
-		return true
-	})
-
-	mgr := s.sessionIdManager
-	if mgr == nil {
-		mgr = s.sessionIdManagerResolver.ResolveSessionIdManager(nil)
-	}
-
-	for _, sessionID := range sessionIDs {
-		if _, err := mgr.Terminate(sessionID); err != nil {
-			s.logger.Warn("failed to terminate session during CloseSessions", "sessionID", sessionID, "err", err)
-		}
-		s.cleanupSessionState(ctx, sessionID)
-	}
+	return srv.Shutdown(ctx)
 }
 
 // --- internal methods ---
@@ -554,59 +411,20 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		_ = json.Unmarshal(jsonMessage.ID, &requestID)
 	}
 
-	// Prepare the session for the mcp server
-	// The session is ephemeral. Its life is the same as the request. It's only created
-	// for interaction with the mcp server.
-	var sessionID string
+	// Every request runs on its own ephemeral session: the server keeps none
+	// in either era, so a legacy client's Mcp-Session-Id is ignored and its
+	// initialize mints none.
 	listening := false
 	if era.modern {
 		if !s.validateModernRequest(w, r, era, requestID) {
 			return
 		}
-		// The Mcp-Session-Id header is ignored, and no session ID is minted.
-		// Each modern request is served by its own ephemeral session.
-		isInitializeRequest = false
 		// A subscriptions/listen stream is where a modern client receives
 		// the notifications the server broadcasts, such as
 		// notifications/tools/list_changed.
 		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil
-	} else {
-		sessionIdManager := s.resolveSessionIdManager(r)
-		if isInitializeRequest {
-			// generate a new one for initialize request
-			sessionID = sessionIdManager.Generate()
-		} else {
-			// Get session ID from header.
-			// Stateful servers need the client to carry the session ID.
-			sessionID = r.header().Get(HeaderKeySessionID)
-			isTerminated, err := sessionIdManager.Validate(sessionID)
-			if err != nil {
-				writeHTTPError(w, "Invalid session ID", http.StatusNotFound)
-				return
-			}
-			if isTerminated {
-				writeHTTPError(w, "Session terminated", http.StatusNotFound)
-				return
-			}
-		}
-
-		s.touchSession(sessionID)
 	}
-
-	// For non-initialize requests, try to reuse existing registered session
-	var session *streamableHttpSession
-	if !isInitializeRequest && !era.modern {
-		if sessionValue, ok := s.server.sessions.Load(sessionID); ok {
-			if existingSession, ok := sessionValue.(*streamableHttpSession); ok {
-				session = existingSession
-			}
-		}
-	}
-
-	// Create ephemeral session if no persistent session exists
-	if session == nil {
-		session = newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates)
-	}
+	session := newStreamableHttpSession()
 
 	// Broadcasts only reach sessions the server knows of, and a modern
 	// request's session is known nowhere else. A listen stream's session is
@@ -747,10 +565,6 @@ drainLoop:
 		w.Flush()
 	} else {
 		w.Header().Set("Content-Type", "application/json")
-		if isInitializeRequest && sessionID != "" {
-			// send the session ID back to the client
-			w.Header().Set(HeaderKeySessionID, sessionID)
-		}
 		// Protocol version 2026-07-28 maps JSON-RPC error codes onto HTTP
 		// status codes, so that intermediaries can act on failures without
 		// parsing the body.
@@ -764,21 +578,6 @@ drainLoop:
 		err := json.NewEncoder(w).Encode(response)
 		if err != nil {
 			s.logger.Error("Failed to write response", "err", err)
-		}
-	}
-
-	// Register session after successful initialization
-	// Only register if not already registered (e.g., by a GET connection)
-	if isInitializeRequest && sessionID != "" {
-		if _, exists := s.server.sessions.Load(sessionID); !exists {
-			// Store in activeSessions to prevent duplicate registration from GET
-			s.activeSessions.Store(sessionID, session)
-			// Register the session with the MCPServer for notification support
-			if err := s.server.RegisterSession(ctx, session); err != nil {
-				s.logger.Error("Failed to register POST session", "err", err)
-				s.activeSessions.Delete(sessionID)
-				// Don't fail the request, just log the error
-			}
 		}
 	}
 }
@@ -800,9 +599,10 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 	writeHTTPError(w, "GET is not supported: this server opens no standalone stream", http.StatusMethodNotAllowed)
 }
 
+// handleDelete answers 405 with Allow: POST in both eras: protocol version
+// 2026-07-28 removed protocol-level sessions, and the server keeps none for a
+// legacy client either, so there is nothing for a DELETE to terminate.
 func (s *StreamableHTTPServer) handleDelete(w HTTPResponseWriter, r *HTTPRequest) {
-	// Protocol version 2026-07-28 removed protocol-level sessions, so there is
-	// nothing for a DELETE to terminate.
 	if isModernHTTPRequest(r) {
 		s.rejectModernSessionMethod(w, http.MethodDelete)
 		return
@@ -810,23 +610,9 @@ func (s *StreamableHTTPServer) handleDelete(w HTTPResponseWriter, r *HTTPRequest
 	if rejectUnsupportedProtocolVersion(w, r.header().Get(mcp.HeaderProtocolVersion)) {
 		return
 	}
-
-	// delete request terminate the session
-	sessionID := r.header().Get(HeaderKeySessionID)
-	sessionIdManager := s.resolveSessionIdManager(r)
-	notAllowed, err := sessionIdManager.Terminate(sessionID)
-	if err != nil {
-		writeHTTPErrorf(w, http.StatusInternalServerError, "Session termination failed: %v", err)
-		return
-	}
-	if notAllowed {
-		writeHTTPError(w, "Session termination not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	s.cleanupSessionState(r.ctx(), sessionID)
-
-	w.WriteHeader(http.StatusOK)
+	// RFC 9110 section 15.5.6 requires an Allow header on 405 responses.
+	w.Header().Set("Allow", http.MethodPost)
+	writeHTTPError(w, "DELETE is not supported: this server keeps no sessions", http.StatusMethodNotAllowed)
 }
 
 // tagSubscription tags a notification with the ID of the
@@ -874,146 +660,15 @@ func (s *StreamableHTTPServer) writeJSONRPCError(
 	})
 }
 
-// touchSession records the current time as the last activity for the given session.
-// It is a no-op when the sweeper is disabled (sessionIdleTTL <= 0) or sessionID is empty.
-// It runs on every request, so a known session is found with Load and touched
-// without allocating; only a session's first touch pays for LoadOrStore.
-func (s *StreamableHTTPServer) touchSession(sessionID string) {
-	if sessionID == "" || s.sessionIdleTTL <= 0 {
-		return
-	}
-	now := time.Now().UnixNano()
-	actual, ok := s.sessionLastActive.Load(sessionID)
-	if !ok {
-		actual, _ = s.sessionLastActive.LoadOrStore(sessionID, new(atomic.Int64))
-	}
-	actual.(*atomic.Int64).Store(now)
-}
-
-// cleanupSessionState removes all per-session transport state for the given session ID.
-func (s *StreamableHTTPServer) cleanupSessionState(ctx context.Context, sessionID string) {
-	// Unregister first to stop notification routing before deleting data.
-	s.server.UnregisterSession(ctx, sessionID)
-	s.activeSessions.Delete(sessionID)
-	s.sessionTools.delete(sessionID)
-	s.sessionResources.delete(sessionID)
-	s.sessionResourceTemplates.delete(sessionID)
-	s.sessionLastActive.Delete(sessionID)
-}
-
-// startSessionSweeper launches a background goroutine that periodically removes
-// transport state for sessions that have been idle longer than sessionIdleTTL.
-func (s *StreamableHTTPServer) startSessionSweeper(ctx context.Context) {
-	interval := max(s.sessionIdleTTL/2, time.Second)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				s.logger.Error("panic in session cleanup goroutine", "panic", r)
-			}
-		}()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.sweepExpiredSessions()
-			}
-		}
-	}()
-}
-
-// sweepExpiredSessions iterates all tracked sessions and cleans up those
-// whose last activity exceeds sessionIdleTTL.
-func (s *StreamableHTTPServer) sweepExpiredSessions() {
-	now := time.Now().UnixNano()
-	ttlNanos := s.sessionIdleTTL.Nanoseconds()
-
-	s.sessionLastActive.Range(func(key, value any) bool {
-		sessionID, ok := key.(string)
-		if !ok {
-			s.sessionLastActive.Delete(key)
-			return true
-		}
-		lastActive, ok := value.(*atomic.Int64)
-		if !ok {
-			s.sessionLastActive.Delete(key)
-			return true
-		}
-
-		capturedLastActive := lastActive.Load()
-		if now-capturedLastActive < ttlNanos {
-			return true
-		}
-
-		// Re-check: if lastActive changed since we read it, the session
-		// was touched concurrently — skip it. A small TOCTOU window
-		// remains between this check and cleanup, but it is acceptable
-		// for a distributed best-effort sweeper.
-		if lastActive.Load() != capturedLastActive {
-			return true
-		}
-
-		s.logger.Info("Sweeping expired session", "session", sessionID)
-		mgr := s.sessionIdManager
-		if mgr == nil {
-			mgr = s.sessionIdManagerResolver.ResolveSessionIdManager(nil)
-		}
-		_, _ = mgr.Terminate(sessionID)
-		s.cleanupSessionState(context.Background(), sessionID)
-		return true
-	})
-}
-
 // --- session ---
-// sessionMapStore keeps one map of values per session and hands out copies,
-// so no caller ever shares a map with the store. get on an unknown session
-// answers an empty, non-nil map.
-type sessionMapStore[V any] struct {
-	mu sync.RWMutex
-	m  map[string]map[string]V // sessionID -> name -> value
-}
 
-func newSessionMapStore[V any]() *sessionMapStore[V] {
-	return &sessionMapStore[V]{m: make(map[string]map[string]V)}
-}
-
-func (s *sessionMapStore[V]) get(sessionID string) map[string]V {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	cloned := make(map[string]V, len(s.m[sessionID]))
-	maps.Copy(cloned, s.m[sessionID])
-	return cloned
-}
-
-func (s *sessionMapStore[V]) set(sessionID string, values map[string]V) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cloned := make(map[string]V, len(values))
-	maps.Copy(cloned, values)
-	s.m[sessionID] = cloned
-}
-
-func (s *sessionMapStore[V]) delete(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.m, sessionID)
-}
-
-// A modern request's session is ephemeral: it lives for the request. A legacy
-// session is registered with the MCP server by its initialize request, and
-// found again by its ID on every later request.
+// streamableHttpSession is the session of one request: it lives for the
+// request, in both eras, and has no ID. A broadcast reaches it only while it
+// serves a subscriptions/listen stream.
 type streamableHttpSession struct {
 	clientInfoStore // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
 
-	sessionID           string
 	notificationChannel chan mcp.JSONRPCNotification // server -> client notifications
-	tools               *sessionMapStore[ServerTool]
-	resources           *sessionMapStore[ServerResource]
-	resourceTemplates   *sessionMapStore[ServerResourceTemplate]
 	upgradeToSSE        atomic.Bool
 
 	// Whether the session serves a subscriptions/listen stream, and the
@@ -1023,19 +678,16 @@ type streamableHttpSession struct {
 	subscriptionFilter mcp.SubscriptionFilter
 }
 
-func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[ServerTool], resourcesStore *sessionMapStore[ServerResource], templatesStore *sessionMapStore[ServerResourceTemplate]) *streamableHttpSession {
-	s := &streamableHttpSession{
-		sessionID:           sessionID,
+func newStreamableHttpSession() *streamableHttpSession {
+	return &streamableHttpSession{
 		notificationChannel: make(chan mcp.JSONRPCNotification, 100),
-		tools:               toolStore,
-		resources:           resourcesStore,
-		resourceTemplates:   templatesStore,
 	}
-	return s
 }
 
+// SessionID is empty: the session is the request's own, and no client holds
+// an ID for it.
 func (s *streamableHttpSession) SessionID() string {
-	return s.sessionID
+	return ""
 }
 
 func (s *streamableHttpSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
@@ -1052,37 +704,9 @@ func (s *streamableHttpSession) Initialized() bool {
 	return true
 }
 
-var _ ClientSession = (*streamableHttpSession)(nil)
-
-func (s *streamableHttpSession) GetSessionTools() map[string]ServerTool {
-	return s.tools.get(s.sessionID)
-}
-
-func (s *streamableHttpSession) SetSessionTools(tools map[string]ServerTool) {
-	s.tools.set(s.sessionID, tools)
-}
-
-func (s *streamableHttpSession) GetSessionResources() map[string]ServerResource {
-	return s.resources.get(s.sessionID)
-}
-
-func (s *streamableHttpSession) SetSessionResources(resources map[string]ServerResource) {
-	s.resources.set(s.sessionID, resources)
-}
-
-func (s *streamableHttpSession) GetSessionResourceTemplates() map[string]ServerResourceTemplate {
-	return s.resourceTemplates.get(s.sessionID)
-}
-
-func (s *streamableHttpSession) SetSessionResourceTemplates(templates map[string]ServerResourceTemplate) {
-	s.resourceTemplates.set(s.sessionID, templates)
-}
-
 var (
-	_ SessionWithTools             = (*streamableHttpSession)(nil)
-	_ SessionWithResources         = (*streamableHttpSession)(nil)
-	_ SessionWithResourceTemplates = (*streamableHttpSession)(nil)
-	_ SessionWithClientInfo        = (*streamableHttpSession)(nil)
+	_ ClientSession         = (*streamableHttpSession)(nil)
+	_ SessionWithClientInfo = (*streamableHttpSession)(nil)
 )
 
 func (s *streamableHttpSession) UpgradeToSSEWhenReceiveNotification() {
@@ -1115,129 +739,6 @@ func (s *streamableHttpSession) serveSubscriptionStream() {
 }
 
 var _ SessionWithSubscriptionFilter = (*streamableHttpSession)(nil)
-
-// --- session id manager ---
-
-// SessionIdManagerResolver resolves a SessionIdManager based on the HTTP request.
-// Implementations must handle a nil r, which may be passed from non-request
-// contexts such as the session idle TTL sweeper.
-type SessionIdManagerResolver interface {
-	ResolveSessionIdManager(r *http.Request) SessionIdManager
-}
-
-type SessionIdManager interface {
-	Generate() string
-	// Validate checks if a session ID is valid and not terminated.
-	// Returns isTerminated=true if the ID is valid but belongs to a terminated session.
-	// Returns err!=nil if the ID format is invalid or lookup failed.
-	Validate(sessionID string) (isTerminated bool, err error)
-	// Terminate marks a session ID as terminated.
-	// Returns isNotAllowed=true if the server policy prevents client termination.
-	// Returns err!=nil if the ID is invalid or termination failed.
-	Terminate(sessionID string) (isNotAllowed bool, err error)
-}
-
-// DefaultSessionIdManagerResolver is a simple resolver that returns the same SessionIdManager for all requests
-type DefaultSessionIdManagerResolver struct {
-	manager SessionIdManager
-}
-
-// NewDefaultSessionIdManagerResolver creates a new DefaultSessionIdManagerResolver with the given SessionIdManager
-func NewDefaultSessionIdManagerResolver(manager SessionIdManager) *DefaultSessionIdManagerResolver {
-	if manager == nil {
-		manager = &StatelessSessionIdManager{}
-	}
-	return &DefaultSessionIdManagerResolver{manager: manager}
-}
-
-// ResolveSessionIdManager returns the configured SessionIdManager for all requests
-func (r *DefaultSessionIdManagerResolver) ResolveSessionIdManager(_ *http.Request) SessionIdManager {
-	return r.manager
-}
-
-// StatelessSessionIdManager does nothing, which means it has no session management, which is stateless.
-type StatelessSessionIdManager struct{}
-
-func (s *StatelessSessionIdManager) Generate() string {
-	return ""
-}
-
-func (s *StatelessSessionIdManager) Validate(sessionID string) (isTerminated bool, err error) {
-	// In stateless mode, ignore session IDs completely - don't validate or reject them
-	return false, nil
-}
-
-func (s *StatelessSessionIdManager) Terminate(sessionID string) (isNotAllowed bool, err error) {
-	return false, nil
-}
-
-// StatelessGeneratingSessionIdManager generates session IDs but doesn't validate them locally.
-// This allows session IDs to be generated for clients while working across multiple instances.
-type StatelessGeneratingSessionIdManager struct{}
-
-func (s *StatelessGeneratingSessionIdManager) Generate() string {
-	return idPrefix + uuid.New().String()
-}
-
-func (s *StatelessGeneratingSessionIdManager) Validate(sessionID string) (isTerminated bool, err error) {
-	// Only validate format, not existence - allows cross-instance operation
-	if !strings.HasPrefix(sessionID, idPrefix) {
-		return false, fmt.Errorf("invalid session id: %s", sessionID)
-	}
-	if _, err := uuid.Parse(sessionID[len(idPrefix):]); err != nil {
-		return false, fmt.Errorf("invalid session id: %s", sessionID)
-	}
-	return false, nil
-}
-
-func (s *StatelessGeneratingSessionIdManager) Terminate(sessionID string) (isNotAllowed bool, err error) {
-	// No-op termination since we don't track sessions
-	return false, nil
-}
-
-// InsecureStatefulSessionIdManager generate id with uuid and tracks active sessions.
-// It validates both format and existence of session IDs.
-// For more secure session id, use a more complex generator, like a JWT.
-type InsecureStatefulSessionIdManager struct {
-	sessions   sync.Map
-	terminated sync.Map
-}
-
-const idPrefix = "mcp-session-"
-
-func (s *InsecureStatefulSessionIdManager) Generate() string {
-	sessionID := idPrefix + uuid.New().String()
-	s.sessions.Store(sessionID, true)
-	return sessionID
-}
-
-func (s *InsecureStatefulSessionIdManager) Validate(sessionID string) (isTerminated bool, err error) {
-	if !strings.HasPrefix(sessionID, idPrefix) {
-		return false, fmt.Errorf("invalid session id: %s", sessionID)
-	}
-	if _, err := uuid.Parse(sessionID[len(idPrefix):]); err != nil {
-		return false, fmt.Errorf("invalid session id: %s", sessionID)
-	}
-	if _, exists := s.terminated.Load(sessionID); exists {
-		return true, nil
-	}
-	if _, exists := s.sessions.Load(sessionID); !exists {
-		return false, fmt.Errorf("session not found: %s", sessionID)
-	}
-	return false, nil
-}
-
-func (s *InsecureStatefulSessionIdManager) Terminate(sessionID string) (isNotAllowed bool, err error) {
-	if _, exists := s.terminated.Load(sessionID); exists {
-		return false, nil
-	}
-	if _, exists := s.sessions.Load(sessionID); !exists {
-		return false, nil
-	}
-	s.terminated.Store(sessionID, true)
-	s.sessions.Delete(sessionID)
-	return false, nil
-}
 
 // isJSONEmpty reports whether the provided JSON value is "empty":
 //   - null

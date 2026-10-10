@@ -83,7 +83,7 @@ func (f *flushableHTTPResponseWriter) CanStream() bool { return true }
 
 func TestStreamableHTTPServer_Handle_InitializeWithoutNetHTTP(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
-	srv := NewStreamableHTTPServer(mcpServer, WithStateful(true))
+	srv := NewStreamableHTTPServer(mcpServer)
 
 	body := []byte(`{
 		"jsonrpc": "2.0",
@@ -109,8 +109,7 @@ func TestStreamableHTTPServer_Handle_InitializeWithoutNetHTTP(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.status)
 	assert.Equal(t, "application/json", w.header.Get("Content-Type"))
-	sessionID := w.header.Get(HeaderKeySessionID)
-	assert.NotEmpty(t, sessionID, "stateful server should return a session id on initialize")
+	assert.Empty(t, w.header.Get(HeaderKeySessionID), "initialize mints no session")
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.body, &resp))
@@ -141,7 +140,7 @@ func TestStreamableHTTPServer_Handle_PostNotificationsBufferedWhenNotStreamable(
 	// When the writer can't stream, mid-flight notifications must NOT be
 	// emitted as SSE; the server should fall back to the buffered JSON path.
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
-	srv := NewStreamableHTTPServer(mcpServer, WithStateLess(true))
+	srv := NewStreamableHTTPServer(mcpServer)
 
 	body := []byte(`{
 		"jsonrpc": "2.0",
@@ -275,7 +274,7 @@ func TestStreamableHTTPServer_Handle_ContextCarriedThrough(t *testing.T) {
 		},
 	)
 
-	srv := NewStreamableHTTPServer(mcpServer, WithStateLess(true))
+	srv := NewStreamableHTTPServer(mcpServer)
 
 	// Initialize first.
 	initBody := []byte(`{

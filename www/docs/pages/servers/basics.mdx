@@ -247,7 +247,6 @@ Configure transport-specific options:
 // HTTP with custom options
 httpServer := server.NewStreamableHTTPServer(s,
     server.WithEndpointPath("/mcp"),
-    server.WithStateLess(true),
     server.WithTLSCert("/path/to/cert.pem", "/path/to/key.pem"),
 )
 

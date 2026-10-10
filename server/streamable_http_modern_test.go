@@ -200,10 +200,10 @@ func TestModernProtocol_RemovedMethodsRejected(t *testing.T) {
 }
 
 func TestModernProtocol_ModernOnlyMethodsRejectedForLegacyClients(t *testing.T) {
-	// Stateless, so a legacy request without a session ID still reaches the
-	// dispatcher and is rejected on protocol grounds rather than session ones.
+	// A legacy request reaches the dispatcher and is rejected on protocol
+	// grounds, never on session ones: the server keeps no sessions.
 	mcpServer := NewMCPServer("modern-test", "1.0.0", WithToolCapabilities(true))
-	srv := httptest.NewServer(NewStreamableHTTPServer(mcpServer, WithStateLess(true)))
+	srv := httptest.NewServer(NewStreamableHTTPServer(mcpServer))
 	defer srv.Close()
 
 	for _, method := range []mcp.MCPMethod{
@@ -395,10 +395,10 @@ func TestModernProtocol_LegacyClientsUnaffected(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	result := decodeJSONRPC(t, resp)["result"].(map[string]any)
 
-	// The handshake still works, still negotiates a legacy version, and still
-	// mints a session.
+	// The handshake still works and still negotiates a legacy version; no
+	// session is minted, since the server keeps none.
 	assert.Equal(t, mcp.LATEST_LEGACY_PROTOCOL_VERSION, result["protocolVersion"])
-	assert.NotEmpty(t, resp.Header.Get(mcp.HeaderSessionID))
+	assert.Empty(t, resp.Header.Get(mcp.HeaderSessionID))
 
 	// Legacy responses are untouched: no resultType, no server identity.
 	assert.NotContains(t, result, "resultType")
@@ -590,7 +590,7 @@ func TestModernProtocol_ListenStreamReceivesListChanged(t *testing.T) {
 // A listen stream's session receives no broadcast before subscriptions/listen
 // has recorded what the client asked for, nor after it is cleared.
 func TestStreamableHTTPSessionListenStreamIsFilteredThroughout(t *testing.T) {
-	session := newStreamableHttpSession("", nil, nil, nil)
+	session := newStreamableHttpSession()
 	assert.True(t, subscriptionAllowsNotification(session, mcp.MethodNotificationToolsListChanged),
 		"a session that serves no subscription stream is unfiltered")
 
@@ -638,9 +638,9 @@ func TestModernProtocol_ListenWithoutIDIsNotAStream(t *testing.T) {
 	})
 }
 
-// establishLegacySession performs the legacy handshake and returns the minted
-// session ID.
-func establishLegacySession(t *testing.T, url string) string {
+// legacyInitialize performs the legacy handshake, which the server answers
+// for real but with no session.
+func legacyInitialize(t *testing.T, url string) {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
@@ -663,9 +663,8 @@ func establishLegacySession(t *testing.T, url string) string {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	sessionID := resp.Header.Get(mcp.HeaderSessionID)
-	require.NotEmpty(t, sessionID, "the legacy handshake must mint a session")
-	return sessionID
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Empty(t, resp.Header.Get(mcp.HeaderSessionID), "the server keeps no sessions")
 }
 
 func TestClientToServerResponsesByProtocolEra(t *testing.T) {
@@ -677,11 +676,6 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 	// rules require.
 	tests := []struct {
 		name string
-		// stateful mints real sessions, so the replayed ID is genuinely valid.
-		stateful bool
-		// withSession performs the legacy handshake first and replays the
-		// resulting session ID on the response message.
-		withSession bool
 		// protocolVersion is sent in the Mcp-Protocol-Version header.
 		protocolVersion string
 		// errorForm sends an error response instead of a result.
@@ -689,47 +683,27 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name:            "a modern response replaying a valid session is rejected",
-			stateful:        true,
-			withSession:     true,
+			name:            "a modern response is rejected",
 			protocolVersion: mcp.ProtocolVersion20260728,
 			wantStatus:      http.StatusBadRequest,
 		},
 		{
-			name:            "a modern response without a session is rejected",
-			protocolVersion: mcp.ProtocolVersion20260728,
-			wantStatus:      http.StatusBadRequest,
+			name:       "a legacy response is accepted and dropped",
+			wantStatus: http.StatusAccepted,
 		},
 		{
-			name:        "a legacy response is accepted and dropped",
-			stateful:    true,
-			withSession: true,
-			wantStatus:  http.StatusAccepted,
-		},
-		{
-			name:        "a legacy error response is accepted and dropped",
-			stateful:    true,
-			withSession: true,
-			errorForm:   true,
-			wantStatus:  http.StatusAccepted,
+			name:       "a legacy error response is accepted and dropped",
+			errorForm:  true,
+			wantStatus: http.StatusAccepted,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mcpServer := NewMCPServer("modern-test", "1.0.0", WithToolCapabilities(true))
-
-			var options []StreamableHTTPOption
-			if tt.stateful {
-				options = append(options, WithStateful(true))
-			}
-			httpServer := httptest.NewServer(NewStreamableHTTPServer(mcpServer, options...))
+			httpServer := httptest.NewServer(NewStreamableHTTPServer(mcpServer))
 			defer httpServer.Close()
-
-			var sessionID string
-			if tt.withSession {
-				sessionID = establishLegacySession(t, httpServer.URL)
-			}
+			legacyInitialize(t, httpServer.URL)
 
 			response := map[string]any{"jsonrpc": "2.0", "id": 42, "result": map[string]any{"action": "accept"}}
 			if tt.errorForm {
@@ -744,9 +718,6 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			if tt.protocolVersion != "" {
 				req.Header.Set(mcp.HeaderProtocolVersion, tt.protocolVersion)
-			}
-			if sessionID != "" {
-				req.Header.Set(mcp.HeaderSessionID, sessionID)
 			}
 
 			resp, err := http.DefaultClient.Do(req)

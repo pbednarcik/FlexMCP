@@ -188,97 +188,6 @@ func TestToolFilterCallTimeWithMultipleFilters(t *testing.T) {
 	}
 }
 
-// TestToolFilterCallTimeWithSessionTools verifies that tool filters are
-// enforced at call time for session-specific tools too.
-func TestToolFilterCallTimeWithSessionTools(t *testing.T) {
-	allowPrefixFilter := func(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
-		var filtered []mcp.Tool
-		for _, tool := range tools {
-			if strings.HasPrefix(tool.Name, "allow-") {
-				filtered = append(filtered, tool)
-			}
-		}
-		return filtered
-	}
-
-	server := NewMCPServer("test-server", "1.0.0",
-		WithToolCapabilities(true),
-		WithToolFilter(allowPrefixFilter),
-	)
-
-	// Create a session with tools
-	session := &sessionTestClientWithTools{
-		sessionID:           "session-1",
-		notificationChannel: make(chan mcp.JSONRPCNotification, 10),
-		initialized:         true,
-		sessionTools: map[string]ServerTool{
-			"allow-session-tool": {
-				Tool: mcp.NewTool("allow-session-tool"),
-				Handler: func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-					return mcp.NewToolResultText("session-allowed"), nil
-				},
-			},
-			"deny-session-tool": {
-				Tool: mcp.NewTool("deny-session-tool"),
-				Handler: func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-					return mcp.NewToolResultText("should not reach"), nil
-				},
-			},
-		},
-	}
-
-	err := server.RegisterSession(t.Context(), session)
-	require.NoError(t, err)
-
-	sessionCtx := server.WithContext(t.Context(), session)
-
-	tests := []struct {
-		name      string
-		toolName  string
-		wantError bool
-	}{
-		{
-			name:      "allowed session tool can be called",
-			toolName:  "allow-session-tool",
-			wantError: false,
-		},
-		{
-			name:      "filtered-out session tool is rejected",
-			toolName:  "deny-session-tool",
-			wantError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			callRequest := map[string]any{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"method":  "tools/call",
-				"params": map[string]any{
-					"name": tt.toolName,
-				},
-			}
-			requestBytes, err := json.Marshal(callRequest)
-			require.NoError(t, err)
-
-			response := server.HandleMessage(sessionCtx, requestBytes)
-
-			if tt.wantError {
-				errResp, ok := response.(mcp.JSONRPCError)
-				require.True(t, ok, "Expected error for session tool %q", tt.toolName)
-				assert.Equal(t, mcp.INVALID_PARAMS, errResp.Error.Code)
-			} else {
-				resp, ok := response.(mcp.JSONRPCResponse)
-				require.True(t, ok, "Expected success for session tool %q", tt.toolName)
-				callToolResult, ok := resp.Result.(*mcp.CallToolResult)
-				require.True(t, ok)
-				require.NotEmpty(t, callToolResult.Content)
-			}
-		})
-	}
-}
-
 // TestToolFilterCallTimeConsistencyWithList verifies that tools/list and
 // tools/call agree on which tools are accessible — a tool visible in
 // tools/list must be callable, and a tool hidden by filters must not.
@@ -525,12 +434,12 @@ func TestToolFilterCallTimeContextAware(t *testing.T) {
 	server.AddTool(mcp.NewTool("admin-tool"), handler)
 
 	// Create two sessions
-	adminSession := &sessionTestClientWithTools{
+	adminSession := &sessionTestClient{
 		sessionID:           "admin-session",
 		notificationChannel: make(chan mcp.JSONRPCNotification, 10),
 		initialized:         true,
 	}
-	userSession := &sessionTestClientWithTools{
+	userSession := &sessionTestClient{
 		sessionID:           "user-session",
 		notificationChannel: make(chan mcp.JSONRPCNotification, 10),
 		initialized:         true,

@@ -245,8 +245,6 @@ func main() {
     log.Println("Starting advanced StreamableHTTP server on :8080")
     httpServer := server.NewStreamableHTTPServer(s,
         server.WithEndpointPath("/api/v1/mcp"),
-        server.WithStateLess(false),
-        server.WithSessionIdleTTL(10*time.Minute), // Sweep idle sessions after 10 minutes
     )
     
     if err := httpServer.Start(":8080"); err != nil {
@@ -475,19 +473,9 @@ Content-Type: application/json
 }
 ```
 
-## Session Management
+## No Sessions
 
-### Session Idle TTL
-
-When clients disconnect without sending a `DELETE` request, per-session transport state (tools, resources, log levels, etc.) can leak memory. Use `WithSessionIdleTTL` to automatically sweep idle sessions:
-
-```go
-httpServer := server.NewStreamableHTTPServer(s,
-    server.WithSessionIdleTTL(10*time.Minute), // Sweep sessions idle for 10+ minutes
-)
-```
-
-The sweeper runs in the background and removes per-session state for sessions that haven't received any requests within the TTL. It also invalidates swept session IDs so they cannot be reused. A zero or negative TTL disables the sweeper (default behavior). The sweeper is automatically stopped on `Shutdown()`.
+The server keeps no sessions. Protocol version 2026-07-28 removed them from the protocol, and a client on an earlier version is served the same way: its `initialize` is answered for real but mints no `Mcp-Session-Id`, every later request is served whatever session header it carries, and a `DELETE` answers `405 Method Not Allowed` with `Allow: POST`. Every request runs on its own session, so there is no per-session state to sweep, no session to notify by ID, and no `OnRegisterSession` hook for an HTTP client. A handler that needs to tell clients apart reads what the request carries: its headers (`WithHTTPContextFunc`), or the client identity in `_meta` on a 2026-07-28 request.
 
 ### No standalone stream, no resumption
 
@@ -1207,12 +1195,9 @@ func mcpHandler(ctx *fasthttp.RequestCtx) {
   through `Handle` it receives a synthetic `*http.Request` derived from
   the `HTTPRequest`. Callers can also pre-decorate `r.Context` directly,
   which is the recommended pattern for non-net/http integrations.
-- **`SessionIdManagerResolver`** still receives a `*http.Request` for
-  backwards compatibility; the synthetic request carries the headers and
-  URL needed by all built-in resolvers.
 - **Backwards compatibility:** every existing public API
   (`NewStreamableHTTPServer`, `ServeHTTP`, `Start`, `Shutdown`, every
-  option, every session interface) is unchanged.
+  option) is unchanged.
 
 ## Next Steps
 

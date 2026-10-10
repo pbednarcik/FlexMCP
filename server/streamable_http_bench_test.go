@@ -60,7 +60,7 @@ func BenchmarkStreamableHTTPToolCall(b *testing.B) {
 		b.Run(leg.name, func(b *testing.B) {
 			srv := NewMCPServer("bench", "1.0.0", append([]ServerOption{WithToolCapabilities(false)}, leg.options...)...)
 			srv.AddTool(mcp.NewToolWithRawSchema("echo", "echoes region", leg.schema), echo)
-			httpSrv := NewStreamableHTTPServer(srv, WithStateLess(true))
+			httpSrv := NewStreamableHTTPServer(srv)
 			body, header := toolCallRequest(b, leg.legacy)
 
 			// One call outside the loop proves the leg answers 200 with a result.

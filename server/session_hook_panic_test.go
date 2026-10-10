@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -134,57 +133,6 @@ func TestSendNotificationToSpecificClient_HookPanicRecovery(t *testing.T) {
 	}
 }
 
-// TestAddSessionTools_HookPanicRecovery verifies that the hook goroutine
-// spawned during AddSessionTools notification failure also recovers.
-func TestAddSessionTools_HookPanicRecovery(t *testing.T) {
-	var panicCount atomic.Int32
-
-	hooks := &Hooks{}
-	hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
-		panicCount.Add(1)
-		panic("panic in AddSessionTools hook")
-	})
-
-	server := NewMCPServer("test", "1.0.0",
-		WithToolCapabilities(true),
-		WithHooks(hooks),
-	)
-
-	// Create a session that supports tools but has a full notification channel
-	session := &mockSessionForPanicWithTools{
-		sessionID:   "add-tools-test",
-		initialized: true,
-		notifyChan:  make(chan mcp.JSONRPCNotification), // unbuffered blocks
-		doneOnce:    sync.Once{},
-		tools:       make(map[string]ServerTool),
-	}
-	server.sessions.Store(session.SessionID(), session)
-
-	// Add a tool to the session - notification will fail (channel full),
-	// triggering the error hook goroutine which panics
-	err := server.AddSessionTools(session.SessionID(), ServerTool{
-		Tool: mcp.Tool{Name: "test-tool", Description: "test"},
-		Handler: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return mcp.NewToolResultText("ok"), nil
-		},
-	})
-
-	// The tool addition itself should succeed even if the notification hook panics
-	if err != nil {
-		t.Fatalf("AddSessionTools should not fail: %v", err)
-	}
-
-	// Wait for goroutines
-	time.Sleep(100 * time.Millisecond)
-
-	// The hook fires at least once (may fire twice: once from
-	// SendNotificationToSpecificClient's blocked channel, once from the
-	// AddSessionTools notification failure path)
-	if panicCount.Load() < 1 {
-		t.Errorf("expected at least 1 hook invocation (panic), got %d", panicCount.Load())
-	}
-}
-
 // --- Mock session types ---
 
 type mockSessionForPanic struct {
@@ -206,23 +154,3 @@ func (m *mockSessionForPanic) GetClientInfo() *mcp.Implementation               
 func (m *mockSessionForPanic) SetClientInfo(info mcp.Implementation)             {}
 func (m *mockSessionForPanic) GetClientCapabilities() *mcp.ClientCapabilities    { return nil }
 func (m *mockSessionForPanic) SetClientCapabilities(caps mcp.ClientCapabilities) {}
-
-type mockSessionForPanicWithTools struct {
-	mockSessionForPanic
-	tools map[string]ServerTool
-	mu    sync.RWMutex
-}
-
-func (m *mockSessionForPanicWithTools) GetSessionTools() map[string]ServerTool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	cp := make(map[string]ServerTool, len(m.tools))
-	maps.Copy(cp, m.tools)
-	return cp
-}
-
-func (m *mockSessionForPanicWithTools) SetSessionTools(tools map[string]ServerTool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.tools = tools
-}

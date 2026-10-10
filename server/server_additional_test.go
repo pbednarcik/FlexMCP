@@ -433,37 +433,6 @@ func TestMCPServer_DuplicateSessionRegistration(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSessionExists)
 }
 
-// TestMCPServer_SessionToolOperationsAfterUnregister tests operations on removed sessions
-func TestMCPServer_SessionToolOperationsAfterUnregister(t *testing.T) {
-	server := NewMCPServer("test-server", "1.0.0", WithToolCapabilities(true))
-
-	session := &sessionTestClientWithTools{
-		sessionID:           "test-session",
-		notificationChannel: make(chan mcp.JSONRPCNotification, 10),
-		initialized:         true,
-	}
-
-	err := server.RegisterSession(t.Context(), session)
-	require.NoError(t, err)
-
-	// Add a tool to the session
-	err = server.AddSessionTool(session.SessionID(), mcp.NewTool("test-tool"), nil)
-	require.NoError(t, err)
-
-	// Unregister the session
-	server.UnregisterSession(t.Context(), session.SessionID())
-
-	// Try to add tool to unregistered session
-	err = server.AddSessionTool(session.SessionID(), mcp.NewTool("another-tool"), nil)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrSessionNotFound)
-
-	// Try to delete tool from unregistered session
-	err = server.DeleteSessionTools(session.SessionID(), "test-tool")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrSessionNotFound)
-}
-
 // TestMCPServer_ResourceTemplateURIMatching tests URI template edge cases
 func TestMCPServer_ResourceTemplateURIMatching(t *testing.T) {
 	tests := []struct {

@@ -59,8 +59,8 @@ func (r *HTTPRequest) header() http.Header {
 
 // asHTTPRequest builds a synthetic *http.Request that exposes the headers,
 // URL, and context of r. It is used to remain compatible with APIs that
-// historically accept a *http.Request (e.g. SessionIdManagerResolver and
-// HTTPContextFunc) when a caller has reached us through Handle.
+// accept a *http.Request (HTTPContextFunc) when a caller has reached us
+// through Handle.
 //
 // The returned request has no body; callers must not read it.
 func (r *HTTPRequest) asHTTPRequest() *http.Request {
@@ -212,17 +212,4 @@ func (s *StreamableHTTPServer) Handle(w HTTPResponseWriter, r *HTTPRequest) {
 	default:
 		writeHTTPError(w, "404 page not found", http.StatusNotFound)
 	}
-}
-
-// resolveSessionIdManager returns the SessionIdManager configured for r,
-// preserving compatibility with custom SessionIdManagerResolver implementations
-// that take a *http.Request.
-func (s *StreamableHTTPServer) resolveSessionIdManager(r *HTTPRequest) SessionIdManager {
-	// Fast path: when the resolver is a DefaultSessionIdManagerResolver (the
-	// vast majority of deployments), the cached manager is identical to what
-	// the resolver would return and we can skip building a synthetic request.
-	if s.sessionIdManager != nil {
-		return s.sessionIdManager
-	}
-	return s.sessionIdManagerResolver.ResolveSessionIdManager(r.asHTTPRequest())
 }

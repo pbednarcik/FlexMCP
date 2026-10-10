@@ -10,6 +10,11 @@
 # resources-subscribe, resources-unsubscribe: protocol version 2026-07-28
 # removed both methods, and FlexMCP's server no longer serves them in either
 # era; resource subscriptions come through subscriptions/listen.
+#
+# server-sse-multiple-streams: the scenario needs the server to mint a session
+# ID on initialize. Protocol version 2026-07-28 removed sessions, and FlexMCP's
+# server keeps none for a legacy client either (a session ID is a MAY in the
+# earlier revisions); a request's own stream is its POST response.
 server:
   - tools-call-sampling
   - tools-call-elicitation
@@ -17,3 +22,4 @@ server:
   - elicitation-sep1330-enums
   - resources-subscribe
   - resources-unsubscribe
+  - server-sse-multiple-streams

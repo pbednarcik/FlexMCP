@@ -208,7 +208,7 @@ func (s *MCPServer) validateStandardHeadersForMessage(
 	if method != mcp.MethodToolsCall {
 		return nil
 	}
-	bindings, ok := s.headerBindingsForCall(ctx, wrapper.Params)
+	bindings, ok := s.headerBindingsForCall(wrapper.Params)
 	if !ok {
 		return nil
 	}
@@ -229,26 +229,15 @@ func lookupHeader(headers http.Header) func(string) (string, bool) {
 }
 
 // headerBindingsForCall resolves the x-mcp-header bindings of the tool named
-// by a tools/call request. A tool registered on the server has them cached
-// from registration; a session tool is read on the call, since session tool
-// maps can be replaced wholesale through SetSessionTools. It returns ok=false
-// when the tool is unknown, leaving the not-found error to the handler.
-func (s *MCPServer) headerBindingsForCall(ctx context.Context, params json.RawMessage) ([]mcp.ParamHeaderBinding, bool) {
+// by a tools/call request, cached from the tool's registration. It returns
+// ok=false when the tool is unknown, leaving the not-found error to the
+// handler.
+func (s *MCPServer) headerBindingsForCall(params json.RawMessage) ([]mcp.ParamHeaderBinding, bool) {
 	var call struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil || call.Name == "" {
 		return nil, false
-	}
-
-	if session := ClientSessionFromContext(ctx); session != nil {
-		if withTools, ok := session.(SessionWithTools); ok {
-			if sessionTools := withTools.GetSessionTools(); sessionTools != nil {
-				if tool, ok := sessionTools[call.Name]; ok {
-					return mcp.ExtractParamHeaderBindings(&tool.Tool), true
-				}
-			}
-		}
 	}
 
 	s.toolsMu.RLock()
