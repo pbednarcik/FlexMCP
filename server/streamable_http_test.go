@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -498,58 +497,48 @@ func TestStreamableHTTP_POST_SendAndReceive_stateless(t *testing.T) {
 	})
 }
 
-func TestStreamableHTTP_GET(t *testing.T) {
+// The standalone GET stream was removed in protocol version 2026-07-28 and
+// is not served to a legacy client either: a GET answers 405 with Allow:
+// POST whatever era the client is on, and whether or not it holds a session.
+func TestStreamableHTTP_GETIsNotServedWithoutAnEventStore(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
 	addSSETool(mcpServer)
-	server := NewTestStreamableHTTPServer(mcpServer)
+	server := NewTestStreamableHTTPServer(mcpServer, WithStateful(true))
 
-	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
-	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
+	sessionID := establishLegacySession(t, server.URL)
+
+	legs := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{name: "legacy without a session", headers: map[string]string{}},
+		{name: "legacy with a session", headers: map[string]string{
+			mcp.HeaderProtocolVersion: mcp.LATEST_LEGACY_PROTOCOL_VERSION,
+			HeaderKeySessionID:        sessionID,
+		}},
+		{name: "modern", headers: map[string]string{
+			mcp.HeaderProtocolVersion: mcp.ProtocolVersion20260728,
+		}},
 	}
-	req.Header.Set("Content-Type", "text/event-stream")
-
-	// The GET session is registered only once the request reaches the server,
-	// so a single early broadcast can find no client; repeat until done.
-	go func() {
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				mcpServer.SendNotificationToAllClients("test/notification", map[string]any{
-					"value": "all clients",
-				})
+	for _, leg := range legs {
+		t.Run(leg.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+			require.NoError(t, err)
+			req.Header.Set("Accept", "text/event-stream")
+			for k, v := range leg.headers {
+				req.Header.Set(k, v)
 			}
-		}
-	}()
 
-	resp, err := server.Client().Do(req)
-	if err != nil {
-		t.Fatalf("Failed to send message: %v", err)
-	}
-	defer resp.Body.Close()
+			resp, err := server.Client().Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
-	}
-
-	if resp.Header.Get("content-type") != "text/event-stream" {
-		t.Errorf("Expected content-type text/event-stream, got %s", resp.Header.Get("content-type"))
-	}
-
-	reader := bufio.NewReader(resp.Body)
-	_, _ = reader.ReadBytes('\n') // skip first line for event type
-	bodyBytes, err := reader.ReadBytes('\n')
-	if err != nil {
-		t.Fatalf("Failed to read response: %v, bytes: %s", err, string(bodyBytes))
-	}
-	if !strings.Contains(string(bodyBytes), "all clients") {
-		t.Errorf("Expected all clients, got %s", string(bodyBytes))
+			assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+			// RFC 9110 section 15.5.6 requires an Allow header on a 405.
+			assert.Equal(t, http.MethodPost, resp.Header.Get("Allow"))
+		})
 	}
 }
 
@@ -752,21 +741,6 @@ func TestStreamableHTTP_SessionWithTools(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		// Watch the notification to ensure the session is registered
-		// (Normal http request (post) will not trigger the session registration)
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		defer cancel()
-		go func() {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, testServer.URL, nil)
-			req.Header.Set("Content-Type", "text/event-stream")
-			getResp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				fmt.Printf("Failed to get: %v\n", err)
-				return
-			}
-			defer getResp.Body.Close()
-		}()
-
 		// Wait for session with timeout
 		var session *streamableHttpSession
 		select {
@@ -880,21 +854,6 @@ func TestStreamableHTTP_SessionWithResources(t *testing.T) {
 			t.Fatalf("Failed to send message: %v", err)
 		}
 		defer resp.Body.Close()
-
-		// Watch the notification to ensure the session is registered
-		// (Normal http request (post) will not trigger the session registration)
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		defer cancel()
-		go func() {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, testServer.URL, nil)
-			req.Header.Set("Content-Type", "text/event-stream")
-			getResp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				fmt.Printf("Failed to get: %v\n", err)
-				return
-			}
-			defer getResp.Body.Close()
-		}()
 
 		// Wait for session with timeout
 		var session *streamableHttpSession
@@ -1205,100 +1164,6 @@ func TestStreamableHTTPServer_TLS(t *testing.T) {
 		}
 		if server.tlsKeyFile != keyFile {
 			t.Errorf("Expected tlsKeyFile to be %s, got %s", keyFile, server.tlsKeyFile)
-		}
-	})
-}
-
-func TestStreamableHTTPServer_WithDisableStreaming(t *testing.T) {
-	t.Run("WithDisableStreaming blocks GET requests", func(t *testing.T) {
-		mcpServer := NewMCPServer("test-mcp-server", "1.0.0")
-		server := NewTestStreamableHTTPServer(mcpServer, WithDisableStreaming(true))
-		defer server.Close()
-
-		// Attempt a GET request (which should be blocked)
-		req, err := http.NewRequest(http.MethodGet, server.URL, nil)
-		if err != nil {
-			t.Fatalf("Failed to create request: %v", err)
-		}
-		req.Header.Set("Content-Type", "text/event-stream")
-
-		resp, err := server.Client().Do(req)
-		if err != nil {
-			t.Fatalf("Failed to send request: %v", err)
-		}
-		defer resp.Body.Close()
-
-		// Verify the request is rejected with 405 Method Not Allowed
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Errorf("Expected status 405 Method Not Allowed, got %d", resp.StatusCode)
-		}
-
-		// Verify the error message
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatalf("Failed to read response body: %v", err)
-		}
-
-		expectedMessage := "Streaming is disabled on this server"
-		if !strings.Contains(string(bodyBytes), expectedMessage) {
-			t.Errorf("Expected error message to contain '%s', got '%s'", expectedMessage, string(bodyBytes))
-		}
-	})
-
-	t.Run("POST requests still work with WithDisableStreaming", func(t *testing.T) {
-		mcpServer := NewMCPServer("test-mcp-server", "1.0.0")
-		server := NewTestStreamableHTTPServer(mcpServer, WithDisableStreaming(true))
-		defer server.Close()
-
-		// POST requests should still work
-		resp, err := postJSON(server.URL, initRequest)
-		if err != nil {
-			t.Fatalf("Failed to send message: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
-
-		// Verify the response is valid
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		var responseMessage jsonRPCResponse
-		if err := json.Unmarshal(bodyBytes, &responseMessage); err != nil {
-			t.Fatalf("Failed to unmarshal response: %v", err)
-		}
-		if responseMessage.Result["protocolVersion"] != mcp.LATEST_LEGACY_PROTOCOL_VERSION {
-			t.Errorf("Expected protocol version %s, got %s", mcp.LATEST_LEGACY_PROTOCOL_VERSION, responseMessage.Result["protocolVersion"])
-		}
-	})
-
-	t.Run("Streaming works when WithDisableStreaming is false", func(t *testing.T) {
-		mcpServer := NewMCPServer("test-mcp-server", "1.0.0")
-		server := NewTestStreamableHTTPServer(mcpServer, WithDisableStreaming(false))
-		defer server.Close()
-
-		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-		defer cancel()
-
-		// GET request should work when streaming is enabled
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
-		if err != nil {
-			t.Fatalf("Failed to create request: %v", err)
-		}
-		req.Header.Set("Content-Type", "text/event-stream")
-
-		resp, err := server.Client().Do(req)
-		if err != nil {
-			t.Fatalf("Failed to send request: %v", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
-
-		if resp.Header.Get("content-type") != "text/event-stream" {
-			t.Errorf("Expected content-type text/event-stream, got %s", resp.Header.Get("content-type"))
 		}
 	})
 }
@@ -2349,168 +2214,6 @@ func TestStreamableHTTP_AddToolDuringToolCall(t *testing.T) {
 	}
 }
 
-// nonFlushingResponseWriter wraps an http.ResponseWriter but does NOT implement http.Flusher.
-// This is used to test the fix for servers/proxies that don't support streaming.
-type nonFlushingResponseWriter struct {
-	http.ResponseWriter
-	statusCode    int
-	body          bytes.Buffer
-	headerWritten bool // tracks if WriteHeader has been called
-}
-
-func (w *nonFlushingResponseWriter) Header() http.Header {
-	return w.ResponseWriter.Header()
-}
-
-func (w *nonFlushingResponseWriter) Write(b []byte) (int, error) {
-	// Write implicitly calls WriteHeader(200) if not already called
-	if !w.headerWritten {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.body.Write(b)
-}
-
-func (w *nonFlushingResponseWriter) WriteHeader(statusCode int) {
-	// Only honor the first WriteHeader call, just like real http.ResponseWriter
-	if w.headerWritten {
-		return
-	}
-	w.statusCode = statusCode
-	w.headerWritten = true
-}
-
-func TestStreamableHTTP_GET_NonFlusherReturns405(t *testing.T) {
-	t.Run("GET returns 405 when ResponseWriter does not support Flusher", func(t *testing.T) {
-		mcpServer := NewMCPServer("test-mcp-server", "1.0")
-		sseServer := NewStreamableHTTPServer(mcpServer)
-
-		// Create a request
-		req, err := http.NewRequest(http.MethodGet, "/mcp", nil)
-		if err != nil {
-			t.Fatalf("Failed to create request: %v", err)
-		}
-		req.Header.Set("Content-Type", "text/event-stream")
-
-		// Create a ResponseWriter that does NOT implement http.Flusher
-		baseRecorder := httptest.NewRecorder()
-		nonFlusher := &nonFlushingResponseWriter{
-			ResponseWriter: baseRecorder,
-		}
-
-		// Call the handler directly
-		sseServer.ServeHTTP(nonFlusher, req)
-
-		// Verify we get HTTP 405 Method Not Allowed
-		if nonFlusher.statusCode != http.StatusMethodNotAllowed {
-			t.Errorf("Expected status 405 Method Not Allowed, got %d", nonFlusher.statusCode)
-		}
-
-		// Verify the error message
-		bodyStr := nonFlusher.body.String()
-		if !strings.Contains(bodyStr, "Streaming unsupported") {
-			t.Errorf("Expected error message to contain 'Streaming unsupported', got '%s'", bodyStr)
-		}
-	})
-
-	t.Run("GET returns 200 when ResponseWriter supports Flusher", func(t *testing.T) {
-		mcpServer := NewMCPServer("test-mcp-server", "1.0")
-		server := NewTestStreamableHTTPServer(mcpServer)
-		defer server.Close()
-
-		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
-		if err != nil {
-			t.Fatalf("Failed to create request: %v", err)
-		}
-		req.Header.Set("Content-Type", "text/event-stream")
-
-		resp, err := server.Client().Do(req)
-		if err != nil {
-			t.Fatalf("Failed to send request: %v", err)
-		}
-		defer resp.Body.Close()
-
-		// When Flusher is supported, we should get HTTP 200 and SSE content type
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("Expected status 200, got %d", resp.StatusCode)
-		}
-
-		if resp.Header.Get("Content-Type") != "text/event-stream" {
-			t.Errorf("Expected content-type text/event-stream, got %s", resp.Header.Get("Content-Type"))
-		}
-	})
-
-	t.Run("Flusher check happens before headers are written", func(t *testing.T) {
-		// This test ensures the fix is correct: when the flusher check fails,
-		// we should get HTTP 405 and NOT HTTP 200 with an error in the body.
-		// The bug was that WriteHeader(200) was called before the flusher check,
-		// so http.Error() would write the error message but the status was already 200.
-		mcpServer := NewMCPServer("test-mcp-server", "1.0")
-		sseServer := NewStreamableHTTPServer(mcpServer)
-
-		req, err := http.NewRequest(http.MethodGet, "/mcp", nil)
-		if err != nil {
-			t.Fatalf("Failed to create request: %v", err)
-		}
-		req.Header.Set("Content-Type", "text/event-stream")
-
-		baseRecorder := httptest.NewRecorder()
-		nonFlusher := &nonFlushingResponseWriter{
-			ResponseWriter: baseRecorder,
-		}
-
-		sseServer.ServeHTTP(nonFlusher, req)
-
-		// The critical assertion: status code must be 405, NOT 200
-		// Before the fix, status would be 200 because WriteHeader(200) was called
-		// before the flusher check
-		if nonFlusher.statusCode == http.StatusOK {
-			t.Error("BUG: Got HTTP 200 when flusher is not supported. " +
-				"This means headers were written before the flusher check. " +
-				"Expected HTTP 405 Method Not Allowed.")
-		}
-
-		if nonFlusher.statusCode != http.StatusMethodNotAllowed {
-			t.Errorf("Expected status 405, got %d", nonFlusher.statusCode)
-		}
-	})
-
-	t.Run("Non-flusher does not orphan sessions", func(t *testing.T) {
-		// This test verifies that when the flusher check fails, we clean up
-		// the session from activeSessions to avoid orphaning it.
-		mcpServer := NewMCPServer("test-mcp-server", "1.0")
-		sseServer := NewStreamableHTTPServer(mcpServer)
-
-		// First request with non-flusher should fail and NOT leave orphaned session
-		req1, err := http.NewRequest(http.MethodGet, "/mcp", nil)
-		if err != nil {
-			t.Fatalf("Failed to create request: %v", err)
-		}
-		req1.Header.Set("X-Session-ID", "test-session-123")
-
-		baseRecorder := httptest.NewRecorder()
-		nonFlusher := &nonFlushingResponseWriter{
-			ResponseWriter: baseRecorder,
-		}
-
-		sseServer.ServeHTTP(nonFlusher, req1)
-
-		// Should get 405
-		if nonFlusher.statusCode != http.StatusMethodNotAllowed {
-			t.Errorf("Expected status 405, got %d", nonFlusher.statusCode)
-		}
-
-		// Verify the session was cleaned up from activeSessions
-		// We can't directly access activeSessions (it's private), but we can verify
-		// by checking that the server's internal session map doesn't have it
-		if _, exists := sseServer.activeSessions.Load("test-session-123"); exists {
-			t.Error("Session was orphaned in activeSessions after non-flusher error")
-		}
-	})
-}
-
 func TestStreamableHTTP_Delete(t *testing.T) {
 	var hookCalled bool
 	var hookSession ClientSession
@@ -2919,7 +2622,7 @@ func TestStreamableHTTPNotificationRace(t *testing.T) {
 	}
 }
 
-func TestStreamableHTTP_ShutdownWithActiveConnection(t *testing.T) {
+func TestStreamableHTTP_ShutdownWithRegisteredSession(t *testing.T) {
 	mcpServer := NewMCPServer("test", "1.0.0")
 	mux := http.NewServeMux()
 	customServer := &http.Server{Handler: mux}
@@ -2952,10 +2655,7 @@ func TestStreamableHTTP_ShutdownWithActiveConnection(t *testing.T) {
 
 	baseURL := "http://" + listener.Addr().String() + httpServer.endpointPath
 
-	ctx := t.Context()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL, nil)
-	require.NoError(t, err)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := postJSON(baseURL, initRequest)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -2991,9 +2691,7 @@ func TestStreamableHTTP_CloseSessions(t *testing.T) {
 	ts := httptest.NewServer(httpServer)
 	defer ts.Close()
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL, nil)
-	require.NoError(t, err)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := postJSON(ts.URL, initRequest)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -3014,9 +2712,7 @@ func TestStreamableHTTP_CloseSessions(t *testing.T) {
 	})
 	require.Equal(t, 0, sessionCount)
 
-	req2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL, nil)
-	require.NoError(t, err)
-	resp2, err := http.DefaultClient.Do(req2)
+	resp2, err := postJSON(ts.URL, initRequest)
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusOK, resp2.StatusCode)

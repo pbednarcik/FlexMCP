@@ -118,7 +118,7 @@ func TestStreamableHTTPServer_Handle_InitializeWithoutNetHTTP(t *testing.T) {
 	require.Contains(t, resp, "result")
 }
 
-func TestStreamableHTTPServer_Handle_GetRejectedWhenWriterCannotStream(t *testing.T) {
+func TestStreamableHTTPServer_Handle_GetIsNotServed(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
 	srv := NewStreamableHTTPServer(mcpServer)
 
@@ -133,7 +133,8 @@ func TestStreamableHTTPServer_Handle_GetRejectedWhenWriterCannotStream(t *testin
 	srv.Handle(w, r)
 
 	assert.Equal(t, http.StatusMethodNotAllowed, w.status)
-	assert.Contains(t, string(w.body), "Streaming unsupported")
+	assert.Equal(t, http.MethodPost, w.Header().Get("Allow"))
+	assert.Contains(t, string(w.body), "no standalone stream")
 }
 
 func TestStreamableHTTPServer_Handle_PostNotificationsBufferedWhenNotStreamable(t *testing.T) {

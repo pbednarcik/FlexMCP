@@ -120,16 +120,6 @@ func WithEventStore(store EventStore) StreamableHTTPOption {
 	}
 }
 
-// WithDisableStreaming prevents the server from responding to GET requests with
-// a streaming response. Instead, it will respond with a 405 Method Not Allowed status.
-// This can be useful in scenarios where streaming is not desired or supported.
-// The default is false, meaning streaming is enabled.
-func WithDisableStreaming(disable bool) StreamableHTTPOption {
-	return func(s *StreamableHTTPServer) {
-		s.disableStreaming = disable
-	}
-}
-
 // WithDisableLocalhostProtection disables the automatic DNS rebinding
 // protection of the streamable HTTP server.
 //
@@ -273,9 +263,10 @@ func WithStreamableHTTPCORS(opts ...CORSOption) StreamableHTTPOption {
 //	http.ListenAndServe(":8080", nil)
 //
 // Notice:
-// Except for the GET handlers(listening), the POST handlers(request/notification) will
-// not trigger the session registration. So the methods like `SendNotificationToSpecificClient`
-// or `hooks.onRegisterSession` will not be triggered for POST messages.
+// A legacy client's session is registered by its initialize request, so
+// `SendNotificationToSpecificClient` and `hooks.onRegisterSession` see it from
+// then on. There is no standalone GET stream: a GET answers 405 unless an
+// event store is configured.
 //
 // Stream resumability (redelivery of the messages a client missed while its
 // SSE connection was broken) is opt-in via WithEventStore.
@@ -301,7 +292,6 @@ type StreamableHTTPServer struct {
 	sessionIdManager         SessionIdManager // for non-request contexts (sweeper)
 	listenHeartbeatInterval  time.Duration
 	logger                   *slog.Logger
-	disableStreaming         bool
 
 	// disableLocalhostProtection, when true, turns off the automatic DNS
 	// rebinding protection applied to requests arriving over loopback
@@ -516,20 +506,16 @@ func (s *StreamableHTTPServer) Shutdown(ctx context.Context) error {
 	}
 }
 
-// CloseSessions terminates all active streamable HTTP listening sessions
-// without stopping the HTTP server. This unblocks long-lived GET handlers so
-// Shutdown can complete while clients are still connected.
+// CloseSessions terminates every active streamable HTTP session without
+// stopping the HTTP server: each is terminated with the session ID manager
+// and its transport state is dropped, which closes any listening stream
+// still attached to it.
 func (s *StreamableHTTPServer) CloseSessions(ctx context.Context) {
 	sessionIDs := make([]string, 0)
-	s.activeSessions.Range(func(key, value any) bool {
-		sessionID, ok := key.(string)
-		if !ok {
-			return true
+	s.activeSessions.Range(func(key, _ any) bool {
+		if sessionID, ok := key.(string); ok {
+			sessionIDs = append(sessionIDs, sessionID)
 		}
-		if session, ok := value.(*streamableHttpSession); ok {
-			session.closeDone()
-		}
-		sessionIDs = append(sessionIDs, sessionID)
 		return true
 	})
 
@@ -656,16 +642,6 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		if sessionValue, ok := s.server.sessions.Load(sessionID); ok {
 			if existingSession, ok := sessionValue.(*streamableHttpSession); ok {
 				session = existingSession
-			}
-		}
-	}
-
-	// Reuse the persistent session a GET (listening) stream created, if any;
-	// otherwise the request gets an ephemeral session below.
-	if session == nil && !era.modern {
-		if sessionInterface, exists := s.activeSessions.Load(sessionID); exists {
-			if persistentSession, ok := sessionInterface.(*streamableHttpSession); ok {
-				session = persistentSession
 			}
 		}
 	}
@@ -897,9 +873,11 @@ drainLoop:
 	}
 }
 
+// handleGet serves a legacy session's listening stream, or resumes one, when
+// an event store is configured. Without one there is no standalone stream in
+// either era: protocol version 2026-07-28 removed it, and a legacy client is
+// not served one either, so a GET answers 405 with Allow: POST.
 func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
-	// Protocol version 2026-07-28 removed the standalone GET stream: clients
-	// receive server-initiated messages through subscriptions/listen instead.
 	if isModernHTTPRequest(r) {
 		s.rejectModernSessionMethod(w, http.MethodGet)
 		return
@@ -907,12 +885,10 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 	if rejectUnsupportedProtocolVersion(w, r.header().Get(mcp.HeaderProtocolVersion)) {
 		return
 	}
-
-	// get request is for listening to notifications
-	// https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#listening-for-messages-from-the-server
-	if s.disableStreaming {
-		s.logger.Info("Rejected GET request: streaming is disabled", "session", r.header().Get(HeaderKeySessionID))
-		writeHTTPError(w, "Streaming is disabled on this server", http.StatusMethodNotAllowed)
+	if s.eventStore == nil {
+		// RFC 9110 section 15.5.6 requires an Allow header on 405 responses.
+		w.Header().Set("Allow", http.MethodPost)
+		writeHTTPError(w, "GET is not supported: this server opens no standalone stream", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -926,11 +902,9 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 
 	// A GET carrying Last-Event-ID resumes a previously broken SSE stream
 	// rather than opening a fresh listening stream.
-	if s.eventStore != nil {
-		if lastEventID := r.header().Get("Last-Event-ID"); lastEventID != "" {
-			s.handleResumeGet(w, r, lastEventID)
-			return
-		}
+	if lastEventID := r.header().Get("Last-Event-ID"); lastEventID != "" {
+		s.handleResumeGet(w, r, lastEventID)
+		return
 	}
 
 	sessionID := r.header().Get(HeaderKeySessionID)
@@ -944,116 +918,24 @@ func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
 
 	// Get or create session atomically to prevent TOCTOU races
 	// where concurrent GETs could both create and register duplicate sessions
-	var session *streamableHttpSession
 	newSession := newStreamableHttpSession(sessionID, s.sessionTools, s.sessionResources, s.sessionResourceTemplates)
 	actual, loaded := s.activeSessions.LoadOrStore(sessionID, newSession)
-	session = actual.(*streamableHttpSession)
+	session := actual.(*streamableHttpSession)
 
 	if !loaded {
-		// We created a new session, need to register it
+		// We created a new session, need to register it. With an event store
+		// the session outlives the connection so that messages produced while
+		// the client is away are recorded for replay; it is cleaned up on
+		// DELETE or by the idle sweeper.
 		if err := s.server.RegisterSession(r.ctx(), session); err != nil {
 			s.activeSessions.Delete(sessionID)
 			writeHTTPErrorf(w, http.StatusBadRequest, "Session registration failed: %v", err)
 			return
 		}
-		if s.eventStore == nil {
-			defer s.server.UnregisterSession(r.ctx(), sessionID)
-			defer s.activeSessions.Delete(sessionID)
-		}
-		// With an event store, the session outlives the connection so that
-		// messages produced while the client is away are recorded for
-		// replay; it is cleaned up on DELETE or by the idle sweeper.
 	}
 
 	s.touchSession(sessionID)
-
-	if s.eventStore != nil {
-		s.serveListeningStream(w, r, sessionID, session)
-		return
-	}
-
-	startSSEResponse(w)
-	w.Flush()
-
-	// Start notification handler for this session
-	done := make(chan struct{})
-	defer close(done)
-	writeChan := make(chan any, 16)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				s.logger.Error("panic in SSE notification writer", "panic", r)
-			}
-		}()
-		for {
-			select {
-			case nt := <-session.notificationChannel:
-				select {
-				case writeChan <- &nt:
-				case <-done:
-					return
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	if s.listenHeartbeatInterval > 0 {
-		// heartbeat to keep the connection alive
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					s.logger.Error("panic in heartbeat goroutine", "panic", r)
-				}
-			}()
-			ticker := time.NewTicker(s.listenHeartbeatInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					message := mcp.JSONRPCRequest{
-						JSONRPC: "2.0",
-						ID:      mcp.NewRequestId(s.nextRequestID(sessionID)),
-						Method:  string(mcp.MethodPing),
-					}
-					select {
-					case writeChan <- message:
-					case <-done:
-						return
-					}
-				case <-done:
-					return
-				}
-			}
-		}()
-	}
-
-	ctx := r.ctx()
-
-	// Keep the connection open until the client disconnects
-	//
-	// There's will a Available() check when handler ends, and it maybe race with Flush(),
-	// so we use a separate channel to send the data, inteading of flushing directly in other goroutine.
-	for {
-		select {
-		case data := <-writeChan:
-			if data == nil {
-				continue
-			}
-			if err := writeSSEEvent(w, data); err != nil {
-				s.logger.Error("Failed to write SSE event", "err", err)
-				return
-			}
-			w.Flush()
-			s.touchSession(sessionID)
-		case <-ctx.Done():
-			return
-		case <-session.done:
-			return
-		}
-	}
+	s.serveListeningStream(w, r, sessionID, session)
 }
 
 func (s *StreamableHTTPServer) handleDelete(w HTTPResponseWriter, r *HTTPRequest) {
@@ -1267,13 +1149,12 @@ func (s *sessionMapStore[V]) delete(sessionID string) {
 	delete(s.m, sessionID)
 }
 
-// When in POST handlers(request/notification), it's ephemeral, and only exists in the life of the request handler.
-// When in GET handlers(listening), it's a real session, and will be registered in the MCP server.
+// A modern request's session is ephemeral: it lives for the request. A legacy
+// session is registered with the MCP server by its initialize request, and
+// found again by its ID on every later request.
 type streamableHttpSession struct {
 	clientInfoStore // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
 
-	done                chan struct{}
-	doneOnce            sync.Once
 	sessionID           string
 	notificationChannel chan mcp.JSONRPCNotification // server -> client notifications
 	tools               *sessionMapStore[ServerTool]
@@ -1290,7 +1171,6 @@ type streamableHttpSession struct {
 
 func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[ServerTool], resourcesStore *sessionMapStore[ServerResource], templatesStore *sessionMapStore[ServerResourceTemplate]) *streamableHttpSession {
 	s := &streamableHttpSession{
-		done:                make(chan struct{}),
 		sessionID:           sessionID,
 		notificationChannel: make(chan mcp.JSONRPCNotification, 100),
 		tools:               toolStore,
@@ -1298,14 +1178,6 @@ func newStreamableHttpSession(sessionID string, toolStore *sessionMapStore[Serve
 		resourceTemplates:   templatesStore,
 	}
 	return s
-}
-
-// closeDone safely closes the session's done channel exactly once,
-// allowing long-lived GET handlers to exit during server shutdown.
-func (s *streamableHttpSession) closeDone() {
-	s.doneOnce.Do(func() {
-		close(s.done)
-	})
 }
 
 func (s *streamableHttpSession) SessionID() string {

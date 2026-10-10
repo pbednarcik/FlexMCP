@@ -150,8 +150,10 @@ func TestHTTPClient(t *testing.T) {
 			}
 		})
 
-		t.Run("Can receive global notifications from server when WithContinuousListening enabled", func(t *testing.T) {
-
+		t.Run("Global notifications do not reach a legacy client even with WithContinuousListening", func(t *testing.T) {
+			// The server opens no standalone GET stream (a GET answers 405), which
+			// the transport takes as the server not supporting listening; the
+			// notifications a request produces still arrive on its own response.
 			client, err := NewStreamableHttpClient(testServer.URL,
 				transport.WithContinuousListening())
 			if err != nil {
@@ -193,13 +195,12 @@ func TestHTTPClient(t *testing.T) {
 				t.Errorf("Expected 1 type of notification, got %d", n)
 			}
 
-			// can receive global notification
+			// a global notification has no stream to ride
 			addServerToolfunc("hello2")
-			time.Sleep(time.Millisecond * 50) // wait for the notification to be sent as upper action is async
+			time.Sleep(time.Millisecond * 50) // the broadcast is asynchronous
 
-			n := notificationNum.Get("notifications/tools/list_changed")
-			if n != 1 {
-				t.Errorf("Expected 1 notification item, got %d, %v", n, notificationNum)
+			if n := notificationNum.Get("notifications/tools/list_changed"); n != 0 {
+				t.Errorf("Expected no global notification, got %d, %v", n, notificationNum)
 			}
 		})
 

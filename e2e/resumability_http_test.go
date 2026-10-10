@@ -347,20 +347,11 @@ func sendNotification(t *testing.T, s *server.MCPServer, sessionID, data string)
 
 // Without an event store configured, behavior is unchanged: SSE events carry
 // no id fields, on either the listening stream or an upgraded POST response.
+// Without an event store there is no listening stream to open (a GET answers
+// 405), and an upgraded POST response carries no event ids.
 func TestResumability_NoEventStoreNoIDs(t *testing.T) {
-	mcpServer, ts, cmds := startServer(t, nil)
+	_, ts, cmds := startServer(t, nil)
 
-	// Listening stream, on its own session.
-	sidA := initSession(t, ts)
-	resp, _ := openGET(t, ts, sidA, "")
-	br := bufio.NewReader(resp.Body)
-	sendNotification(t, mcpServer, sidA, "n1")
-	ev := requireEvent(t, br)
-	assert.Empty(t, ev.id, "events must not carry ids without an event store")
-	assert.Equal(t, "n1", notificationData(t, ev.data))
-
-	// Upgraded POST response, on a separate session so notification routing
-	// is unambiguous.
 	sidB := initSession(t, ts)
 	respCh, _ := startToolCall(t, ts, sidB, 7)
 	cmds <- "p1"
