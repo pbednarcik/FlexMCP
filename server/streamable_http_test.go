@@ -500,7 +500,7 @@ func TestStreamableHTTP_POST_SendAndReceive_stateless(t *testing.T) {
 // The standalone GET stream was removed in protocol version 2026-07-28 and
 // is not served to a legacy client either: a GET answers 405 with Allow:
 // POST whatever era the client is on, and whether or not it holds a session.
-func TestStreamableHTTP_GETIsNotServedWithoutAnEventStore(t *testing.T) {
+func TestStreamableHTTP_GETIsNotServed(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
 	addSSETool(mcpServer)
 	server := NewTestStreamableHTTPServer(mcpServer, WithStateful(true))

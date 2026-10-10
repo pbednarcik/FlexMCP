@@ -245,7 +245,6 @@ func main() {
     log.Println("Starting advanced StreamableHTTP server on :8080")
     httpServer := server.NewStreamableHTTPServer(s,
         server.WithEndpointPath("/api/v1/mcp"),
-        server.WithHeartbeatInterval(30*time.Second),
         server.WithStateLess(false),
         server.WithSessionIdleTTL(10*time.Minute), // Sweep idle sessions after 10 minutes
     )
@@ -490,19 +489,9 @@ httpServer := server.NewStreamableHTTPServer(s,
 
 The sweeper runs in the background and removes per-session state for sessions that haven't received any requests within the TTL. It also invalidates swept session IDs so they cannot be reused. A zero or negative TTL disables the sweeper (default behavior). The sweeper is automatically stopped on `Shutdown()`.
 
-### Stream Resumability
+### No standalone stream, no resumption
 
-By default, messages sent while a client's SSE connection is down are lost. Configure an `EventStore` with `WithEventStore` to record every message delivered on a session's SSE streams so clients can resume after a broken connection:
-
-```go
-httpServer := server.NewStreamableHTTPServer(s,
-    server.WithEventStore(server.NewInMemoryEventStore()),
-)
-```
-
-With a store configured, each SSE event carries an `id` field issued by the store. To resume, a client reconnects with a `GET` request carrying the standard `Last-Event-ID` header (alongside its `Mcp-Session-Id`); the server replays the messages recorded after that event on the same stream, then continues live delivery. This also covers messages produced while nobody was connected: a tool call whose POST connection broke keeps recording its notifications and final response, all of which are redelivered on resume. Unknown event IDs, or event IDs belonging to a different session, are rejected with `400 Bad Request`.
-
-`NewInMemoryEventStore` keeps events in process memory, which suits single-process deployments. A session's events are purged when the session terminates — an explicit `DELETE` or, with `WithSessionIdleTTL` configured, an idle sweep — after which its event IDs can no longer be resumed from. For multi-node deployments, implement the `EventStore` interface against shared storage (Redis, a database, etc.) and pass it to `WithEventStore`.
+The server opens no standalone `GET` stream and does not resume broken streams: a `GET` answers `405 Method Not Allowed` with `Allow: POST`, and a `Last-Event-ID` header is refused on a 2026-07-28 request and ignored on an earlier one. A client that needs server notifications opens a `subscriptions/listen` request (protocol version 2026-07-28); a request's own notifications ride its `POST` response, which upgrades to SSE when the first one is sent.
 
 ### Stateful vs Stateless
 
@@ -848,7 +837,7 @@ Available `CORSOption` helpers:
 |---------------------------------|------------------------------------------------------------------------|
 | `WithCORSAllowedOrigins(...)`   | Origins permitted to access the server. `"*"` allows any origin.       |
 | `WithCORSAllowedMethods(...)`   | Methods advertised in preflight (defaults to `GET, POST, DELETE, OPTIONS`). |
-| `WithCORSAllowedHeaders(...)`   | Request headers advertised in preflight (defaults to `Content-Type, Mcp-Session-Id, Last-Event-ID, Authorization`). |
+| `WithCORSAllowedHeaders(...)`   | Request headers advertised in preflight (defaults to `Content-Type, Mcp-Session-Id, Authorization`). |
 | `WithCORSExposedHeaders(...)`   | Response headers exposed to JavaScript (defaults to `Mcp-Session-Id`). |
 | `WithCORSAllowCredentials()`    | Sends `Access-Control-Allow-Credentials: true`.                        |
 | `WithCORSMaxAge(seconds)`       | Sets `Access-Control-Max-Age` for preflight caching.                   |
@@ -1111,13 +1100,11 @@ degrade when the underlying transport cannot deliver chunked responses:
 
 - **`CanStream()` returns `true`** — `Flush()` MUST forward bytes to the
   client immediately. POST responses can upgrade to `text/event-stream`
-  when notifications fire mid-flight, and GET (the SSE listening channel)
-  is accepted.
+  when notifications fire mid-flight.
 - **`CanStream()` returns `false`** — `Flush()` SHOULD be a no-op. POST
   responses stay as a single buffered `application/json` reply (any
   notifications produced during the request are dropped, since they cannot
-  be delivered without SSE). GET requests are rejected with `405 Method
-  Not Allowed`.
+  be delivered without SSE).
 
 ### Adapter Example: fasthttp
 

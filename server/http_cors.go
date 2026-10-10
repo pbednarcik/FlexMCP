@@ -27,7 +27,7 @@ type CORSConfig struct {
 
 	// AllowedHeaders is the list of headers a client may send with the
 	// actual request. When empty, a sensible MCP-aware default of
-	// Content-Type, Mcp-Session-Id, Last-Event-ID and Authorization is
+	// Content-Type, Mcp-Session-Id and Authorization is
 	// advertised.
 	AllowedHeaders []string
 
@@ -177,7 +177,7 @@ func (c *CORSConfig) handlePreflight(w http.ResponseWriter, r *http.Request) boo
 
 	headers := c.AllowedHeaders
 	if len(headers) == 0 {
-		headers = []string{"Content-Type", HeaderKeySessionID, "Last-Event-ID", "Authorization"}
+		headers = []string{"Content-Type", HeaderKeySessionID, "Authorization"}
 	}
 	h.Set("Access-Control-Allow-Headers", strings.Join(headers, ", "))
 

@@ -405,12 +405,10 @@ func TestModernProtocol_LegacyClientsUnaffected(t *testing.T) {
 	assert.NotContains(t, result, "ttlMs")
 }
 
-func TestModernProtocol_EventStoreDoesNotStrandTheForwarder(t *testing.T) {
-	// Stream resumability was removed in 2026-07-28, so a modern request is
-	// never resumable even when the server has an event store configured for
-	// its legacy clients. The notification forwarder must still be stopped
-	// when the request ends: a forwarder that outlives its request leaks a
-	// goroutine and races the final response write.
+func TestModernProtocol_ForwarderDoesNotOutliveTheRequest(t *testing.T) {
+	// The notification forwarder must be stopped when the request ends: a
+	// forwarder that outlives its request leaks a goroutine and races the
+	// final response write.
 	mcpServer := NewMCPServer("modern-test", "1.0.0",
 		WithToolCapabilities(true),
 		WithLogging(),
@@ -426,9 +424,7 @@ func TestModernProtocol_EventStoreDoesNotStrandTheForwarder(t *testing.T) {
 		},
 	)
 
-	httpServer := httptest.NewServer(NewStreamableHTTPServer(mcpServer,
-		WithEventStore(NewInMemoryEventStore()),
-	))
+	httpServer := httptest.NewServer(NewStreamableHTTPServer(mcpServer))
 	defer httpServer.Close()
 
 	before := runtime.NumGoroutine()
