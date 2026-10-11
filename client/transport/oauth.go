@@ -37,6 +37,18 @@ var (
 // pkceMethod is the only code challenge method the client uses.
 const pkceMethod = "S256"
 
+var (
+	// ErrIssuerMismatch is returned when an authorization response names an
+	// issuer other than the one the client sent the user to (RFC 9207): a
+	// mix-up, so the code is not redeemed and the response's error fields are
+	// not acted on.
+	ErrIssuerMismatch = errors.New("authorization response iss does not match the expected issuer")
+	// ErrIssuerMissing is returned when an authorization server that
+	// advertises authorization_response_iss_parameter_supported sends an
+	// authorization response without iss.
+	ErrIssuerMissing = errors.New("authorization response has no iss, which the authorization server advertises")
+)
+
 // OAuthConfig holds the OAuth configuration for the client
 type OAuthConfig struct {
 	// ClientID is the OAuth client ID
@@ -205,6 +217,10 @@ type AuthServerMetadata struct {
 	IntrospectionEndpointAuthMethodsSupported          []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
 	IntrospectionEndpointAuthSigningAlgValuesSupported []string `json:"introspection_endpoint_auth_signing_alg_values_supported,omitempty"`
 	CodeChallengeMethodsSupported                      []string `json:"code_challenge_methods_supported,omitempty"`
+	// AuthorizationResponseIssParameterSupported says the server puts iss in
+	// its authorization responses (RFC 9207 §2.3); a client then rejects a
+	// response without it.
+	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported,omitempty"`
 }
 
 // OAuthHandler handles OAuth authentication for HTTP requests
@@ -235,8 +251,13 @@ type OAuthHandler struct {
 	// registration, if any.
 	registeredAuthMethod string
 
-	mu            sync.RWMutex // Protects expectedState
+	mu            sync.RWMutex // Protects expectedState, expectedIssuer, issuerRequired
 	expectedState string       // Expected state value for CSRF protection
+	// expectedIssuer is the issuer of the authorization server the user was
+	// sent to, recorded with the state (RFC 9207 §2.4); issuerRequired says
+	// that server advertises iss, so a response without it is rejected.
+	expectedIssuer string
+	issuerRequired bool
 
 	// refreshMu protects refreshing, the token refresh in flight, if any.
 	// Callers of this handler that find the token expired share it: a
@@ -589,11 +610,32 @@ func (h *OAuthHandler) GetExpectedState() string {
 //
 // In such cases, this should be called with the state value generated
 // during the initial authentication request (e.g. by GenerateState)
-// and included in the authorization URL.
+// and included in the authorization URL, and SetExpectedIssuer with the
+// issuer GetAuthorizationURL recorded.
 func (h *OAuthHandler) SetExpectedState(expectedState string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.expectedState = expectedState
+}
+
+// GetExpectedIssuer returns the issuer of the authorization server the user
+// was last sent to by GetAuthorizationURL, or set by SetExpectedIssuer.
+func (h *OAuthHandler) GetExpectedIssuer() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.expectedIssuer
+}
+
+// SetExpectedIssuer sets the issuer an authorization response must name, and
+// whether a response without iss is rejected, for a callback handled by
+// another handler instance than the one that built the authorization URL.
+// Take both from the handler that did: GetExpectedIssuer and the metadata's
+// authorization_response_iss_parameter_supported.
+func (h *OAuthHandler) SetExpectedIssuer(issuer string, required bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.expectedIssuer = issuer
+	h.issuerRequired = required
 }
 
 // OAuthError represents a standard OAuth 2.0 error response
@@ -1264,24 +1306,89 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 // ErrInvalidState is returned when the state parameter doesn't match the expected value
 var ErrInvalidState = errors.New("invalid state parameter, possible CSRF attack")
 
-// ProcessAuthorizationResponse processes the authorization response and exchanges the code for a token
+// ProcessAuthorizationResponse processes an authorization response that
+// carries no iss, and exchanges the code for a token.
+//
+// It is [OAuthHandler.ProcessAuthorizationCallback] for a response with only
+// code and state. An authorization server that advertises iss sends it on
+// every response, so against one this method refuses (ErrIssuerMissing):
+// hand the callback's query to ProcessAuthorizationCallback instead.
 func (h *OAuthHandler) ProcessAuthorizationResponse(ctx context.Context, code, state, codeVerifier string) error {
-	// Validate the state parameter to prevent CSRF attacks
+	return h.ProcessAuthorizationCallback(ctx, url.Values{"code": {code}, "state": {state}}, codeVerifier)
+}
+
+// ProcessAuthorizationCallback processes the authorization response the
+// user agent brought to the redirect URI, given as the callback's query
+// parameters, and exchanges the code for a token.
+//
+// The state is checked first and consumed, with the issuer recorded beside
+// it. Then the issuer (RFC 9207, as the MCP authorization rules apply it):
+// an iss that is present must equal, as a plain string, the issuer the user
+// was sent to; an iss that is absent is rejected when that authorization
+// server advertises authorization_response_iss_parameter_supported. Only
+// then is an error response acted on, returned as an OAuthError, and the
+// code exchanged.
+func (h *OAuthHandler) ProcessAuthorizationCallback(ctx context.Context, params url.Values, codeVerifier string) error {
+	expectedIssuer, issuerRequired, err := h.consumeExpectedState(params.Get("state"))
+	if err != nil {
+		return err
+	}
+	if err := h.validateIssuer(ctx, params.Get("iss"), expectedIssuer, issuerRequired); err != nil {
+		return err
+	}
+	if code := params.Get("error"); code != "" {
+		return OAuthError{
+			ErrorCode:        code,
+			ErrorDescription: params.Get("error_description"),
+			ErrorURI:         params.Get("error_uri"),
+		}
+	}
+	return h.exchangeAuthorizationCode(ctx, params.Get("code"), codeVerifier)
+}
+
+// consumeExpectedState checks state against the expected one and clears the
+// record, returning the issuer recorded with it: both are for one
+// authorization response.
+func (h *OAuthHandler) consumeExpectedState(state string) (expectedIssuer string, issuerRequired bool, err error) {
 	h.mu.Lock()
-	expectedState := h.expectedState
-	if expectedState == "" {
-		h.mu.Unlock()
-		return errors.New("no expected state found, authorization flow may not have been initiated properly")
+	defer h.mu.Unlock()
+	if h.expectedState == "" {
+		return "", false, errors.New("no expected state found, authorization flow may not have been initiated properly")
 	}
-
-	if state != expectedState {
-		h.mu.Unlock()
-		return ErrInvalidState
+	if state != h.expectedState {
+		return "", false, ErrInvalidState
 	}
+	expectedIssuer, issuerRequired = h.expectedIssuer, h.issuerRequired
+	h.expectedState, h.expectedIssuer, h.issuerRequired = "", "", false
+	return expectedIssuer, issuerRequired, nil
+}
 
-	// Clear the expected state after validation
-	h.expectedState = ""
-	h.mu.Unlock()
+// validateIssuer applies RFC 9207 §2.4 to the iss of an authorization
+// response. expected is the issuer recorded when the user was sent to the
+// authorization server; a handler that recorded none, as when the callback
+// is handled by another instance, takes it from the server's metadata.
+func (h *OAuthHandler) validateIssuer(ctx context.Context, iss, expected string, required bool) error {
+	if expected == "" {
+		metadata, err := h.getServerMetadata(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get server metadata: %w", err)
+		}
+		expected, required = metadata.Issuer, metadata.AuthorizationResponseIssParameterSupported
+	}
+	switch {
+	case iss == "" && required:
+		return ErrIssuerMissing
+	case iss != "" && iss != expected:
+		return fmt.Errorf("%w: got %q, expected %q", ErrIssuerMismatch, iss, expected)
+	}
+	return nil
+}
+
+// exchangeAuthorizationCode redeems the code at the token endpoint.
+func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, codeVerifier string) error {
+	if codeVerifier == "" && !h.config.PKCEDisabled {
+		return ErrPKCERequired
+	}
 
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
@@ -1293,9 +1400,6 @@ func (h *OAuthHandler) ProcessAuthorizationResponse(ctx context.Context, code, s
 	data.Set("code", code)
 	data.Set("redirect_uri", h.config.RedirectURI)
 
-	if codeVerifier == "" && !h.config.PKCEDisabled {
-		return ErrPKCERequired
-	}
 	if codeVerifier != "" {
 		data.Set("code_verifier", codeVerifier)
 	}
@@ -1454,8 +1558,14 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 		}
 	}
 
-	// Store the state for later validation
-	h.SetExpectedState(state)
+	// Record the state, and the issuer the user is sent to, for the
+	// response's validation (RFC 9207: the recorded issuer comes from the
+	// validated metadata, never from the response).
+	h.mu.Lock()
+	h.expectedState = state
+	h.expectedIssuer = metadata.Issuer
+	h.issuerRequired = metadata.AuthorizationResponseIssParameterSupported
+	h.mu.Unlock()
 
 	params := url.Values{}
 	params.Set("response_type", "code")

@@ -20,6 +20,7 @@ import (
 type tokenAuthServer struct {
 	supported            []string
 	codeChallengeMethods []string
+	issSupported         bool // advertise authorization_response_iss_parameter_supported
 	registration         map[string]any
 
 	mu             sync.Mutex
@@ -35,12 +36,13 @@ func (s *tokenAuthServer) start(t *testing.T) *httptest.Server {
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server":
 			_ = json.NewEncoder(w).Encode(AuthServerMetadata{
-				Issuer:                            server.URL,
-				AuthorizationEndpoint:             server.URL + "/authorize",
-				TokenEndpoint:                     server.URL + "/token",
-				RegistrationEndpoint:              server.URL + "/register",
-				TokenEndpointAuthMethodsSupported: s.supported,
-				CodeChallengeMethodsSupported:     s.codeChallengeMethods,
+				Issuer:                                     server.URL,
+				AuthorizationEndpoint:                      server.URL + "/authorize",
+				TokenEndpoint:                              server.URL + "/token",
+				RegistrationEndpoint:                       server.URL + "/register",
+				TokenEndpointAuthMethodsSupported:          s.supported,
+				CodeChallengeMethodsSupported:              s.codeChallengeMethods,
+				AuthorizationResponseIssParameterSupported: s.issSupported,
 			})
 		case "/register":
 			w.WriteHeader(http.StatusCreated)
