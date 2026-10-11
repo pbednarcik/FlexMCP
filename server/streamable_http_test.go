@@ -272,6 +272,56 @@ func TestStreamableHTTP_TasksAreNotListableWithoutAnIdentity(t *testing.T) {
 	})
 }
 
+// A task outlives the request that created it: its handler keeps running
+// after the create response is written, and its context ends only when the
+// task is cancelled.
+func TestStreamableHTTP_TaskOutlivesItsCreatingRequest(t *testing.T) {
+	mcpServer := NewMCPServer("test-mcp-server", "1.0", WithTaskCapabilities(true, true, true))
+	ended := make(chan error, 1)
+	mcpServer.AddTool(mcp.NewTool("wait", mcp.WithTaskSupport(mcp.TaskSupportRequired)), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		<-ctx.Done()
+		ended <- ctx.Err()
+		return nil, ctx.Err()
+	})
+	server := NewTestStreamableHTTPServer(mcpServer)
+
+	call := func(t *testing.T, body map[string]any) map[string]any {
+		t.Helper()
+		resp, err := postJSON(server.URL, body)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var envelope struct {
+			Result map[string]any `json:"result"`
+			Error  map[string]any `json:"error"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&envelope))
+		require.Nil(t, envelope.Error, "%v", envelope.Error)
+		return envelope.Result
+	}
+
+	created := call(t, map[string]any{"jsonrpc": "2.0", "id": 1, "method": mcp.MethodToolsCall, "params": map[string]any{"name": "wait", "task": map[string]any{}}})
+	task, _ := created["task"].(map[string]any)
+	taskID, _ := task["taskId"].(string)
+	require.NotEmpty(t, taskID, "no task was created: %v", created)
+
+	select {
+	case err := <-ended:
+		t.Fatalf("the task's context ended with the creating request: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	got := call(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": mcp.MethodTasksGet, "params": map[string]any{"taskId": taskID}})
+	assert.Equal(t, string(mcp.TaskStatusWorking), got["status"])
+
+	cancelled := call(t, map[string]any{"jsonrpc": "2.0", "id": 3, "method": mcp.MethodTasksCancel, "params": map[string]any{"taskId": taskID}})
+	assert.Equal(t, string(mcp.TaskStatusCancelled), cancelled["status"])
+	select {
+	case err := <-ended:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("tasks/cancel did not end the task's context")
+	}
+}
+
 // A legacy HTTP client has no stream and no registered session, so nothing
 // the server sends later can reach it: its initialize promises no
 // list_changed notification for tools, prompts or resources. A session with

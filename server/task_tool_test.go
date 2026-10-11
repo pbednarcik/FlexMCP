@@ -530,7 +530,7 @@ func TestTaskToolTracerBullet(t *testing.T) {
 		assert.Equal(t, expectedErr, resultErr.err)
 	})
 
-	t.Run("task tool handler returns context.Canceled before tasks/cancel called", func(t *testing.T) {
+	t.Run("task tool handler sees context.Canceled only through tasks/cancel", func(t *testing.T) {
 		// This test verifies that if a handler detects context cancellation
 		// (e.g., from parent context timeout) and returns ctx.Err() before
 		// tasks/cancel is explicitly called, the task is still marked as cancelled
@@ -543,12 +543,14 @@ func TestTaskToolTracerBullet(t *testing.T) {
 			WithTaskCapabilities(true, true, true),
 		)
 
-		// Step 2: Create a parent context that we'll cancel
+		// Step 2: Create the creating request's context, which ends once its
+		// response is written; the task must not end with it.
 		parentCtx, cancelParent := context.WithCancel(t.Context())
 		defer cancelParent()
 
 		// Step 3: Register a task tool that respects context cancellation
 		handlerStarted := make(chan struct{})
+		handlerEnded := make(chan error, 1)
 
 		selfCancelTool := mcp.NewTool("self_cancel_operation",
 			mcp.WithTaskSupport(mcp.TaskSupportRequired),
@@ -556,9 +558,8 @@ func TestTaskToolTracerBullet(t *testing.T) {
 
 		server.AddTaskTool(selfCancelTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
 			close(handlerStarted)
-			// Wait for context cancellation
 			<-ctx.Done()
-			// Return the context error
+			handlerEnded <- ctx.Err()
 			return nil, ctx.Err()
 		})
 
@@ -580,24 +581,31 @@ func TestTaskToolTracerBullet(t *testing.T) {
 		// Wait for handler to start
 		<-handlerStarted
 
-		// Step 5: Cancel the parent context (simulating external cancellation)
+		// Step 5: The creating request ends; the task keeps running.
 		cancelParent()
-
-		// Step 6: Wait for task to complete
-		var finalTask mcp.Task
-		for range 20 {
-			task, _, err := server.getTask(t.Context(), taskID)
-			require.NoError(t, err)
-			finalTask = task
-			if task.Status.IsTerminal() {
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
+		select {
+		case err := <-handlerEnded:
+			t.Fatalf("the creating request's end cancelled the task: %v", err)
+		case <-time.After(100 * time.Millisecond):
 		}
+		task, _, err := server.getTask(t.Context(), taskID)
+		require.NoError(t, err)
+		assert.Equal(t, mcp.TaskStatusWorking, task.Status)
 
-		// Step 7: Verify task status is cancelled (not failed)
-		assert.Equal(t, mcp.TaskStatusCancelled, finalTask.Status)
-		assert.Contains(t, finalTask.StatusMessage, "context canceled")
+		// Step 6: tasks/cancel is what ends it, and the handler sees
+		// context.Canceled rather than a failure.
+		response := server.HandleMessage(t.Context(), []byte(`{"jsonrpc":"2.0","id":2,"method":"tasks/cancel","params":{"taskId":"`+taskID+`"}}`))
+		_, ok := response.(mcp.JSONRPCResponse)
+		require.True(t, ok, "%v", response)
+		select {
+		case err := <-handlerEnded:
+			assert.ErrorIs(t, err, context.Canceled)
+		case <-time.After(2 * time.Second):
+			t.Fatal("tasks/cancel did not end the handler")
+		}
+		task, _, err = server.getTask(t.Context(), taskID)
+		require.NoError(t, err)
+		assert.Equal(t, mcp.TaskStatusCancelled, task.Status)
 	})
 
 	t.Run("multiple concurrent task tools", func(t *testing.T) {

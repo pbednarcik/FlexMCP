@@ -2032,13 +2032,15 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	taskCopy := entry.task
 	s.tasksMu.RUnlock()
 
-	// Execute tool asynchronously
-	// For regular tools being used as tasks, we need different execution logic
+	// The task outlives the request that created it: the request's context
+	// is cancelled once its response is written, so the task runs on one
+	// that keeps the request's values (session, protocol info) but ends only
+	// through tasks/cancel or the TTL.
+	taskCtx := context.WithoutCancel(ctx)
 	if hasTaskHandler {
-		go s.executeTaskTool(ctx, entry, toolToUse, request)
+		go s.executeTaskTool(taskCtx, entry, toolToUse, request)
 	} else {
-		// Execute regular tool wrapped as a task
-		go s.executeRegularToolAsTask(ctx, entry, regularTool, request)
+		go s.executeRegularToolAsTask(taskCtx, entry, regularTool, request)
 	}
 
 	// Return CreateTaskResult immediately with task as top-level field
