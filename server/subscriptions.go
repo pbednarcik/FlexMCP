@@ -149,8 +149,8 @@ func (s *MCPServer) handleSubscriptionsListen(
 
 // registerListenSession makes a session serving a subscriptions/listen stream
 // reachable by the notifications the server broadcasts. It is for transports
-// that serve each modern request with an ephemeral session they never
-// register, such as Streamable HTTP. It fires no session hooks, because the
+// that serve each request with an ephemeral session they never register, such
+// as Streamable HTTP. It fires no session hooks, because the
 // session is not a client session in its own right.
 func (s *MCPServer) registerListenSession(session ClientSession) {
 	s.listenSessions.Store(session, struct{}{})
@@ -187,8 +187,9 @@ func (s *MCPServer) allowedSubscriptions(want mcp.SubscriptionFilter) mcp.Subscr
 // subscriptionAllowsNotification reports whether a session that opted in
 // through subscriptions/listen should receive the given notification method.
 //
-// Sessions that never opened a subscription stream are unaffected: they are
-// legacy sessions, where notifications are not opt-in.
+// A session not serving a subscription stream is unaffected: a request's own
+// session in either era, or a stdio or in-process session, where
+// notifications are not opt-in.
 func subscriptionAllowsNotification(session ClientSession, method string) bool {
 	filtered, ok := session.(SessionWithSubscriptionFilter)
 	if !ok {

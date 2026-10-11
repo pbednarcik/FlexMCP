@@ -9,25 +9,22 @@ import (
 )
 
 // Protocol version 2026-07-28 removed protocol-level sessions from the
-// Streamable HTTP transport (SEP-2567, SEP-2575). A server serving that
-// version:
-//
-//   - ignores the Mcp-Session-Id header, and never mints or echoes one;
-//   - answers GET and DELETE on the MCP endpoint with 405 Method Not Allowed;
-//   - ignores Last-Event-ID, because streams are no longer resumable;
-//   - requires Mcp-Method and Mcp-Name on POST requests (SEP-2243).
-//
-// Older clients are unaffected: the era is decided per request, from the
-// _meta the request carries, so both eras are served concurrently on the same
-// endpoint.
+// Streamable HTTP transport (SEP-2567, SEP-2575), and this server serves both
+// eras without them: it ignores Mcp-Session-Id and never mints or echoes one,
+// answers GET and DELETE with 405, and opens no resumable stream. This file
+// holds what the modern era adds on top: the era detection, the checks a
+// modern POST must pass before it is dispatched (a Last-Event-ID is refused,
+// the version in the header and in _meta must agree and be served; Mcp-Method
+// and Mcp-Name, SEP-2243, are checked at dispatch), and the HTTP status a
+// JSON-RPC error maps to. The era is decided per request, so both are served
+// on the same endpoint.
 
 // WithStreamableHTTPProtocolVersions restricts the protocol versions this
 // transport advertises through server/discover.
 //
 // By default every version this SDK implements is advertised, including the
-// stateless 2026-07-28 core. Restricting the list is useful for deployments
-// that depend on protocol-level session state - per-session tools, for example
-// - and therefore need clients to stay on a session-oriented revision.
+// stateless 2026-07-28 core. Restricting the list is for a deployment that
+// wants its clients on one revision, or cannot yet serve the newest one.
 //
 // Passing no versions restores the default.
 func WithStreamableHTTPProtocolVersions(versions ...string) StreamableHTTPOption {

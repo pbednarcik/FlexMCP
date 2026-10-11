@@ -77,7 +77,7 @@ func WithStreamableHTTPServer(srv *http.Server) StreamableHTTPOption {
 
 // WithStreamableHTTPLogger sets the structured logger for transport-level
 // events emitted by the HTTP server (panics in goroutines, SSE event-write
-// errors, session expiry, etc.). It is renamed from WithLogger so that
+// errors, and so on). It is renamed from WithLogger so that
 // server-level structured logging — see WithLogger — can carry that name on
 // the MCPServer. A nil logger falls back to slog.Default().
 func WithStreamableHTTPLogger(logger *slog.Logger) StreamableHTTPOption {
@@ -375,10 +375,9 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	isInitializeRequest := jsonMessage.Method == mcp.MethodInitialize
 
-	// Decide which protocol era this message belongs to before branching on
-	// its shape. Protocol version 2026-07-28 removed protocol-level sessions,
-	// so a modern message never carries, mints, or echoes a session ID
-	// (SEP-2567), and must not reach a session-dependent path.
+	// Decide which protocol era this message belongs to. Both eras run through
+	// the same stateless path below; the era only chooses the version check
+	// here, the modern header validation, and the HTTP status of an error.
 	era := detectRequestEra(r.header(), rawData)
 
 	// The header is only required after initialize, which negotiates the
@@ -387,7 +386,8 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		return
 	}
 
-	// detect empty ping response, skip session ID validation
+	// A client's answer to a server ping, or any empty response, is accepted
+	// without being dispatched.
 	isEmptyResponse := jsonMessage.Method == "" && jsonMessage.ID != nil &&
 		(isJSONEmpty(jsonMessage.Result) && isJSONEmpty(jsonMessage.Error))
 	isPingResponse := jsonMessage.Method == "" && jsonMessage.ID != nil &&

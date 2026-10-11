@@ -32,7 +32,7 @@ type HTTPRequest struct {
 	Context context.Context
 
 	// original is the *http.Request that originated this HTTPRequest, when
-	// the request entered through ServeHTTP. It is forwarded to legacy hooks
+	// the request entered through ServeHTTP. It is forwarded to the hooks
 	// such as HTTPContextFunc that take a *http.Request, preserving any
 	// request-scoped state (RemoteAddr, TLS, etc.) that the synthesized
 	// request from asHTTPRequest cannot reconstruct. Nil when the request

@@ -92,7 +92,7 @@ type SessionWithProtocolVersion interface {
 //
 // A request belongs to the modern era only when it declares a protocol version
 // of 2026-07-28 or later. Anything else - including a request with no _meta at
-// all - is legacy, and is served through the initialize-handshake path.
+// all - is legacy; both eras are served by the same handlers.
 //
 // The returned error is non-nil only when a modern request is malformed: the
 // required client capabilities are missing, or a well-known key holds a value
