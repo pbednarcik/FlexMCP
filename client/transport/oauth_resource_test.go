@@ -46,3 +46,28 @@ func TestOAuthHandler_SendsTheResourceWithoutProtectedResourceMetadata(t *testin
 		})
 	}
 }
+
+// The resource is the MCP server, known from the base URL or from protected
+// resource metadata. A handler that knows neither does not guess from the
+// redirect URI, which names the callback listener: it refuses to start.
+func TestOAuthHandler_RefusesToStartWithoutAKnownResource(t *testing.T) {
+	server := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+	httpServer := server.start(t)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",
+	})
+
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.ErrorIs(t, err, ErrResourceUnknown)
+	assert.Empty(t, handler.getResourceURL(), "the redirect origin is not the resource")
+
+	handler.SetBaseURL(httpServer.URL + "/mcp")
+	authURL, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.NoError(t, err)
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+	assert.Equal(t, httpServer.URL+"/mcp", parsed.Query().Get("resource"))
+}

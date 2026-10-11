@@ -52,6 +52,11 @@ var (
 	// leads to another: credentials belong to the issuer that gave them, so
 	// the client has to register again.
 	ErrClientRegisteredElsewhere = errors.New("the client is registered with another authorization server; register again")
+	// ErrResourceUnknown is returned when an authorization flow would start
+	// without knowing the MCP server it is for: neither a base URL (set by
+	// the transports, or SetBaseURL) nor protected resource metadata named
+	// it, and the resource parameter cannot be sent.
+	ErrResourceUnknown = errors.New("the MCP server to authorize for is not known: set its URL before starting authorization")
 )
 
 // OAuthConfig holds the OAuth configuration for the client
@@ -656,12 +661,22 @@ func (h *OAuthHandler) GetClientSecret() string {
 	return h.config.ClientSecret
 }
 
-// SetBaseURL sets the base URL for the API server.
-// Must be called before any calls to getServerMetadata (i.e., during initialization).
+// SetBaseURL sets the URL of the MCP server, which discovery starts from and
+// which the resource parameter names. The transports set it when they are
+// built; a handler used on its own needs it before authorization starts. A
+// change discards what discovery found, so the next call discovers again.
 func (h *OAuthHandler) SetBaseURL(baseURL string) {
 	h.metadataMu.Lock()
 	defer h.metadataMu.Unlock()
+	if h.baseURL == baseURL {
+		return
+	}
 	h.baseURL = baseURL
+	h.serverMetadata = nil
+	h.metadataFetchErr = nil
+	h.metadataOnce = &sync.Once{}
+	h.resourceURL = ""
+	h.resourceScopes = nil
 }
 
 // GetExpectedState returns the expected state value (for testing purposes)
@@ -846,18 +861,16 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	authServerMetadataURL := h.config.AuthServerMetadataURL
 	protectedResourceMetadataURL := h.config.ProtectedResourceMetadataURL
 	validateIssuer := !h.config.SkipIssuerMetadataValidation
-	baseURL, baseURLErr := h.extractBaseURL()
-	h.metadataMu.Unlock()
-
 	// RFC 8707: the resource parameter names the MCP server on every
 	// authorization and token request, whether or not the authorization
 	// server supports it. Protected resource metadata may name the resource
 	// below; until it does, and on every path where there is none, the MCP
-	// server's own URL is the resource.
-	resourceURL := ""
-	if baseURLErr == nil {
-		resourceURL = baseURL
-	}
+	// server's own URL is the resource. Only the URL the handler was given
+	// counts: extractBaseURL's fallback to the redirect URI names the
+	// callback listener, which is no resource.
+	resourceURL := h.baseURL
+	baseURL, baseURLErr := h.extractBaseURL()
+	h.metadataMu.Unlock()
 
 	// If AuthServerMetadataURL is explicitly provided, use it directly
 	if authServerMetadataURL != "" {
@@ -1672,6 +1685,12 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 	if err := h.checkRegisteredIssuer(metadata); err != nil {
 		return "", err
 	}
+	// The flow is for an MCP server, which the resource parameter names on
+	// this request and the token request; without one there is no flow.
+	resourceURL := h.getResourceURL()
+	if resourceURL == "" {
+		return "", ErrResourceUnknown
+	}
 
 	if !h.config.PKCEDisabled {
 		if codeChallenge == "" {
@@ -1709,10 +1728,8 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 		params.Set("code_challenge_method", pkceMethod)
 	}
 
-	// RFC 8707: Include resource parameter in authorization URL
-	if resourceURL := h.getResourceURL(); resourceURL != "" {
-		params.Set("resource", resourceURL)
-	}
+	// RFC 8707: the resource parameter names the MCP server
+	params.Set("resource", resourceURL)
 
 	return metadata.AuthorizationEndpoint + "?" + params.Encode(), nil
 }

@@ -91,6 +91,7 @@ func TestOAuthHandler_PKCEDisabledSkipsItAll(t *testing.T) {
 		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",
 		PKCEDisabled:          true,
 	})
+	handler.SetBaseURL(httpServer.URL)
 
 	authURL, err := handler.GetAuthorizationURL(t.Context(), "state", "")
 	require.NoError(t, err)

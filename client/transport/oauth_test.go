@@ -333,6 +333,7 @@ func TestOAuthHandler_SetExpectedState_CrossRequestScenario(t *testing.T) {
 	// Step 1: First handler instance (initialization request)
 	// This simulates the handler that generates the authorization URL
 	handler1 := NewOAuthHandler(config)
+	handler1.SetBaseURL(server.URL)
 
 	// Mock the server metadata for the first handler
 	handler1.serverMetadata = &AuthServerMetadata{
