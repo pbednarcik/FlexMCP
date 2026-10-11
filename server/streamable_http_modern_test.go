@@ -149,6 +149,17 @@ func TestModernProtocol_NoSessionID(t *testing.T) {
 	assert.Empty(t, resp.Header.Get(mcp.HeaderSessionID))
 }
 
+// A negative ttlMs is not a value the spec allows (Utilities.md row 24); a
+// server configured with one advertises 0, immediately stale.
+func TestModernProtocol_NegativeCacheTTLIsClampedToZero(t *testing.T) {
+	srv := newModernTestServer(t, WithCacheHints(-5, mcp.CacheScopePrivate))
+
+	resp := postModern(t, srv.URL, mcp.MethodToolsList, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	result := decodeJSONRPC(t, resp)["result"].(map[string]any)
+	assert.Equal(t, float64(0), result["ttlMs"])
+}
+
 func TestModernProtocol_ToolsListIsCacheable(t *testing.T) {
 	srv := newModernTestServer(t, WithCacheHints(60000, mcp.CacheScopePrivate))
 

@@ -1042,6 +1042,12 @@ var levelToInt = map[LoggingLevel]int{
 	LoggingLevelEmergency: 7,
 }
 
+// IsValid reports whether l is one of the eight levels the protocol defines.
+func (l LoggingLevel) IsValid() bool {
+	_, ok := levelToInt[l]
+	return ok
+}
+
 func (l LoggingLevel) ShouldSendTo(minLevel LoggingLevel) bool {
 	ia, oka := levelToInt[l]
 	ib, okb := levelToInt[minLevel]
@@ -1094,9 +1100,8 @@ func (p ElicitationParams) Validate() error {
 			return fmt.Errorf("requestedSchema is required for form elicitation")
 		}
 	case ElicitationModeURL:
-		if p.ElicitationID == "" {
-			return fmt.Errorf("elicitationId is required for url elicitation")
-		}
+		// elicitationId was removed from URL mode in 2026-07-28; a request
+		// may still carry one for a 2025-11-25 client, but needs only its URL.
 		if p.URL == "" {
 			return fmt.Errorf("url is required for url elicitation")
 		}

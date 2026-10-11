@@ -12,8 +12,9 @@ import (
 
 // TestRequestProtocolInfoReadsMetaByItsKeys pins how a request's _meta is
 // read: the four well-known keys decide the era and the identity, each on
-// its own, so a malformed optional value is ignored while the capabilities
-// are the one value a modern request cannot do without.
+// its own. Malformed client info is ignored; the capabilities are the one
+// value a modern request cannot do without; a log level that is not one of
+// the eight is refused (Utilities.md row 11).
 func TestRequestProtocolInfoReadsMetaByItsKeys(t *testing.T) {
 	const modern = `"io.modelcontextprotocol/protocolVersion":"2026-07-28"`
 	const caps = `"io.modelcontextprotocol/clientCapabilities":{}`
@@ -37,8 +38,10 @@ func TestRequestProtocolInfoReadsMetaByItsKeys(t *testing.T) {
 				ClientInfo: &mcp.Implementation{Name: "c", Version: "1"}, LogLevel: mcp.LoggingLevelDebug}, ""},
 		{"malformed client info is ignored", `{"_meta":{` + modern + `,` + caps + `,"io.modelcontextprotocol/clientInfo":"c"}}`,
 			&RequestProtocolInfo{Modern: true, ProtocolVersion: "2026-07-28", ClientCapabilities: &mcp.ClientCapabilities{}}, ""},
-		{"malformed log level is ignored", `{"_meta":{` + modern + `,` + caps + `,"io.modelcontextprotocol/logLevel":5}}`,
-			&RequestProtocolInfo{Modern: true, ProtocolVersion: "2026-07-28", ClientCapabilities: &mcp.ClientCapabilities{}}, ""},
+		{"a log level that is not a string is an error", `{"_meta":{` + modern + `,` + caps + `,"io.modelcontextprotocol/logLevel":5}}`,
+			nil, "invalid _meta field io.modelcontextprotocol/logLevel"},
+		{"an unknown log level is an error", `{"_meta":{` + modern + `,` + caps + `,"io.modelcontextprotocol/logLevel":"loud"}}`,
+			nil, "invalid _meta field io.modelcontextprotocol/logLevel"},
 		{"key case is not significant, as encoding/json matches field tags", `{"_meta":{"IO.modelcontextprotocol/protocolversion":"2026-07-28","io.modelcontextprotocol/CLIENTCAPABILITIES":{}}}`,
 			&RequestProtocolInfo{Modern: true, ProtocolVersion: "2026-07-28", ClientCapabilities: &mcp.ClientCapabilities{}}, ""},
 		{"modern without capabilities is an error", `{"_meta":{` + modern + `}}`, nil, "missing or invalid _meta field io.modelcontextprotocol/clientCapabilities"},

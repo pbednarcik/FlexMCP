@@ -254,7 +254,8 @@ type MCPServer struct {
 // cache the response across authorization contexts.
 //
 // The hints are only emitted to clients using protocol version 2026-07-28 or
-// later, which is where the fields were introduced.
+// later, which is where the fields were introduced. A negative ttlMs is not
+// a value the protocol allows and is advertised as 0.
 func WithCacheHints(ttlMs int64, scope mcp.CacheScope) ServerOption {
 	return func(s *MCPServer) {
 		s.capabilitiesMu.Lock()
@@ -262,12 +263,13 @@ func WithCacheHints(ttlMs int64, scope mcp.CacheScope) ServerOption {
 		if s.cacheHints == nil {
 			s.cacheHints = make(map[mcp.MCPMethod]cacheHints)
 		}
-		s.cacheHints[""] = cacheHints{ttlMs: ttlMs, scope: scope}
+		s.cacheHints[""] = cacheHints{ttlMs: max(ttlMs, 0), scope: scope}
 	}
 }
 
 // WithMethodCacheHints sets the SEP-2549 caching hints advertised on the
 // result of a single method, overriding any default set by [WithCacheHints].
+// A negative ttlMs is advertised as 0.
 func WithMethodCacheHints(method mcp.MCPMethod, ttlMs int64, scope mcp.CacheScope) ServerOption {
 	return func(s *MCPServer) {
 		s.capabilitiesMu.Lock()
@@ -275,7 +277,7 @@ func WithMethodCacheHints(method mcp.MCPMethod, ttlMs int64, scope mcp.CacheScop
 		if s.cacheHints == nil {
 			s.cacheHints = make(map[mcp.MCPMethod]cacheHints)
 		}
-		s.cacheHints[method] = cacheHints{ttlMs: ttlMs, scope: scope}
+		s.cacheHints[method] = cacheHints{ttlMs: max(ttlMs, 0), scope: scope}
 	}
 }
 
@@ -1583,6 +1585,8 @@ func (s *MCPServer) handleReadResource(
 		return readResourceResult(contents), nil
 	}
 
+	// The URI rides in the error's data, as the specification's examples
+	// have it in both eras.
 	return nil, &requestError{
 		id:   id,
 		code: resourceNotFoundCode(ctx),
@@ -1591,6 +1595,7 @@ func (s *MCPServer) handleReadResource(
 			request.Params.URI,
 			ErrResourceNotFound,
 		),
+		data: map[string]any{"uri": request.Params.URI},
 	}
 }
 
@@ -1714,6 +1719,18 @@ func (s *MCPServer) handleGetPrompt(
 			id:   id,
 			code: mcp.INVALID_PARAMS,
 			err:  fmt.Errorf("prompt '%s' not found: %w", request.Params.Name, ErrPromptNotFound),
+		}
+	}
+
+	// An argument the prompt declared required must be present (Prompts.md
+	// row 10); the handler never sees a request that lacks one.
+	for _, argument := range prompt.Arguments {
+		if _, ok := request.Params.Arguments[argument.Name]; argument.Required && !ok {
+			return nil, &requestError{
+				id:   id,
+				code: mcp.INVALID_PARAMS,
+				err:  fmt.Errorf("prompt %q: missing required argument %q", request.Params.Name, argument.Name),
+			}
 		}
 	}
 

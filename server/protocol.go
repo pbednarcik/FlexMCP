@@ -138,8 +138,12 @@ func extractRequestProtocolInfo(message json.RawMessage) (*RequestProtocolInfo, 
 			info.ClientInfo = &clientInfo
 		}
 	}
+	// A log level, when given, is one of the eight; anything else is an
+	// invalid params error (Utilities.md row 11), not a silent no-op.
 	if len(meta.LogLevel) > 0 {
-		_ = json.Unmarshal(meta.LogLevel, &info.LogLevel)
+		if json.Unmarshal(meta.LogLevel, &info.LogLevel) != nil || !info.LogLevel.IsValid() {
+			return nil, errors.New("invalid _meta field " + mcp.MetaKeyLogLevel)
+		}
 	}
 
 	// Client capabilities are required on every modern request. An empty

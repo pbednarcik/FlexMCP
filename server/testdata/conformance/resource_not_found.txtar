@@ -2,7 +2,8 @@ Protocol version 2026-07-28 aligns the resource-not-found condition with
 JSON-RPC by reporting InvalidParams (-32602) instead of the MCP-specific
 -32002. The code is chosen per request, so a client using an earlier revision
 still sees the code its revision specifies, even on a long-lived session that
-has already served a modern request.
+has already served a modern request. Both carry the URI in the error's data,
+as the specification's examples do.
 
 -- client --
 {
@@ -27,6 +28,9 @@ has already served a modern request.
 {
 	"error": {
 		"code": -32602,
+		"data": {
+			"uri": "file:///missing"
+		},
 		"message": "handler not found for resource URI 'file:///missing': resource not found"
 	},
 	"id": 1,
@@ -36,6 +40,9 @@ has already served a modern request.
 {
 	"error": {
 		"code": -32002,
+		"data": {
+			"uri": "file:///missing"
+		},
 		"message": "handler not found for resource URI 'file:///missing': resource not found"
 	},
 	"id": 2,

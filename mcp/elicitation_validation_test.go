@@ -66,13 +66,15 @@ func TestElicitationParams_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "URL Mode Missing ElicitationID",
+			// 2026-07-28 removed elicitationId from URL mode (ClientFeatures.md
+			// row 7); a URL-mode request needs only its URL.
+			name: "URL Mode without an ElicitationID",
 			params: mcp.ElicitationParams{
 				Mode:    mcp.ElicitationModeURL,
 				URL:     "https://example.com",
-				Message: "Missing ID",
+				Message: "No ID",
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 	}
 
