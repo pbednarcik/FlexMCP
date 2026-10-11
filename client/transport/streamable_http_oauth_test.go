@@ -366,6 +366,15 @@ func TestParseAuthParams(t *testing.T) {
 				"resource_metadata": "https://dpop.example.com/.well-known/oauth-protected-resource",
 			},
 		},
+		{
+			// Parameter names compare case-insensitively (RFC 9110 §11.2).
+			name:   "Parameter names in any case",
+			header: `Bearer Scope="read", ERROR=insufficient_scope`,
+			expected: map[string]string{
+				"scope": "read",
+				"error": "insufficient_scope",
+			},
+		},
 	}
 
 	for _, tc := range testCases {

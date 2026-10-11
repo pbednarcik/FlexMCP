@@ -428,8 +428,9 @@ var ErrAuthorizationRequired = errors.New("authorization required")
 
 // parseAuthParams parses the auth-params from a WWW-Authenticate header value
 // per RFC 7235. It skips the auth-scheme (first token) and returns a map of
-// key=value pairs. Values may be tokens or quoted-strings (with backslash
-// escaping per RFC 7230 §3.2.6).
+// key=value pairs, keys in lower case since parameter names compare
+// case-insensitively (RFC 9110 §11.2). Values may be tokens or
+// quoted-strings (with backslash escaping per RFC 7230 §3.2.6).
 func parseAuthParams(header string) map[string]string {
 	params := make(map[string]string)
 
@@ -457,7 +458,7 @@ func parseAuthParams(header string) map[string]string {
 		if eqIdx == -1 {
 			break
 		}
-		key := strings.TrimSpace(rest[:eqIdx])
+		key := strings.ToLower(strings.TrimSpace(rest[:eqIdx]))
 		rest = strings.TrimLeft(rest[eqIdx+1:], " \t")
 
 		// Parse value: quoted-string or token
@@ -631,10 +632,22 @@ func isAuthTokenChar(c byte) bool {
 	return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
 }
 
-// AuthorizationRequiredError is returned when a 401 Unauthorized response is received.
-// It contains the protected resource metadata URL from the WWW-Authenticate header if present.
+// AuthorizationRequiredError is returned when the server answers 401, or
+// 403 with an insufficient_scope challenge. It carries what the
+// WWW-Authenticate challenge said.
 type AuthorizationRequiredError struct {
-	ResourceMetadataURL string // Extracted from WWW-Authenticate header per RFC9728
+	// ResourceMetadataURL is the resource_metadata parameter (RFC 9728
+	// §5.1), if present.
+	ResourceMetadataURL string
+	// Scopes is the scope parameter (RFC 6750 §3): the scopes the operation
+	// needs, authoritative for it. When re-authorizing, keep the scopes
+	// already granted alongside them.
+	Scopes []string
+	// ErrorCode is the error parameter, "insufficient_scope" on a 403 that
+	// asks for a step-up; empty on a plain 401.
+	ErrorCode string
+	// ErrorDescription is the error_description parameter, if any.
+	ErrorDescription string
 }
 
 func (e *AuthorizationRequiredError) Error() string {
@@ -700,31 +713,8 @@ func (c *StreamableHTTP) SendRequest(
 
 	// Check if we got an error response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-
-		// Handle unauthorized error
-		if resp.StatusCode == http.StatusUnauthorized {
-			// Extract discovered metadata URL per RFC9728
-			metadataURL := extractResourceMetadataURL(resp.Header.Values("WWW-Authenticate"))
-
-			// Feed discovered URL back to OAuthHandler so next auth attempt uses it.
-			// HandleUnauthorizedResponse applies RFC 9728 origin validation — a
-			// compromised resource advertising a cross-origin PRM URL is ignored.
-			if c.oauthHandler != nil {
-				c.oauthHandler.HandleUnauthorizedResponse(resp)
-			}
-
-			// If OAuth handler exists, return OAuth-specific error
-			if c.oauthHandler != nil {
-				return nil, &OAuthAuthorizationRequiredError{
-					Handler:             c.oauthHandler,
-					ResourceMetadataURL: metadataURL,
-				}
-			}
-
-			// No OAuth handler, return base authorization error
-			return nil, &AuthorizationRequiredError{
-				ResourceMetadataURL: metadataURL,
-			}
+		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp) {
+			return nil, authorizationError(resp, c.oauthHandler)
 		}
 
 		// Per the MCP spec's backwards compatibility section: if an initialize
@@ -1162,32 +1152,11 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 	}
 	defer func() { cancel(); resp.Body.Close() }()
 
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusAccepted, http.StatusNoContent:
+	switch {
+	case resp.StatusCode == http.StatusOK, resp.StatusCode == http.StatusAccepted, resp.StatusCode == http.StatusNoContent:
 		return nil
-	case http.StatusUnauthorized:
-		// Extract discovered metadata URL per RFC9728
-		metadataURL := extractResourceMetadataURL(resp.Header.Values("WWW-Authenticate"))
-
-		// Feed discovered URL back to OAuthHandler so next auth attempt uses it.
-		// HandleUnauthorizedResponse applies RFC 9728 origin validation — a
-		// compromised resource advertising a cross-origin PRM URL is ignored.
-		if c.oauthHandler != nil {
-			c.oauthHandler.HandleUnauthorizedResponse(resp)
-		}
-
-		// If OAuth handler exists, return OAuth-specific error
-		if c.oauthHandler != nil {
-			return &OAuthAuthorizationRequiredError{
-				Handler:             c.oauthHandler,
-				ResourceMetadataURL: metadataURL,
-			}
-		}
-
-		// No OAuth handler, return base authorization error
-		return &AuthorizationRequiredError{
-			ResourceMetadataURL: metadataURL,
-		}
+	case resp.StatusCode == http.StatusUnauthorized, insufficientScope(resp):
+		return authorizationError(resp, c.oauthHandler)
 	default:
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf(

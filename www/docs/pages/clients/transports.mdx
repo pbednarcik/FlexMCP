@@ -417,6 +417,8 @@ Hand the callback's query to `ProcessAuthorizationCallback`: it checks the state
 
 Every authorization and token request carries the RFC 8707 `resource` parameter naming the MCP server: the identifier its protected resource metadata declares, or else the server's URL, whether or not the authorization server supports the parameter.
 
+A 401, and a 403 whose `WWW-Authenticate` challenge says `insufficient_scope`, come back as an `AuthorizationRequiredError` (wrapped in an `OAuthAuthorizationRequiredError` when the transport has an OAuth handler) carrying the challenge's `Scopes`, `ErrorCode` and `ErrorDescription`. The handler records the challenged scopes, and the next `GetAuthorizationURL` asks for them first, together with the configured scopes and those the current token was granted; with no challenge and no configured scopes it asks for the protected resource's `scopes_supported`. Stepping up is then one more authorization flow followed by a retry of the operation, which is the application's to drive and to bound.
+
 ### StreamableHTTP Connection Pooling
 
 ```go

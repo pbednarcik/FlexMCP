@@ -245,14 +245,21 @@ type OAuthHandler struct {
 	// the critical section (#871).
 	metadataMu  sync.Mutex
 	resourceURL string // RFC 8707 resource indicator; set from protected resource metadata
+	// resourceScopes is scopes_supported from the protected resource
+	// metadata: what to ask for when no challenge and no configuration says.
+	resourceScopes []string
 
 	// registeredAuthMethod is the token_endpoint_auth_method the
 	// authorization server registered for the client during dynamic client
 	// registration, if any.
 	registeredAuthMethod string
 
-	mu            sync.RWMutex // Protects expectedState, expectedIssuer, issuerRequired
+	mu            sync.RWMutex // Protects expectedState, expectedIssuer, issuerRequired, challengedScopes
 	expectedState string       // Expected state value for CSRF protection
+	// challengedScopes are the scopes the last WWW-Authenticate challenge
+	// named: authoritative for the operation that was refused, so the next
+	// authorization asks for them first.
+	challengedScopes []string
 	// expectedIssuer is the issuer of the authorization server the user was
 	// sent to, recorded with the state (RFC 9207 §2.4); issuerRequired says
 	// that server advertises iss, so a response without it is rejected.
@@ -498,27 +505,36 @@ func (h *OAuthHandler) SetProtectedResourceMetadataURL(u string) {
 	// that captured the previous instance.
 	h.metadataOnce = &sync.Once{}
 	h.resourceURL = ""
+	h.resourceScopes = nil
 }
 
-// HandleUnauthorizedResponse inspects a 401 response for RFC 9728 §5.1
-// WWW-Authenticate challenges and, when one carries a resource_metadata
-// parameter whose URL shares the protected resource's origin, stores it
-// so subsequent metadata discovery can use it. It iterates every
-// WWW-Authenticate header line (a response can carry multiple challenges
-// — Basic, Bearer, etc. — each on its own line) and every
-// resource_metadata parameter within each line, takes the first
-// candidate that validates, and silently ignores headers that are
-// absent, malformed, or advertise an unrelated origin.
+// HandleUnauthorizedResponse takes what a 401, or a 403 with an
+// insufficient_scope challenge, tells the client for its next
+// authorization.
 //
-// Origin validation rejects URLs whose scheme or host differs from the
-// OAuth handler's configured base URL. This prevents a compromised or
-// misconfigured resource from redirecting clients to an attacker's
-// metadata endpoint.
+// The scope parameter of the Bearer challenge (RFC 6750 §3) is recorded as
+// the scopes to ask for first; see ChallengedScopes.
+//
+// The RFC 9728 §5.1 resource_metadata parameter, when its URL shares the
+// protected resource's origin, is stored so subsequent metadata discovery
+// can use it. Every WWW-Authenticate header line is read (a response can
+// carry multiple challenges — Basic, Bearer, etc. — each on its own line)
+// and every resource_metadata parameter within each line; the first
+// candidate that validates wins, and headers that are absent, malformed, or
+// advertise an unrelated origin are ignored. Origin validation rejects URLs
+// whose scheme or host differs from the OAuth handler's configured base
+// URL, so a compromised or misconfigured resource cannot redirect clients
+// to an attacker's metadata endpoint.
 //
 // It is safe to call with a nil response.
 func (h *OAuthHandler) HandleUnauthorizedResponse(resp *http.Response) {
 	if resp == nil {
 		return
+	}
+	if scopes := parseBearerChallenge(resp.Header.Values("WWW-Authenticate")).scopes; len(scopes) > 0 {
+		h.mu.Lock()
+		h.challengedScopes = scopes
+		h.mu.Unlock()
 	}
 	for _, header := range resp.Header.Values("WWW-Authenticate") {
 		for _, candidate := range extractResourceMetadataURLs(header) {
@@ -572,6 +588,53 @@ func (h *OAuthHandler) validateAdvertisedPRMURL(candidate string) error {
 		return fmt.Errorf("advertised PRM URL host %q does not match base %q", parsed.Host, base.Host)
 	}
 	return nil
+}
+
+// ChallengedScopes returns the scopes the last WWW-Authenticate challenge
+// named, which the next authorization asks for first.
+func (h *OAuthHandler) ChallengedScopes() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return slices.Clone(h.challengedScopes)
+}
+
+// scopesToRequest picks the scopes of an authorization request, following
+// the MCP scope selection strategy: the challenged scopes first, as they
+// are authoritative for the refused operation, then the configured ones and
+// those the current token was granted, so a step-up loses nothing; failing
+// all of those, the protected resource's scopes_supported; failing that,
+// none.
+func (h *OAuthHandler) scopesToRequest(ctx context.Context) []string {
+	h.mu.RLock()
+	challenged := h.challengedScopes
+	h.mu.RUnlock()
+	var granted []string
+	if token, err := h.config.TokenStore.GetToken(ctx); err == nil {
+		granted = strings.Fields(token.Scope)
+	}
+	if scopes := unionScopes(challenged, h.config.Scopes, granted); len(scopes) > 0 {
+		return scopes
+	}
+	h.metadataMu.Lock()
+	defer h.metadataMu.Unlock()
+	return slices.Clone(h.resourceScopes)
+}
+
+// unionScopes concatenates the lists, keeping each scope once, at its first
+// position.
+func unionScopes(lists ...[]string) []string {
+	var union []string
+	seen := make(map[string]struct{})
+	for _, list := range lists {
+		for _, scope := range list {
+			if _, dup := seen[scope]; dup {
+				continue
+			}
+			seen[scope] = struct{}{}
+			union = append(union, scope)
+		}
+	}
+	return union
 }
 
 // getResourceURL returns the RFC 8707 resource indicator under metadataMu.
@@ -658,6 +721,9 @@ type OAuthProtectedResource struct {
 	AuthorizationServers []string `json:"authorization_servers"`
 	Resource             string   `json:"resource"`
 	ResourceName         string   `json:"resource_name,omitempty"`
+	// ScopesSupported is the minimal set of scopes for basic use of the
+	// resource, requested when nothing else says which scopes to ask for.
+	ScopesSupported []string `json:"scopes_supported,omitempty"`
 }
 
 // metadataDiscoveryResult bundles the outputs of a single OAuth server
@@ -665,8 +731,9 @@ type OAuthProtectedResource struct {
 // to getServerMetadata for publication under metadataMu, instead of
 // mutating shared state directly while holding the lock across HTTP I/O.
 type metadataDiscoveryResult struct {
-	metadata    *AuthServerMetadata
-	resourceURL string
+	metadata        *AuthServerMetadata
+	resourceURL     string
+	scopesSupported []string // from the protected resource metadata, when found
 }
 
 // getServerMetadata fetches the OAuth server metadata.
@@ -727,6 +794,9 @@ func (h *OAuthHandler) getServerMetadata(ctx context.Context) (*AuthServerMetada
 		}
 		if result.resourceURL != "" {
 			h.resourceURL = result.resourceURL
+		}
+		if result.scopesSupported != nil {
+			h.resourceScopes = result.scopesSupported
 		}
 		// Discovery completed without producing metadata or an error (e.g. a
 		// non-2xx response handled by fetchMetadataFromURL). Record an explicit
@@ -907,6 +977,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	if protectedResource.Resource != "" {
 		resourceURL = protectedResource.Resource
 	}
+	scopesSupported := protectedResource.ScopesSupported
 
 	// If no authorization servers are specified, fall back to default endpoints
 	if len(protectedResource.AuthorizationServers) == 0 {
@@ -914,7 +985,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		if err != nil {
 			return metadataDiscoveryResult{}, fmt.Errorf("failed to get default endpoints: %w", err)
 		}
-		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
+		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL, scopesSupported: scopesSupported}, nil
 	}
 
 	// Use the first authorization server
@@ -941,7 +1012,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 				u, metadata.Issuer, authServerURL,
 			)
 		}
-		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
+		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL, scopesSupported: scopesSupported}, nil
 	}
 
 	// If both discovery methods fail, use default endpoints based on the authorization server URL
@@ -949,7 +1020,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	if err != nil {
 		return metadataDiscoveryResult{}, fmt.Errorf("failed to get default endpoints: %w", err)
 	}
-	return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
+	return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL, scopesSupported: scopesSupported}, nil
 }
 
 // buildWellKnownURL constructs a well-known discovery URL by inserting the
@@ -1583,8 +1654,8 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 	params.Set("redirect_uri", h.config.RedirectURI)
 	params.Set("state", state)
 
-	if len(h.config.Scopes) > 0 {
-		params.Set("scope", strings.Join(h.config.Scopes, " "))
+	if scopes := h.scopesToRequest(ctx); len(scopes) > 0 {
+		params.Set("scope", strings.Join(scopes, " "))
 	}
 
 	if codeChallenge != "" {
