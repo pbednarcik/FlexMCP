@@ -395,7 +395,8 @@ func TestParseAuthParams(t *testing.T) {
 	}
 }
 
-func TestExtractResourceMetadataURL(t *testing.T) {
+// The resource_metadata URL (RFC 9728 §5.1) of the challenge acted on.
+func TestParseBearerChallengeResourceMetadata(t *testing.T) {
 	testCases := []struct {
 		name        string
 		wwwAuth     string
@@ -405,6 +406,16 @@ func TestExtractResourceMetadataURL(t *testing.T) {
 			name:        "Valid Bearer with resource_metadata",
 			wwwAuth:     `Bearer resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource"`,
 			expectedURL: "https://auth.example.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:        "case-insensitive parameter name",
+			wwwAuth:     `Bearer Resource_Metadata="https://example.com/prm"`,
+			expectedURL: "https://example.com/prm",
+		},
+		{
+			name:        "two challenges: the first's",
+			wwwAuth:     `Bearer resource_metadata="https://a.example/prm", Bearer resource_metadata="https://b.example/prm"`,
+			expectedURL: "https://a.example/prm",
 		},
 		{
 			name:        "Bearer with resource_metadata and other parameters",
@@ -443,9 +454,8 @@ func TestExtractResourceMetadataURL(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := extractResourceMetadataURL([]string{tc.wwwAuth})
-			if result != tc.expectedURL {
-				t.Errorf("Expected %q, got %q", tc.expectedURL, result)
+			if got := parseBearerChallenge([]string{tc.wwwAuth}).resourceMetadata; got != tc.expectedURL {
+				t.Errorf("Expected %q, got %q", tc.expectedURL, got)
 			}
 		})
 	}

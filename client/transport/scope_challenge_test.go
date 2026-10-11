@@ -235,6 +235,29 @@ func TestParseChallengesKeepsAToken68WithItsScheme(t *testing.T) {
 	}
 }
 
+// The handler acts on one challenge, whole: the first Bearer challenge it
+// can use (one whose resource_metadata, if any, passes origin validation),
+// taking the scopes and the metadata URL from that one. A later challenge's
+// metadata does not join an earlier one's scopes.
+func TestOAuthHandler_TakesOneChallengeWhole(t *testing.T) {
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", RedirectURI: "http://localhost:8085/callback"})
+	handler.SetBaseURL("https://example.com/mcp")
+
+	handler.HandleUnauthorizedResponse(&http.Response{Header: http.Header{"Www-Authenticate": []string{
+		`Bearer scope="x"`,
+		`Bearer scope="y", resource_metadata="https://example.com/mcp/prm"`,
+	}}})
+	assert.Equal(t, []string{"x"}, handler.ChallengedScopes())
+	assert.Empty(t, handler.advertisedPRMURL, "the second challenge's metadata does not join the first's scopes")
+
+	handler.HandleUnauthorizedResponse(&http.Response{Header: http.Header{"Www-Authenticate": []string{
+		`Bearer scope="x", resource_metadata="https://attacker.example/prm"`,
+		`Bearer scope="y", resource_metadata="https://example.com/mcp/prm"`,
+	}}})
+	assert.Equal(t, []string{"y"}, handler.ChallengedScopes(), "a challenge whose metadata fails validation is passed over whole")
+	assert.Equal(t, "https://example.com/mcp/prm", handler.advertisedPRMURL)
+}
+
 func TestParseChallenges(t *testing.T) {
 	challenges := parseChallenges([]string{
 		`Basic realm="legacy, old", Bearer Scope="a b", error=invalid_token, realm="say \"hi\""`,

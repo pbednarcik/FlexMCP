@@ -444,35 +444,6 @@ func parseAuthParams(header string) map[string]string {
 	return challenges[0].params
 }
 
-// extractResourceMetadataURL returns the resource_metadata parameter of the
-// first challenge, in any of the WWW-Authenticate header values, that has
-// one (RFC 9728 §5.1), or "".
-func extractResourceMetadataURL(wwwAuthHeaders []string) string {
-	for _, header := range wwwAuthHeaders {
-		for _, u := range extractResourceMetadataURLs(header) {
-			if u != "" {
-				return u
-			}
-		}
-	}
-	return ""
-}
-
-// extractResourceMetadataURLs returns every resource_metadata parameter in
-// a single WWW-Authenticate header value, one per challenge that carries
-// one, in order (RFC 9728 §5.1). A header can carry several challenges each
-// with its own, and an attacker-controlled first candidate must not mask a
-// legitimate later one, so the caller validates each in turn.
-func extractResourceMetadataURLs(header string) []string {
-	var out []string
-	for _, c := range parseChallenges([]string{header}) {
-		if u := c.params["resource_metadata"]; u != "" {
-			out = append(out, u)
-		}
-	}
-	return out
-}
-
 // parseAuthParamValue reads a single WWW-Authenticate parameter value
 // starting at offset i: a quoted-string (with backslash escapes) when the
 // first byte is '"', otherwise a bare token. It returns the decoded

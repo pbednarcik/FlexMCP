@@ -540,40 +540,36 @@ func (h *OAuthHandler) forgetDiscoveryLocked() {
 
 // HandleUnauthorizedResponse takes what a 401, or a 403 with an
 // insufficient_scope challenge, tells the client for its next
-// authorization.
+// authorization: one challenge, whole.
 //
-// The scope parameter of the Bearer challenge (RFC 6750 §3) is recorded as
-// the scopes to ask for first; see ChallengedScopes.
-//
-// The RFC 9728 §5.1 resource_metadata parameter, when its URL shares the
-// protected resource's origin, is stored so subsequent metadata discovery
-// can use it. Every WWW-Authenticate header line is read (a response can
-// carry multiple challenges — Basic, Bearer, etc. — each on its own line)
-// and every resource_metadata parameter within each line; the first
-// candidate that validates wins, and headers that are absent, malformed, or
-// advertise an unrelated origin are ignored. Origin validation rejects URLs
-// whose scheme or host differs from the OAuth handler's configured base
-// URL, so a compromised or misconfigured resource cannot redirect clients
-// to an attacker's metadata endpoint.
+// The challenge acted on is the first Bearer one (see bearerChallenges;
+// every WWW-Authenticate header line is read) the handler can use: one
+// whose resource_metadata parameter, when it has one, shares the base URL's
+// scheme and host, so a compromised or misconfigured resource cannot send
+// discovery to an attacker's metadata endpoint. A challenge that fails that
+// is passed over whole, and the next one tried. From the chosen challenge
+// the scope parameter (RFC 6750 §3) is recorded as the scopes to ask for
+// first (see ChallengedScopes) and the resource_metadata URL (RFC 9728
+// §5.1) as where discovery starts.
 //
 // It is safe to call with a nil response.
 func (h *OAuthHandler) HandleUnauthorizedResponse(resp *http.Response) {
 	if resp == nil {
 		return
 	}
-	if scopes := parseBearerChallenge(resp.Header.Values("WWW-Authenticate")).scopes; len(scopes) > 0 {
-		h.mu.Lock()
-		h.challengedScopes = scopes
-		h.mu.Unlock()
-	}
-	for _, header := range resp.Header.Values("WWW-Authenticate") {
-		for _, candidate := range extractResourceMetadataURLs(header) {
-			if err := h.validateAdvertisedPRMURL(candidate); err != nil {
-				continue
-			}
-			h.setAdvertisedPRMURL(candidate)
-			return
+	for _, c := range bearerChallenges(resp.Header.Values("WWW-Authenticate")) {
+		if c.resourceMetadata != "" && h.validateAdvertisedPRMURL(c.resourceMetadata) != nil {
+			continue
 		}
+		if len(c.scopes) > 0 {
+			h.mu.Lock()
+			h.challengedScopes = c.scopes
+			h.mu.Unlock()
+		}
+		if c.resourceMetadata != "" {
+			h.setAdvertisedPRMURL(c.resourceMetadata)
+		}
+		return
 	}
 }
 

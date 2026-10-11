@@ -2243,38 +2243,6 @@ func TestResourceIdentifiersEqual(t *testing.T) {
 	}
 }
 
-// TestExtractResourceMetadataURLs covers the plural extractor: a single
-// WWW-Authenticate header value can carry multiple Bearer challenges each
-// with its own resource_metadata parameter; all must be returned.
-func TestExtractResourceMetadataURLs(t *testing.T) {
-	cases := []struct {
-		name   string
-		header string
-		want   []string
-	}{
-		{"empty header", "", nil},
-		{"no resource_metadata", `Bearer realm="mcp"`, nil},
-		{"single quoted value", `Bearer resource_metadata="https://example.com/prm"`, []string{"https://example.com/prm"}},
-		{"case-insensitive name", `Bearer Resource_Metadata="https://example.com/prm"`, []string{"https://example.com/prm"}},
-		{
-			"two challenges, both carrying resource_metadata",
-			`Bearer resource_metadata="https://a.example/prm", Bearer resource_metadata="https://b.example/prm"`,
-			[]string{"https://a.example/prm", "https://b.example/prm"},
-		},
-		{
-			"malformed quoted value is skipped",
-			`Bearer resource_metadata="https://truncated`,
-			nil,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := extractResourceMetadataURLs(tc.header)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
-
 // TestOAuthHandler_ProcessAuthorizationResponse_201Created verifies that token
 // exchange succeeds when the authorization server responds with HTTP 201
 // Created instead of 200 OK. Some authorization servers (e.g. Supabase MCP)
