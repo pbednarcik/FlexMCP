@@ -44,6 +44,24 @@ func (v *outputSchemaValidator) invalidateAll() {
 	v.compiledSchemaCache.invalidateAll()
 }
 
+// compileAtRegistration compiles a tool's output schema when the validator
+// is on, so a schema that cannot be compiled is refused at registration
+// rather than served unvalidated, as compileAtRegistration on the input
+// validator does. A nil validator compiles nothing.
+func (v *outputSchemaValidator) compileAtRegistration(tool mcp.Tool) error {
+	if v == nil {
+		return nil
+	}
+	schemaJSON, ok := outputSchemaJSONFor(tool)
+	if !ok {
+		return nil
+	}
+	if _, err := v.lookupOrCompile(tool.Name, schemaJSON); err != nil {
+		return fmt.Errorf("tool %q output schema cannot be compiled: %w", tool.Name, err)
+	}
+	return nil
+}
+
 // validate checks the tool result against the tool's declared output schema.
 // The boolean return reports whether validation actually ran; the error is
 // set only when validation ran and the structured content did not satisfy
@@ -56,8 +74,8 @@ func (v *outputSchemaValidator) invalidateAll() {
 //   - the result has no StructuredContent (mcp-go does not synthesise
 //     structured output from text content; tools without structured output
 //     are passed through to preserve back-compat)
-//   - the schema fails to compile (matches input validator behaviour: a
-//     broken schema must not make tool calls unexpectedly fail)
+//   - the schema fails to compile, which registration refuses, so the
+//     compile here only hits the cache
 func (v *outputSchemaValidator) validate(tool mcp.Tool, result *mcp.CallToolResult) (bool, error) {
 	if v == nil || result == nil {
 		return false, nil

@@ -140,11 +140,31 @@ func (v *inputSchemaValidator) invalidateAll() {
 	v.compiledSchemaCache.invalidateAll()
 }
 
-// validate validates raw arguments against the tool's input schema. If the
-// schema cannot be compiled, validation is treated as a no-op so that broken
-// schemas never make tool calls fail unexpectedly. The boolean return reports
-// whether validation actually ran; the error is set only when validation ran
-// and the arguments did not satisfy the schema.
+// compileAtRegistration compiles a tool's input schema when the validator is
+// on, so a schema that cannot be compiled (an unsupported dialect, a $ref the
+// compiler will not fetch) is refused at registration rather than served
+// unvalidated (BaseProtocol.md rows 32 and 34). The compiled schema is kept,
+// so the first call pays no compile. A nil validator compiles nothing.
+func (v *inputSchemaValidator) compileAtRegistration(tool mcp.Tool) error {
+	if v == nil {
+		return nil
+	}
+	schemaJSON, ok := schemaJSONFor(tool)
+	if !ok {
+		return nil
+	}
+	if _, err := v.lookupOrCompile(tool.Name, schemaJSON); err != nil {
+		return fmt.Errorf("tool %q input schema cannot be compiled: %w", tool.Name, err)
+	}
+	return nil
+}
+
+// validate validates raw arguments against the tool's input schema. A schema
+// that cannot be compiled was refused at registration, so the compile here
+// only hits the cache; should it fail anyway, validation is skipped rather
+// than failing the call. The boolean return reports whether validation
+// actually ran; the error is set only when validation ran and the arguments
+// did not satisfy the schema.
 func (v *inputSchemaValidator) validate(tool mcp.Tool, rawArgs any) (bool, error) {
 	schemaJSON, ok := schemaJSONFor(tool)
 	if !ok {

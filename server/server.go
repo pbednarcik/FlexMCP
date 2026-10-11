@@ -472,8 +472,11 @@ func WithRecovery() ServerOption {
 // actually accept. Enabling it is recommended for new servers and for any
 // server whose schemas are accurate.
 //
-// Tools whose input schemas cannot be compiled (malformed JSON Schema) are
-// silently skipped, so a single broken schema cannot block tool calls.
+// A tool whose input schema cannot be compiled (malformed JSON, an
+// unsupported dialect, a $ref the compiler will not fetch) is refused at
+// registration, which panics as it does for an invalid x-mcp-header
+// annotation: the schema is compiled once there and kept, so no call pays
+// for it, and no tool is served unvalidated by mistake.
 //
 // [SEP-1303]: https://modelcontextprotocol.io/seps/1303-input-validation-errors-as-tool-execution-errors
 func WithInputSchemaValidation() ServerOption {
@@ -518,10 +521,9 @@ func WithStrictInputSchemaDefault() ServerOption {
 // Enabling this option enforces that contract at runtime.
 //
 // Validation is skipped for results whose StructuredContent is nil and for
-// error results (IsError: true). Tools whose output schemas cannot be
-// compiled (malformed JSON Schema) are silently skipped, matching the
-// behaviour of WithInputSchemaValidation, so a single broken schema cannot
-// block tool calls.
+// error results (IsError: true). A tool whose output schema cannot be
+// compiled is refused at registration, as WithInputSchemaValidation refuses
+// an input schema.
 //
 // This option is opt-in to preserve backwards compatibility with servers
 // whose hand-written output schemas may not perfectly describe the values
@@ -951,6 +953,39 @@ func validateToolHeaderAnnotations(tool *mcp.Tool) error {
 	return nil
 }
 
+// validateToolName rejects a tool name outside the form the specification
+// asks for (Tools.md row 7): 1 to 128 characters of ASCII letters, digits,
+// '_', '-' and '.'. Clients are told to refuse or rewrite other names, so a
+// server refuses them at registration instead of advertising them.
+func validateToolName(name string) error {
+	valid := len(name) >= 1 && len(name) <= 128
+	for i := 0; valid && i < len(name); i++ {
+		c := name[i]
+		valid = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' || c == '.'
+	}
+	if !valid {
+		return fmt.Errorf("tool name %q is not 1 to 128 characters of ASCII letters, digits, '_', '-' and '.'", name)
+	}
+	return nil
+}
+
+// checkToolDefinition runs every registration-time check on a tool: its name,
+// its x-mcp-header annotations, and, with validation on, that its schemas
+// compile. Called with toolsMu held; the caller panics on an error, as a
+// definition the server cannot serve is a programming error.
+func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) error {
+	if err := validateToolName(tool.Name); err != nil {
+		return err
+	}
+	if err := validateToolHeaderAnnotations(tool); err != nil {
+		return err
+	}
+	if err := s.inputValidator.compileAtRegistration(*tool); err != nil {
+		return err
+	}
+	return s.outputValidator.compileAtRegistration(*tool)
+}
+
 // AddTool registers a new tool and its handler
 func (s *MCPServer) AddTool(tool mcp.Tool, handler ToolHandlerFunc) {
 	s.AddTools(ServerTool{Tool: tool, Handler: handler})
@@ -1016,7 +1051,7 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		if err := validateToolHeaderAnnotations(&entry.Tool); err != nil {
+		if err := s.checkToolDefinition(&entry.Tool); err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
@@ -1049,7 +1084,7 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 			panic(fmt.Sprintf("task tool name '%s' already registered as regular tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		if err := validateToolHeaderAnnotations(&entry.Tool); err != nil {
+		if err := s.checkToolDefinition(&entry.Tool); err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
@@ -1072,6 +1107,11 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 func (s *MCPServer) SetTools(tools ...ServerTool) {
 	s.implicitlyRegisterToolCapabilities()
 
+	// The old tools' compiled schemas go first, so the new ones compiled
+	// at registration below are the ones kept.
+	s.inputValidator.invalidateAll()
+	s.outputValidator.invalidateAll()
+
 	s.toolsMu.Lock()
 	newTools := make(map[string]ServerTool, len(tools))
 	for _, entry := range tools {
@@ -1082,7 +1122,7 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		if err := validateToolHeaderAnnotations(&entry.Tool); err != nil {
+		if err := s.checkToolDefinition(&entry.Tool); err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
@@ -1096,8 +1136,6 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
 	}
 	s.toolsMu.Unlock()
-	s.inputValidator.invalidateAll()
-	s.outputValidator.invalidateAll()
 
 	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
 	if s.capabilities.tools.listChanged {

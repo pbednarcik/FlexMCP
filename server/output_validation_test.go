@@ -55,11 +55,6 @@ func TestOutputSchemaValidation(t *testing.T) {
 	noOutputSchemaTool := mcp.NewTool("no_schema",
 		mcp.WithDescription("Tool without an output schema"),
 	)
-	brokenOutputSchemaTool := mcp.Tool{
-		Name:            "broken_output",
-		Description:     "Tool with malformed output schema",
-		RawOutputSchema: json.RawMessage(`{"type": "object", "properties": {`),
-	}
 
 	tests := []struct {
 		name            string
@@ -143,18 +138,6 @@ func TestOutputSchemaValidation(t *testing.T) {
 			tool:    noOutputSchemaTool,
 			handlerResult: mcp.NewToolResultStructuredOnly(map[string]any{
 				"anything": "goes",
-			}),
-			wantSuccess: true,
-		},
-		{
-			// A schema that fails to compile must not block calls to the
-			// tool. The validator silently degrades and the handler result
-			// is returned as-is.
-			name:    "malformed schema is silently skipped",
-			options: []ServerOption{WithOutputSchemaValidation()},
-			tool:    brokenOutputSchemaTool,
-			handlerResult: mcp.NewToolResultStructuredOnly(map[string]any{
-				"anything": true,
 			}),
 			wantSuccess: true,
 		},

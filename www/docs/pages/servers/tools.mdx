@@ -24,6 +24,12 @@ tool := mcp.NewTool("calculate",
 
 ## Tool Definition
 
+### Names
+
+A tool name is 1 to 128 characters of ASCII letters, digits, `_`, `-` and `.`, case-sensitive and unique within the server, as the specification asks. Registration refuses any other name with a panic, the way it refuses an invalid `x-mcp-header` annotation: clients are told to drop or rewrite such names, so a server never advertises one.
+
+With `WithInputSchemaValidation` or `WithOutputSchemaValidation` on, registration also compiles the tool's schemas and refuses one it cannot compile (malformed JSON, an unsupported dialect, a `$ref` the compiler would have to fetch). The compiled schema is kept, so no call pays for the compile.
+
 ### Display Title
 
 Tools can carry a human-readable display title separate from their programmatic `name`. Clients display titles in tool pickers and UI surfaces; the `name` is reserved for model-facing identifiers.

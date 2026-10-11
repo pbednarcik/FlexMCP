@@ -93,11 +93,6 @@ func TestInputSchemaValidation(t *testing.T) {
 			"additionalProperties": false
 		}`),
 	}
-	brokenSchemaTool := mcp.Tool{
-		Name:           "broken",
-		Description:    "Tool with malformed schema",
-		RawInputSchema: json.RawMessage(`{"type": "object", "properties": {`),
-	}
 	noSchemaTool := mcp.Tool{Name: "noschema", Description: "no schema"}
 	permissiveTool := mcp.NewTool("permissive",
 		mcp.WithString("name", mcp.Required()),
@@ -179,16 +174,6 @@ func TestInputSchemaValidation(t *testing.T) {
 			options:           []ServerOption{WithInputSchemaValidation()},
 			tool:              permissiveTool,
 			args:              map[string]any{"name": "alice", "extra": "field"},
-			wantSuccess:       true,
-			wantHandlerCalled: true,
-		},
-		{
-			// A schema that fails to compile must not block calls to the
-			// tool. The validator silently degrades and the handler runs.
-			name:              "malformed schema is silently skipped",
-			options:           []ServerOption{WithInputSchemaValidation()},
-			tool:              brokenSchemaTool,
-			args:              map[string]any{"anything": true},
 			wantSuccess:       true,
 			wantHandlerCalled: true,
 		},
@@ -300,8 +285,8 @@ func TestInputSchemaValidation_CachesPerSchemaDigest(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, srv.inputValidator.cached, 1, "expected exactly one tool entry in the cache")
-	require.Len(t, srv.inputValidator.cached["kubernetes_list"], 2,
-		"expected two compiled schema entries for the same tool name")
+	require.Len(t, srv.inputValidator.cached["kubernetes_list"], 3,
+		"expected three compiled schema entries for the same tool name: the one registration compiled and the two looked up")
 }
 
 // TestInputSchemaValidation_NestedPathInError keeps a focused assertion that
@@ -412,10 +397,6 @@ func TestInputSchemaValidation_Edges(t *testing.T) {
 		mcp.WithString("a", mcp.Required()),
 		mcp.WithString("b"),
 	)
-	uncompilableTool := mcp.Tool{
-		Name:           "uncompilable",
-		RawInputSchema: json.RawMessage(`{"type": "object", "$ref": "#/definitions/missing"}`),
-	}
 
 	tests := []struct {
 		name              string
@@ -424,14 +405,6 @@ func TestInputSchemaValidation_Edges(t *testing.T) {
 		wantErrContains   []string
 		wantHandlerCalled bool
 	}{
-		{
-			// Same contract as a malformed schema: the validator steps aside
-			// rather than failing every call to the tool.
-			name:              "schema that does not compile is skipped",
-			tool:              uncompilableTool,
-			args:              map[string]any{"anything": true},
-			wantHandlerCalled: true,
-		},
 		{
 			name:            "arguments that are an array are rejected at the root",
 			tool:            twoFieldTool,
