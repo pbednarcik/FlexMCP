@@ -66,7 +66,9 @@ def read_suite_results(output_dir: Path) -> dict[str, tuple[bool, bool]]:
     for checks_file in output_dir.glob("server-*/checks.json"):
         checks = json.loads(checks_file.read_text(encoding="utf-8"))
         scenario = scenario_from_result_dir(checks_file.parent)
-        passed = bool(checks) and all(check.get("status") in {"SUCCESS", "INFO"} for check in checks)
+        # The CLI's verdict: a WARNING is a MAY the server did not take, not a
+        # failed check; the CLI exits 0 and counts it as "0 failed".
+        passed = bool(checks) and all(check.get("status") in {"SUCCESS", "INFO", "WARNING"} for check in checks)
         runner_error = any(check.get("description") == "Failed to run scenario" for check in checks)
         results[scenario] = (passed, runner_error)
     return results

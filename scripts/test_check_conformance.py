@@ -74,6 +74,29 @@ class CheckConformanceTests(unittest.TestCase):
                 {"ping": (False, False)},
             )
 
+    def test_warning_only_checks_pass_as_the_cli_says(self):
+        # The CLI exits 0 and reports "0 failed, 1 warnings" for a scenario
+        # whose only check is a WARNING: a MAY the server does not take.
+        with tempfile.TemporaryDirectory() as output:
+            result_dir = Path(output) / "server-sse-multiple-streams-2026-10-11T00-00-00-000Z"
+            result_dir.mkdir()
+            (result_dir / "checks.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "status": "WARNING",
+                            "description": "Server provides session ID for multiple streams test",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                check_conformance.read_suite_results(Path(output)),
+                {"sse-multiple-streams": (True, False)},
+            )
+
     @patch("check_conformance.subprocess.run", side_effect=check_conformance.subprocess.TimeoutExpired("npx", 120))
     def test_cli_timeout_is_a_runner_error(self, run):
         with self.assertRaisesRegex(check_conformance.ConformanceRunnerError, "timed out"):
