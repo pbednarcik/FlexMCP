@@ -1,8 +1,12 @@
 package transport
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -135,11 +139,54 @@ func TestOAuthHandler_SetExpectedIssuerCarriesItAcrossHandlers(t *testing.T) {
 	first, issuer := issHandler(t, server)
 	require.NotEmpty(t, issuer)
 
-	second := pkceHandler(t, server)
+	// Another handler instance for the same authorization server.
+	second := handlerOn(issuer)
 	rearm(second, first.GetExpectedIssuer())
 
 	err := second.ProcessAuthorizationCallback(t.Context(), callback("https://evil.example", "code", "state"), "verifier")
 	require.ErrorIs(t, err, ErrIssuerMismatch)
 	rearm(second, first.GetExpectedIssuer())
 	require.NoError(t, second.ProcessAuthorizationCallback(t.Context(), callback(issuer, "code", "state"), "verifier"))
+}
+
+// The issuer the user was sent to is also the one the code is redeemed with.
+// If discovery leads elsewhere in between, a callback that names the right
+// issuer is still not redeemed at the wrong token endpoint.
+func TestOAuthHandler_DoesNotRedeemTheCodeWithAnotherIssuer(t *testing.T) {
+	first := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+	firstHTTP := first.start(t)
+	second := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+	secondHTTP := second.start(t)
+
+	var mu sync.Mutex
+	authorizationServer := firstHTTP.URL
+	var resource *httptest.Server
+	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-protected-resource" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": resource.URL, "authorization_servers": []string{authorizationServer}})
+	}))
+	t.Cleanup(resource.Close)
+
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "preconfigured", RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+	handler.SetBaseURL(resource.URL)
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.NoError(t, err)
+	require.Equal(t, firstHTTP.URL, handler.GetExpectedIssuer())
+
+	mu.Lock()
+	authorizationServer = secondHTTP.URL
+	mu.Unlock()
+	handler.SetProtectedResourceMetadataURL(resource.URL + "/.well-known/oauth-protected-resource")
+
+	err = handler.ProcessAuthorizationCallback(t.Context(), callback(firstHTTP.URL, "code", "state"), "verifier")
+	require.ErrorIs(t, err, ErrIssuerMismatch)
+	second.mu.Lock()
+	defer second.mu.Unlock()
+	assert.Empty(t, second.forms, "the code and verifier went to another issuer's token endpoint")
 }

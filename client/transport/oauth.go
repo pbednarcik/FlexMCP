@@ -1447,7 +1447,8 @@ func (h *OAuthHandler) ProcessAuthorizationCallback(ctx context.Context, params 
 	if err != nil {
 		return err
 	}
-	if err := h.validateIssuer(ctx, params.Get("iss"), expectedIssuer, issuerRequired); err != nil {
+	issuer, err := h.validateIssuer(ctx, params.Get("iss"), expectedIssuer, issuerRequired)
+	if err != nil {
 		return err
 	}
 	if code := params.Get("error"); code != "" {
@@ -1457,7 +1458,7 @@ func (h *OAuthHandler) ProcessAuthorizationCallback(ctx context.Context, params 
 			ErrorURI:         params.Get("error_uri"),
 		}
 	}
-	return h.exchangeAuthorizationCode(ctx, params.Get("code"), codeVerifier)
+	return h.exchangeAuthorizationCode(ctx, params.Get("code"), codeVerifier, issuer)
 }
 
 // consumeExpectedState checks state against the expected one and clears the
@@ -1478,28 +1479,31 @@ func (h *OAuthHandler) consumeExpectedState(state string) (expectedIssuer string
 }
 
 // validateIssuer applies RFC 9207 §2.4 to the iss of an authorization
-// response. expected is the issuer recorded when the user was sent to the
-// authorization server; a handler that recorded none, as when the callback
-// is handled by another instance, takes it from the server's metadata.
-func (h *OAuthHandler) validateIssuer(ctx context.Context, iss, expected string, required bool) error {
+// response, and returns the issuer the flow is bound to. expected is the
+// issuer recorded when the user was sent to the authorization server; a
+// handler that recorded none, as when the callback is handled by another
+// instance, takes it from the server's metadata.
+func (h *OAuthHandler) validateIssuer(ctx context.Context, iss, expected string, required bool) (string, error) {
 	if expected == "" {
 		metadata, err := h.getServerMetadata(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to get server metadata: %w", err)
+			return "", fmt.Errorf("failed to get server metadata: %w", err)
 		}
 		expected, required = metadata.Issuer, metadata.AuthorizationResponseIssParameterSupported
 	}
 	switch {
 	case iss == "" && required:
-		return ErrIssuerMissing
+		return "", ErrIssuerMissing
 	case iss != "" && iss != expected:
-		return fmt.Errorf("%w: got %q, expected %q", ErrIssuerMismatch, iss, expected)
+		return "", fmt.Errorf("%w: got %q, expected %q", ErrIssuerMismatch, iss, expected)
 	}
-	return nil
+	return expected, nil
 }
 
-// exchangeAuthorizationCode redeems the code at the token endpoint.
-func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, codeVerifier string) error {
+// exchangeAuthorizationCode redeems the code at the token endpoint of
+// issuer, the authorization server the user was sent to. Discovery may have
+// led elsewhere since; the code is not sent there.
+func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, codeVerifier, issuer string) error {
 	if codeVerifier == "" && !h.config.PKCEDisabled {
 		return ErrPKCERequired
 	}
@@ -1507,6 +1511,9 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get server metadata: %w", err)
+	}
+	if metadata.Issuer != issuer {
+		return fmt.Errorf("%w: the code is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, issuer, metadata.Issuer)
 	}
 
 	data := url.Values{}

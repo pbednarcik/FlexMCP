@@ -8,18 +8,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// pkceHandler returns a handler for server with nothing said about PKCE in
-// its configuration.
+// pkceHandler returns a handler for a fresh instance of server, with nothing
+// said about PKCE in its configuration.
 func pkceHandler(t *testing.T, server *tokenAuthServer) *OAuthHandler {
 	t.Helper()
-	httpServer := server.start(t)
+	return handlerOn(server.start(t).URL)
+}
+
+// handlerOn returns a handler for the authorization server at url, with
+// nothing said about PKCE in its configuration.
+func handlerOn(url string) *OAuthHandler {
 	handler := NewOAuthHandler(OAuthConfig{
 		ClientID:              "client",
 		RedirectURI:           "http://localhost:8085/callback",
 		TokenStore:            NewMemoryTokenStore(),
-		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",
+		AuthServerMetadataURL: url + "/.well-known/oauth-authorization-server",
 	})
-	handler.SetBaseURL(httpServer.URL)
+	handler.SetBaseURL(url)
 	return handler
 }
 

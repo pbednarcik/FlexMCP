@@ -76,7 +76,14 @@ func TestOAuthHandler_DoesNotReuseRegisteredCredentialsWithAnotherIssuer(t *test
 
 	_, err = handler.GetAuthorizationURL(t.Context(), "state", "challenge")
 	require.ErrorIs(t, err, ErrClientRegisteredElsewhere)
+	// A callback for the flow started with first is refused too: the issuer
+	// binding of the pending flow fires before the registration check.
 	handler.SetExpectedState("state")
+	err = handler.ProcessAuthorizationResponse(t.Context(), "code", "state", "verifier")
+	require.ErrorIs(t, err, ErrIssuerMismatch)
+	// A new flow against second cannot start with first's credentials.
+	handler.SetExpectedState("state")
+	handler.SetExpectedIssuer(second.URL, false)
 	err = handler.ProcessAuthorizationResponse(t.Context(), "code", "state", "verifier")
 	require.ErrorIs(t, err, ErrClientRegisteredElsewhere)
 }
