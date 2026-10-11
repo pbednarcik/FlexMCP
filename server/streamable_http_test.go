@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1198,56 +1197,41 @@ func TestStreamableHTTPNotificationRace(t *testing.T) {
 	}
 }
 
-func TestStreamableHTTP_ShutdownReturns(t *testing.T) {
-	mcpServer := NewMCPServer("test", "1.0.0")
+// Shutdown ends an open subscriptions/listen stream: net/http's Shutdown
+// waits for in-flight requests and a listen stream never ends on its own, so
+// the transport cancels it. The stream closes on the client's side and
+// Shutdown returns inside its deadline.
+func TestStreamableHTTP_ShutdownEndsOpenListenStreams(t *testing.T) {
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
 	mux := http.NewServeMux()
 	customServer := &http.Server{Handler: mux}
-	httpServer := NewStreamableHTTPServer(
-		mcpServer,
-		WithStreamableHTTPServer(customServer),
-	)
+	httpServer := NewStreamableHTTPServer(mcpServer, WithStreamableHTTPServer(customServer))
 	mux.Handle(httpServer.endpointPath, httpServer)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-
 	serveDone := make(chan error, 1)
-	go func() {
-		serveDone <- customServer.Serve(listener)
-	}()
-	t.Cleanup(func() {
-		shutdownCtx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-		select {
-		case err := <-serveDone:
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				t.Logf("Serve returned: %v", err)
-			}
-		case <-time.After(2 * time.Second):
-		}
-	})
+	go func() { serveDone <- customServer.Serve(listener) }()
+	url := "http://" + listener.Addr().String() + httpServer.endpointPath
 
-	baseURL := "http://" + listener.Addr().String() + httpServer.endpointPath
+	stream := openListenStream(t.Context(), t, url, 7, map[string]any{"toolsListChanged": true})
+	ack := nextListenMessage(t, stream)
+	require.Equal(t, mcp.MethodNotificationSubscriptionsAcknowledged, ack.Method)
 
-	resp, err := postJSON(baseURL, initRequest)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	shutdownDone := make(chan error, 1)
-	shutdownCtx, shutdownCancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-	defer shutdownCancel()
-	go func() {
-		shutdownDone <- httpServer.Shutdown(shutdownCtx)
-	}()
+	shutdownCtx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
+	defer cancel()
+	require.NoError(t, httpServer.Shutdown(shutdownCtx), "an open listen stream held Shutdown")
 
 	select {
-	case err := <-shutdownDone:
-		if shutdownCtx.Err() == context.DeadlineExceeded {
-			t.Fatalf("Shutdown deadlocked (timed out): %v", err)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("Shutdown did not return in time (likely deadlocked)")
+	case _, open := <-stream:
+		assert.False(t, open, "the stream delivered a message instead of closing")
+	case <-time.After(time.Second):
+		t.Fatal("the listen stream did not close")
+	}
+	select {
+	case err := <-serveDone:
+		assert.ErrorIs(t, err, http.ErrServerClosed)
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not return")
 	}
 }

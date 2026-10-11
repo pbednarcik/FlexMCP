@@ -202,14 +202,23 @@ type StreamableHTTPServer struct {
 	// protocolVersions restricts the protocol versions advertised through
 	// server/discover. Empty means every version this SDK implements.
 	protocolVersions []string
+
+	// shutdown is cancelled by Shutdown, which is how an open
+	// subscriptions/listen stream learns to end: net/http's Shutdown waits
+	// for in-flight requests, and a listen stream never ends on its own.
+	shutdown   context.Context
+	endListens context.CancelFunc
 }
 
 // NewStreamableHTTPServer creates a new streamable-http server instance
 func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *StreamableHTTPServer {
+	shutdown, endListens := context.WithCancel(context.Background())
 	s := &StreamableHTTPServer{
 		server:       server,
 		endpointPath: "/mcp",
 		logger:       slog.Default(),
+		shutdown:     shutdown,
+		endListens:   endListens,
 	}
 
 	// Apply all options
@@ -333,10 +342,15 @@ func (s *StreamableHTTPServer) Start(addr string) error {
 	return srv.ListenAndServe()
 }
 
-// Shutdown gracefully stops the HTTP server, if this server started one or
-// was given one; as a bare http.Handler there is nothing to stop. In-flight
-// requests end with their connections, as net/http's Shutdown arranges.
+// Shutdown stops the HTTP server, if this server started one or was given
+// one; as a bare http.Handler there is nothing to stop. Open
+// subscriptions/listen streams are ended first, in either case: net/http's
+// Shutdown waits for in-flight requests, and a listen stream never ends on
+// its own. Other in-flight requests finish, as net/http arranges.
 func (s *StreamableHTTPServer) Shutdown(ctx context.Context) error {
+	if s.endListens != nil {
+		s.endListens()
+	}
 	s.mu.RLock()
 	srv := s.httpServer
 	s.mu.RUnlock()
@@ -456,6 +470,14 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	done := make(chan struct{})
 
 	ctx = context.WithValue(ctx, requestHeader, r.header())
+
+	// A listen stream ends when Shutdown says so; see Shutdown.
+	if listening && s.shutdown != nil {
+		var stop context.CancelFunc
+		ctx, stop = context.WithCancel(ctx)
+		defer stop()
+		defer context.AfterFunc(s.shutdown, stop)()
+	}
 
 	// SSE upgrades require a streaming-capable response writer; if the
 	// underlying transport can't stream, we still attempt the request but
