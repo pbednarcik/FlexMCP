@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 func TestCORSConfig_DisabledByDefault(t *testing.T) {
@@ -190,10 +193,62 @@ func TestStreamableHTTP_CORS_PreflightDisallowedOrigin(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
-	// Preflight is still answered (browser will block), but no Allow-Origin
-	// header is emitted because the origin is not in the allow list.
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	// An Origin outside the allow list is refused outright, not merely left
+	// without CORS headers: the spec wants 403 for an invalid Origin.
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+}
+
+// TestStreamableHTTP_CORS_DisallowedOriginIsForbiddenOnEveryVerb pins that a
+// configured allow list validates Origin on every request (Transports.md row
+// 14): a request from an origin outside it is 403 whatever its verb, and not
+// served at all, while an allowed origin is served as before.
+func TestStreamableHTTP_CORS_DisallowedOriginIsForbiddenOnEveryVerb(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	mcpServer := NewMCPServer("test", "1.0.0", WithHooks(&Hooks{
+		OnBeforeInitialize: []OnBeforeInitializeFunc{func(context.Context, any, *mcp.InitializeRequest) { calls++ }},
+	}))
+	srv := NewStreamableHTTPServer(mcpServer,
+		WithStreamableHTTPCORS(WithCORSAllowedOrigins("https://example.com")),
+	)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	tests := []struct {
+		name       string
+		method     string
+		origin     string
+		wantStatus int
+	}{
+		{name: "POST from a disallowed origin", method: http.MethodPost, origin: "https://attacker.com", wantStatus: http.StatusForbidden},
+		{name: "GET from a disallowed origin", method: http.MethodGet, origin: "https://attacker.com", wantStatus: http.StatusForbidden},
+		{name: "POST from an allowed origin", method: http.MethodPost, origin: "https://example.com", wantStatus: http.StatusOK},
+		{name: "POST with no origin", method: http.MethodPost, wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := calls
+			body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+			req, err := http.NewRequestWithContext(t.Context(), tt.method, ts.URL, body)
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = resp.Body.Close() })
+
+			assert.Equal(t, tt.wantStatus, resp.StatusCode)
+			if tt.wantStatus == http.StatusForbidden {
+				assert.Equal(t, before, calls, "a refused request must not reach the server")
+				assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+			}
+		})
+	}
 }
 
 func TestStreamableHTTP_CORS_SimpleRequest(t *testing.T) {
@@ -237,7 +292,9 @@ func TestStreamableHTTP_CORS_NoConfigPassesPreflightThrough(t *testing.T) {
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodOptions, ts.URL, nil)
 	require.NoError(t, err)
-	req.Header.Set("Origin", "https://example.com")
+	// A loopback origin: the test server is on loopback, where a foreign
+	// Origin is refused by the localhost protection, not passed through.
+	req.Header.Set("Origin", "http://localhost:3000")
 	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
 
 	resp, err := http.DefaultClient.Do(req)

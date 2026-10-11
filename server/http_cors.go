@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -158,6 +159,25 @@ func (c *CORSConfig) applyCommonHeaders(w http.ResponseWriter, r *http.Request) 
 		exposed = []string{HeaderKeySessionID}
 	}
 	h.Set("Access-Control-Expose-Headers", strings.Join(exposed, ", "))
+	return true
+}
+
+// rejectDisallowedOrigin answers 403 Forbidden and returns true when the
+// request carries an Origin the allow list does not permit, on any verb. A
+// server validates Origin on every connection and refuses an invalid one
+// (Transports.md row 14); withholding the CORS headers alone would stop the
+// browser from reading the answer, not the server from acting on the
+// request. A request with no Origin, a non-browser client, is not judged.
+func (c *CORSConfig) rejectDisallowedOrigin(w http.ResponseWriter, r *http.Request) bool {
+	if !c.enabled() {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" || c.resolveOrigin(origin) != "" {
+		return false
+	}
+	w.Header().Add("Vary", "Origin")
+	http.Error(w, fmt.Sprintf("Forbidden: invalid Origin header %q", origin), http.StatusForbidden)
 	return true
 }
 

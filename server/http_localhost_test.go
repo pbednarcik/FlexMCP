@@ -163,3 +163,94 @@ func TestStreamableHTTP_LocalhostProtection_NonLoopbackUnaffected(t *testing.T) 
 	httpServer.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
 }
+
+// originProtectionTests is the table for the Origin half of the loopback
+// protection: a browser's Origin, unlike Host, survives DNS rebinding, so a
+// loopback connection carrying a non-loopback Origin is refused (Transports.md
+// row 14). A configured CORS allow list is the authority instead.
+var originProtectionTests = []struct {
+	name              string
+	origin            string
+	disableProtection bool
+	allowedOrigins    []string
+	wantForbidden     bool
+}{
+	{name: "no Origin is a non-browser client"},
+	{name: "accepts a localhost origin", origin: "http://localhost:5173"},
+	{name: "accepts a 127.0.0.1 origin", origin: "http://127.0.0.1:3000"},
+	{name: "accepts a [::1] origin", origin: "http://[::1]:3000"},
+	{name: "rejects a foreign origin", origin: "https://attacker.example", wantForbidden: true},
+	{name: "rejects an opaque origin", origin: "null", wantForbidden: true},
+	{name: "disabled accepts a foreign origin", origin: "https://attacker.example", disableProtection: true},
+	{name: "a CORS allow list is the authority", origin: "https://my-ai-app.example", allowedOrigins: []string{"https://my-ai-app.example"}},
+}
+
+// TestStreamableHTTP_LocalhostProtection_Origin verifies that a loopback
+// connection carrying a non-loopback Origin header is refused with 403, as a
+// non-loopback Host is, unless a CORS allow list decides instead.
+func TestStreamableHTTP_LocalhostProtection_Origin(t *testing.T) {
+	for _, tt := range originProtectionTests {
+		t.Run(tt.name, func(t *testing.T) {
+			mcpServer := NewMCPServer("test", "1.0.0")
+			opts := []StreamableHTTPOption{WithDisableLocalhostProtection(tt.disableProtection)}
+			if tt.allowedOrigins != nil {
+				opts = append(opts, WithStreamableHTTPCORS(WithCORSAllowedOrigins(tt.allowedOrigins...)))
+			}
+			httpServer := NewStreamableHTTPServer(mcpServer, opts...)
+			addr, client := startLoopbackServer(t, httpServer)
+
+			body, err := json.Marshal(initRequest)
+			require.NoError(t, err)
+
+			req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/mcp", addr), bytes.NewReader(body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			if tt.wantForbidden {
+				assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+				payload, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				assert.Contains(t, string(payload), "invalid Origin header")
+			} else {
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// BenchmarkRejectDNSRebinding measures the per-request cost of the loopback
+// protection on the door's shape: a loopback connection, a loopback Host, and
+// either no Origin (every non-browser client) or a loopback Origin.
+func BenchmarkRejectDNSRebinding(b *testing.B) {
+	for _, leg := range []struct {
+		name   string
+		origin string
+	}{
+		{name: "no-origin"},
+		{name: "loopback-origin", origin: "http://localhost:5173"},
+	} {
+		b.Run(leg.name, func(b *testing.B) {
+			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/mcp", nil)
+			if leg.origin != "" {
+				req.Header.Set("Origin", leg.origin)
+			}
+			localAddr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080}
+			req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, localAddr))
+			w := httptest.NewRecorder()
+			if rejectDNSRebinding(w, req, true) {
+				b.Fatal("the loopback request was rejected")
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				rejectDNSRebinding(w, req, true)
+			}
+		})
+	}
+}

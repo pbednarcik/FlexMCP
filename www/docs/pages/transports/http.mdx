@@ -761,11 +761,17 @@ server running on the victim's machine. CORS does not stop this — after
 rebinding, the browser sees a same-origin request and applies no
 cross-origin restrictions.
 
-Both HTTP transports therefore validate the `Host` header automatically.
-When a request arrives over a loopback connection (`127.0.0.1`, `[::1]`)
-but its `Host` header is not a localhost value (`localhost`, a `127.0.0.0/8`
-address, or `[::1]`, with or without a port), the request is rejected with
-`403 Forbidden`.
+The transport therefore validates the `Host` and `Origin` headers
+automatically. When a request arrives over a loopback connection
+(`127.0.0.1`, `[::1]`) but its `Host` header is not a localhost value
+(`localhost`, a `127.0.0.0/8` address, or `[::1]`, with or without a port),
+or its `Origin` header is present and not an `http` or `https` origin on such
+a host, the request is rejected with `403 Forbidden`. `Host` catches the
+rebound request itself; `Origin` is what the browser reports about the page
+that sent it, which rebinding cannot change. Requests without an `Origin`,
+which is every non-browser client, are not affected by the `Origin` check.
+When CORS is configured, its allow list judges `Origin` instead (see below)
+and the `Host` check stays.
 
 The protection is enabled by default and requires no configuration:
 
@@ -805,10 +811,14 @@ clients hosted on a different origin than the server will be blocked unless
 you opt in.
 
 Use `server.WithStreamableHTTPCORS` to enable CORS handling. The transport
-then answers preflight
-(`OPTIONS`) requests directly and decorates simple cross-origin responses
-with the appropriate `Access-Control-*` headers, including a `Vary: Origin`
-so downstream caches behave correctly.
+then refuses any request whose `Origin` is outside the allow list with
+`403 Forbidden`, on every verb (the MCP specification requires the server to
+validate `Origin`, and withholding the CORS headers alone would stop the
+browser from reading the answer, not the server from acting on the request),
+answers preflight (`OPTIONS`) requests from an allowed origin directly, and
+decorates simple cross-origin responses with the appropriate
+`Access-Control-*` headers, including a `Vary: Origin` so downstream caches
+behave correctly. Requests without an `Origin` are served as before.
 
 ```go
 httpServer := server.NewStreamableHTTPServer(mcpServer,
@@ -1184,8 +1194,8 @@ func mcpHandler(ctx *fasthttp.RequestCtx) {
 - **DNS rebinding protection is not applied** when entering through
   `Handle`, because it has no access to the connection's local address.
   Adapters for localhost-reachable servers should reject requests that
-  arrive on a loopback connection with a non-loopback `Host` header,
-  answering `403 Forbidden`. See
+  arrive on a loopback connection with a non-loopback `Host` header, or a
+  present non-loopback `Origin` header, answering `403 Forbidden`. See
   [DNS Rebinding Protection](#dns-rebinding-protection) above.
 - **`WithProtectedResourceMetadata` is not applied** when entering through
   `Handle`. Mount the metadata route separately using

@@ -37,13 +37,15 @@ func WithEndpointPath(endpointPath string) StreamableHTTPOption {
 // protection of the streamable HTTP server.
 //
 // By default, requests arriving over a loopback connection (127.0.0.1,
-// [::1]) whose Host header is not a localhost value are rejected with 403
-// Forbidden. This protects local MCP servers against DNS rebinding attacks,
-// where a malicious website rebinds its own domain to 127.0.0.1 to make a
-// victim's browser issue requests against a local server. The protection
-// applies regardless of whether the server listens on localhost specifically
-// or on 0.0.0.0, and never affects requests arriving via non-loopback
-// addresses.
+// [::1]) whose Host header is not a localhost value, or whose Origin header
+// is present and not a localhost origin, are rejected with 403 Forbidden.
+// This protects local MCP servers against DNS rebinding attacks, where a
+// malicious website rebinds its own domain to 127.0.0.1 to make a victim's
+// browser issue requests against a local server. The protection applies
+// regardless of whether the server listens on localhost specifically or on
+// 0.0.0.0, and never affects requests arriving via non-loopback addresses.
+// When WithStreamableHTTPCORS names allowed origins, that list judges Origin
+// instead, and the Host check stays.
 //
 // Disable it only if you understand the security implications, for example
 // when a reverse proxy on the same host forwards requests via localhost
@@ -121,9 +123,12 @@ func WithProtectedResourceMetadata(config ProtectedResourceMetadataConfig) Strea
 //
 // CORS handling is opt-in: callers must specify at least one allowed origin
 // via WithCORSAllowedOrigins for any Access-Control-* headers to be emitted.
-// When enabled, preflight (OPTIONS) requests are answered directly by the
-// server and simple cross-origin responses are decorated with the configured
-// Allow-Origin, Allow-Credentials, Expose-Headers and Vary headers.
+// When enabled, a request whose Origin is outside the allow list is refused
+// with 403 Forbidden on every verb, preflight (OPTIONS) requests from an
+// allowed origin are answered directly by the server, and simple
+// cross-origin responses are decorated with the configured Allow-Origin,
+// Allow-Credentials, Expose-Headers and Vary headers. A request with no
+// Origin is served as before.
 //
 // Example:
 //
@@ -247,10 +252,16 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 // ServeHTTP is the conventional net/http entry point; for non-net/http HTTP
 // frameworks (fasthttp, fiber, etc.), see Handle.
 func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !s.disableLocalhostProtection && rejectDNSRebinding(w, r) {
+	// Origin is validated on every request: by the CORS allow list when one
+	// is configured, by the loopback check otherwise.
+	corsEnabled := s.corsConfig.enabled()
+	if !s.disableLocalhostProtection && rejectDNSRebinding(w, r, !corsEnabled) {
 		return
 	}
-	if s.corsConfig.enabled() {
+	if corsEnabled {
+		if s.corsConfig.rejectDisallowedOrigin(w, r) {
+			return
+		}
 		if s.corsConfig.handlePreflight(w, r) {
 			return
 		}
