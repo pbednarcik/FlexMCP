@@ -214,23 +214,46 @@ func TestSubscriptionsListen_OnlyOptedInNotificationsAreDelivered(t *testing.T) 
 	}
 }
 
-func TestSubscriptionsListen_ResourceSubscriptionsUseTheSessionStore(t *testing.T) {
+// TestSubscriptionsListen_ResourceSubscriptionsAreNotGrantedYet pins that the
+// acknowledgement promises only what the server delivers (Patterns.md row
+// 16): nothing emits notifications/resources/updated yet, so a request for
+// resourceSubscriptions is acknowledged with none, whatever the server's
+// resource capability says, and the stream closes at once.
+func TestSubscriptionsListen_ResourceSubscriptionsAreNotGrantedYet(t *testing.T) {
 	srv := NewMCPServer("listen-test", "1.0.0", WithResourceCapabilities(true, true))
 	session := newListenSession()
+	require.NoError(t, srv.RegisterSession(t.Context(), session))
 
-	stop := listen(t, srv, session, mcp.SubscriptionFilter{
-		ResourceSubscriptions: []string{"file:///a", "file:///b"},
+	ctx := WithRequestProtocolInfo(srv.WithContext(t.Context(), session), &RequestProtocolInfo{
+		Modern:          true,
+		ProtocolVersion: mcp.ProtocolVersion20260728,
 	})
+	type outcome struct {
+		result *mcp.SubscriptionsListenResult
+		err    *requestError
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, reqErr := srv.handleSubscriptionsListen(ctx, 1, mcp.SubscriptionsListenRequest{
+			Params: mcp.SubscriptionsListenParams{Notifications: mcp.SubscriptionFilter{
+				ResourceSubscriptions: []string{"file:///a", "file:///b"},
+			}},
+		})
+		done <- outcome{result, reqErr}
+	}()
+	select {
+	case got := <-done:
+		require.Nil(t, got.err)
+		require.NotNil(t, got.result)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream stayed open: resource subscriptions were granted")
+	}
 
-	// The URIs flow into the existing per-session subscription store, so
-	// notifications/resources/updated fan-out is unchanged.
-	assert.True(t, session.IsSubscribedToResource("file:///a"))
-	assert.True(t, session.IsSubscribedToResource("file:///b"))
-
-	stop()
-
-	// Closing the stream releases them.
-	assert.Empty(t, session.SubscribedResources())
+	ack := <-session.notify
+	require.Equal(t, mcp.MethodNotificationSubscriptionsAcknowledged, ack.Method)
+	assert.Equal(t, mcp.SubscriptionFilter{}, ack.Params.AdditionalFields["notifications"],
+		"resource subscriptions are not acknowledged until the server emits updates")
+	assert.Empty(t, session.SubscribedResources(), "nothing is recorded on the session either")
 }
 
 func TestSubscriptionsListen_EmptyFilterClosesImmediately(t *testing.T) {
@@ -347,35 +370,6 @@ func TestPerRequestLogLevel(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestSubscriptionsListen_PartialResourceSubscriptionIsUnwound(t *testing.T) {
-	srv := NewMCPServer("listen-test", "1.0.0", WithResourceCapabilities(true, true))
-
-	// The second URI is refused. The first must not stay subscribed for the
-	// life of the session.
-	session := newListenSession()
-	session.failOn = "file:///b"
-	require.NoError(t, srv.RegisterSession(t.Context(), session))
-
-	ctx := srv.WithContext(t.Context(), session)
-	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{
-		Modern:          true,
-		ProtocolVersion: mcp.ProtocolVersion20260728,
-	})
-
-	_, reqErr := srv.handleSubscriptionsListen(ctx, 1, mcp.SubscriptionsListenRequest{
-		Params: mcp.SubscriptionsListenParams{
-			Notifications: mcp.SubscriptionFilter{
-				ResourceSubscriptions: []string{"file:///a", "file:///b"},
-			},
-		},
-	})
-
-	require.NotNil(t, reqErr)
-	assert.Contains(t, reqErr.Error(), "file:///b")
-	assert.Empty(t, session.SubscribedResources(),
-		"a failed subscription must not leave earlier URIs subscribed")
 }
 
 func TestSubscriptionsListen_UnrequestedNotificationsAreRejected(t *testing.T) {

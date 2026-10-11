@@ -125,7 +125,7 @@ server intersects that with what it can actually serve:
 ```go
 srv := server.NewMCPServer("my-server", "1.0.0",
     server.WithToolCapabilities(true),          // enables toolsListChanged
-    server.WithResourceCapabilities(true, true), // enables subscriptions and resourcesListChanged
+    server.WithResourceCapabilities(true, true), // enables resourcesListChanged; per-resource subscriptions are not served yet
 )
 ```
 

@@ -604,11 +604,11 @@ func (h *CachedResourceHandler) HandleResource(ctx context.Context, req mcp.Read
 
 ## Resource Subscriptions
 
-A client on protocol version 2026-07-28 subscribes to individual resources by listing their URIs in the `resourceSubscriptions` filter of a [`subscriptions/listen`](/protocol-2026-07-28#subscriptions) request. For as long as that stream is open, the server records the URIs on the request's session through the optional `SessionWithResourceSubscriptions` interface; a session that also implements `SessionWithResourceSubscriptionsErr` can refuse a URI, which fails the request with `INVALID_PARAMS` and leaves nothing subscribed.
+Per-resource subscriptions are not served yet. This SDK emits no `notifications/resources/updated`, so it advertises no `resources.subscribe` capability in either era, whatever the first argument to `WithResourceCapabilities` says, and a [`subscriptions/listen`](/protocol-2026-07-28#subscriptions) request that lists `resourceSubscriptions` is acknowledged with none of them: the acknowledgement promises only what the server delivers.
 
-The legacy `resources/subscribe` and `resources/unsubscribe` requests are not served: a client that sends either gets `METHOD_NOT_FOUND`, and `initialize` advertises `resources.subscribe` as `false` whatever the first argument to `WithResourceCapabilities` says.
+The legacy `resources/subscribe` and `resources/unsubscribe` requests are not served either: a client that sends either gets `METHOD_NOT_FOUND`.
 
-This SDK records and acknowledges the subscription; it does not emit `notifications/resources/updated` itself yet.
+The `SessionWithResourceSubscriptions` interface remains for the session store a future update fan-out will target.
 
 ## Next Steps
 

@@ -21,11 +21,10 @@ type ClientSession interface {
 }
 
 // SessionWithResourceSubscriptions is an optional extension of ClientSession
-// implemented by sessions that track resource subscriptions. While a
-// subscriptions/listen stream asks for resourceSubscriptions, the server calls
-// SubscribeToResource for each URI and UnsubscribeFromResource when the stream
-// ends, so notifications/resources/updated can be targeted at the sessions
-// that asked for updates.
+// implemented by sessions that track resource subscriptions, the store a
+// notifications/resources/updated fan-out would target. Nothing drives it
+// yet: the server emits no resource updates and grants no
+// resourceSubscriptions on subscriptions/listen until it does.
 //
 // Implementations must be safe for concurrent use because requests and
 // notifications may run on independent goroutines.

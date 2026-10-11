@@ -188,37 +188,6 @@ func (s *MCPServer) handleSubscriptionsListen(
 		defer streams.CloseSubscriptionStream(id)
 	}
 
-	// Resource subscriptions are expressed through the existing per-session
-	// subscription store, so notifications/resources/updated fan-out is
-	// unchanged.
-	if subs, ok := session.(SessionWithResourceSubscriptions); ok {
-		// Track what actually took effect, and arm the cleanup before
-		// subscribing: a failure partway through the list must not leave the
-		// earlier URIs subscribed for the life of the session.
-		var established []string
-		defer func() {
-			for _, uri := range established {
-				subs.UnsubscribeFromResource(uri)
-			}
-		}()
-
-		for _, uri := range allowed.ResourceSubscriptions {
-			if errSubs, ok := session.(SessionWithResourceSubscriptionsErr); ok {
-				if err := errSubs.SubscribeToResourceErr(uri); err != nil {
-					return nil, &requestError{
-						id:   id,
-						code: mcp.INVALID_PARAMS,
-						err:  fmt.Errorf("subscribing to %q: %w", uri, err),
-					}
-				}
-				established = append(established, uri)
-				continue
-			}
-			subs.SubscribeToResource(uri)
-			established = append(established, uri)
-		}
-	}
-
 	// Acknowledge the subscription so the client learns which of its requested
 	// notification types were actually established. Every message on the
 	// stream, including this one, is tagged with the subscription ID so the
@@ -267,7 +236,8 @@ func (s *MCPServer) unregisterListenSession(session ClientSession) {
 
 // allowedSubscriptions intersects the notification types a client asked for
 // with the capabilities this server actually advertises. The server MUST NOT
-// establish a subscription it cannot serve.
+// establish a subscription it cannot serve: resourceSubscriptions are never
+// granted, because nothing emits notifications/resources/updated yet.
 func (s *MCPServer) allowedSubscriptions(want mcp.SubscriptionFilter) mcp.SubscriptionFilter {
 	s.capabilitiesMu.RLock()
 	defer s.capabilitiesMu.RUnlock()
@@ -281,9 +251,6 @@ func (s *MCPServer) allowedSubscriptions(want mcp.SubscriptionFilter) mcp.Subscr
 	}
 	if want.ResourcesListChanged && s.capabilities.resources != nil && s.capabilities.resources.listChanged {
 		allowed.ResourcesListChanged = true
-	}
-	if len(want.ResourceSubscriptions) > 0 && s.capabilities.resources != nil && s.capabilities.resources.subscribe {
-		allowed.ResourceSubscriptions = append([]string(nil), want.ResourceSubscriptions...)
 	}
 	return allowed
 }

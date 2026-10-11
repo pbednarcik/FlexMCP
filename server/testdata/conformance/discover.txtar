@@ -35,8 +35,7 @@ every discover result.
 				"listChanged": true
 			},
 			"resources": {
-				"listChanged": true,
-				"subscribe": true
+				"listChanged": true
 			},
 			"tools": {
 				"listChanged": true

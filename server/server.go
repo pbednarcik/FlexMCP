@@ -301,7 +301,6 @@ type serverCapabilities struct {
 
 // resourceCapabilities defines the supported resource-related features
 type resourceCapabilities struct {
-	subscribe   bool
 	listChanged bool
 }
 
@@ -322,12 +321,15 @@ type taskCapabilities struct {
 	toolCallTasks bool
 }
 
-// WithResourceCapabilities configures resource-related server capabilities
-func WithResourceCapabilities(subscribe, listChanged bool) ServerOption {
+// WithResourceCapabilities configures resource-related server capabilities:
+// listChanged announces resource list changes to clients that listen for
+// them. subscribe is accepted and ignored: this server emits no
+// notifications/resources/updated yet, so it advertises no per-resource
+// subscriptions and grants none on subscriptions/listen, whatever is asked.
+func WithResourceCapabilities(_ bool, listChanged bool) ServerOption {
 	return func(s *MCPServer) {
 		// Always create a non-nil capability object
 		s.capabilities.resources = &resourceCapabilities{
-			subscribe:   subscribe,
 			listChanged: listChanged,
 		}
 	}
@@ -1179,13 +1181,13 @@ func (s *MCPServer) serverCapabilitiesSnapshot() mcp.ServerCapabilities {
 
 	capabilities := mcp.ServerCapabilities{}
 
-	// Only add resource capabilities if they're configured
+	// Only add resource capabilities if they're configured. subscribe is
+	// never advertised: nothing emits notifications/resources/updated.
 	if s.capabilities.resources != nil {
 		capabilities.Resources = &struct {
 			Subscribe   bool `json:"subscribe,omitempty"`
 			ListChanged bool `json:"listChanged,omitempty"`
 		}{
-			Subscribe:   s.capabilities.resources.subscribe,
 			ListChanged: s.capabilities.resources.listChanged,
 		}
 	}
@@ -1270,11 +1272,6 @@ func (s *MCPServer) handleInitialize(
 	request mcp.InitializeRequest,
 ) (*mcp.InitializeResult, *requestError) {
 	capabilities := s.serverCapabilitiesSnapshot()
-	// A legacy client would subscribe through resources/subscribe, which is not
-	// served; subscriptions are offered to modern clients via subscriptions/listen.
-	if capabilities.Resources != nil {
-		capabilities.Resources.Subscribe = false
-	}
 	// A session with no ID is a request's own: nothing the server sends later
 	// reaches it, so it is promised no list_changed notification, and it
 	// cannot be told from another, so it is not offered tasks/list (Tasks.md
