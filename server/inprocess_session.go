@@ -9,9 +9,12 @@ import (
 )
 
 // InProcessSession is the session of an in-process client: notifications
-// queue on a channel the transport drains; nothing crosses a wire.
+// queue on a channel the transport drains; nothing crosses a wire. Every
+// request and subscriptions/listen stream of the client shares it, so it
+// holds the client's streams and tags what it delivers on them.
 type InProcessSession struct {
-	clientInfoStore // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
+	clientInfoStore     // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
+	subscriptionStreams // the client's subscriptions/listen streams
 
 	sessionID     string
 	notifications chan mcp.JSONRPCNotification
@@ -58,6 +61,7 @@ func GenerateInProcessSessionID() string {
 
 // Ensure interface compliance
 var (
-	_ ClientSession         = (*InProcessSession)(nil)
-	_ SessionWithClientInfo = (*InProcessSession)(nil)
+	_ ClientSession                  = (*InProcessSession)(nil)
+	_ SessionWithClientInfo          = (*InProcessSession)(nil)
+	_ SessionWithSubscriptionStreams = (*InProcessSession)(nil)
 )

@@ -116,6 +116,11 @@ func applyRequestProtocolInfoToSession(session ClientSession, info *RequestProto
 			withInfo.SetClientCapabilities(*info.ClientCapabilities)
 		}
 	}
+	// A long-lived session that served a modern request delivers broadcasts
+	// only through the client's subscriptions/listen streams from now on.
+	if streams, ok := session.(SessionWithSubscriptionStreams); ok {
+		streams.MarkModern()
+	}
 	if !session.Initialized() {
 		session.Initialize()
 	}

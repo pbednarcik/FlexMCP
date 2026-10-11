@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"mime"
 	"net/http"
 	"os"
@@ -638,18 +637,6 @@ func methodNotAllowed(w HTTPResponseWriter, r *HTTPRequest, reason string) {
 	// RFC 9110 section 15.5.6 requires an Allow header on 405 responses.
 	w.Header().Set("Allow", http.MethodPost)
 	writeHTTPError(w, reason, http.StatusMethodNotAllowed)
-}
-
-// tagSubscription tags a notification with the ID of the
-// subscriptions/listen request whose stream carries it, as every notification
-// on a subscription stream must be. The _meta map is copied, because a
-// broadcast shares it with the copies sent to every other session.
-func tagSubscription(notification mcp.JSONRPCNotification, id any) mcp.JSONRPCNotification {
-	meta := make(map[string]any, len(notification.Params.Meta)+1)
-	maps.Copy(meta, notification.Params.Meta)
-	meta[mcp.MetaKeySubscriptionID] = id
-	notification.Params.Meta = meta
-	return notification
 }
 
 func writeSSEEvent(w io.Writer, data any) error {

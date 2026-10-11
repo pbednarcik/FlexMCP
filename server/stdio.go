@@ -159,9 +159,12 @@ func WithQueueSize(size int) StdioOption {
 	}
 }
 
-// stdioSession is the session of a stdio server's one client.
+// stdioSession is the session of a stdio server's one client. Every request
+// and every subscriptions/listen stream of that client shares it, so it
+// holds the client's streams and tags what it delivers on them.
 type stdioSession struct {
-	clientInfoStore // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
+	clientInfoStore     // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
+	subscriptionStreams // the client's subscriptions/listen streams
 
 	notifications chan mcp.JSONRPCNotification
 	initialized   atomic.Bool
@@ -184,8 +187,9 @@ func (s *stdioSession) Initialized() bool {
 }
 
 var (
-	_ ClientSession         = (*stdioSession)(nil)
-	_ SessionWithClientInfo = (*stdioSession)(nil)
+	_ ClientSession                  = (*stdioSession)(nil)
+	_ SessionWithClientInfo          = (*stdioSession)(nil)
+	_ SessionWithSubscriptionStreams = (*stdioSession)(nil)
 )
 
 // NewStdioServer creates a new stdio server wrapper around an MCPServer.

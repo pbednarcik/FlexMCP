@@ -129,8 +129,13 @@ srv := server.NewMCPServer("my-server", "1.0.0",
 )
 ```
 
-Your notification-sending code is unchanged; delivery is filtered for sessions
-that opened a subscription stream.
+Your notification-sending code is unchanged. Delivery is opt-in for a modern
+client: over HTTP each `subscriptions/listen` request is its own stream; over
+stdio and in-process, where one channel carries everything, a client may hold
+several streams at once and a broadcast goes out once per stream that asked
+for it, each copy tagged with its stream's id in `_meta`. A modern client that
+holds no stream receives no broadcast. A client of an earlier revision keeps
+receiving them unfiltered, as its revision prescribes.
 
 ### Logging
 

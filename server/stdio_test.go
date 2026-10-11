@@ -762,9 +762,10 @@ func TestStdioServersInOneProcessAreIndependent(t *testing.T) {
 	sendNoisy, outNoisy := stdioPipes(t, noisy)
 	_, outQuiet := stdioPipes(t, quiet)
 
-	// A request marks the session initialized, which is when broadcasts reach it.
-	sendNoisy(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`)
-	awaitMessage(t, outNoisy, func(m map[string]any) bool { return m["id"] == float64(1) }, "the tools/list response")
+	// A handshake-era client: once initialized, every broadcast reaches it.
+	sendNoisy(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+	awaitMessage(t, outNoisy, func(m map[string]any) bool { return m["id"] == float64(1) }, "the initialize result")
+	sendNoisy(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 
 	const changes = 20
 	for i := range changes {
@@ -781,4 +782,106 @@ func TestStdioServersInOneProcessAreIndependent(t *testing.T) {
 		t.Fatalf("the quiet server's stdout carried another server's message: %v", msg)
 	default:
 	}
+}
+
+// modernMetaJSON is the _meta every modern request carries, as a JSON object.
+const modernMetaJSON = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+
+// TestStdioListenStreamsAreFilteredAndTagged pins the stdio side of
+// subscriptions/listen (Transports.md row 5, Patterns.md rows 14 and 17): a
+// modern client may hold several streams on the one stdio channel, each
+// receives only the types it asked for, every notification carries its
+// stream's id, and a cancelled stream receives nothing more.
+func TestStdioListenStreamsAreFilteredAndTagged(t *testing.T) {
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true), WithPromptCapabilities(true))
+	send, out := stdioPipes(t, mcpServer)
+	isAck := func(m map[string]any) bool {
+		return m["method"] == string(mcp.MethodNotificationSubscriptionsAcknowledged)
+	}
+	isMethod := func(method mcp.MCPMethod) func(map[string]any) bool {
+		return func(m map[string]any) bool { return m["method"] == string(method) }
+	}
+	subscriptionID := func(m map[string]any) any {
+		params, _ := m["params"].(map[string]any)
+		meta, _ := params["_meta"].(map[string]any)
+		return meta[mcp.MetaKeySubscriptionID]
+	}
+	addTool := func(name string) {
+		mcpServer.AddTool(mcp.NewTool(name), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("ok"), nil
+		})
+	}
+
+	send(`{"jsonrpc":"2.0","id":"listen-1","method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true},"_meta":` + modernMetaJSON + `}}`)
+	ack := awaitMessage(t, out, isAck, "the first acknowledgement")
+	require.Equal(t, "listen-1", subscriptionID(ack))
+
+	addTool("one")
+	changed := awaitMessage(t, out, isMethod(mcp.MethodNotificationToolsListChanged), "tools/list_changed on the first stream")
+	require.Equal(t, "listen-1", subscriptionID(changed), "a listen-stream notification carries its stream's id")
+
+	send(`{"jsonrpc":"2.0","id":"listen-2","method":"subscriptions/listen","params":{"notifications":{"promptsListChanged":true},"_meta":` + modernMetaJSON + `}}`)
+	ack = awaitMessage(t, out, isAck, "the second acknowledgement")
+	require.Equal(t, "listen-2", subscriptionID(ack))
+
+	mcpServer.AddPrompt(mcp.NewPrompt("greeting"), func(context.Context, mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return &mcp.GetPromptResult{}, nil
+	})
+	changed = awaitMessage(t, out, isMethod(mcp.MethodNotificationPromptsListChanged), "prompts/list_changed on the second stream")
+	require.Equal(t, "listen-2", subscriptionID(changed), "only the stream that asked for prompts receives them")
+
+	// Ending the first stream ends its deliveries; a request after the next
+	// change proves nothing arrived for it.
+	send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"listen-1"}}`)
+	send(`{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{"_meta":` + modernMetaJSON + `}}`)
+	awaitMessage(t, out, func(m map[string]any) bool { return m["id"] == float64(5) }, "the tools/list after the cancel")
+	addTool("two")
+	send(`{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{"_meta":` + modernMetaJSON + `}}`)
+	for {
+		msg := awaitMessage(t, out, func(map[string]any) bool { return true }, "the tools/list after the second change")
+		if msg["id"] == float64(6) {
+			break
+		}
+		require.NotEqual(t, string(mcp.MethodNotificationToolsListChanged), msg["method"], "a cancelled stream still received %v", msg)
+	}
+}
+
+// TestStdioBroadcastsReachOnlyWhoAskedForThem pins that a modern stdio client
+// with no listen stream receives no broadcast, while a handshake-era client
+// receives them as before, untagged.
+func TestStdioBroadcastsReachOnlyWhoAskedForThem(t *testing.T) {
+	addTool := func(mcpServer *MCPServer, name string) {
+		mcpServer.AddTool(mcp.NewTool(name), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("ok"), nil
+		})
+	}
+	isListChanged := func(m map[string]any) bool { return m["method"] == string(mcp.MethodNotificationToolsListChanged) }
+
+	t.Run("a modern client without a stream", func(t *testing.T) {
+		mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+		send, out := stdioPipes(t, mcpServer)
+		send(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":` + modernMetaJSON + `}}`)
+		awaitMessage(t, out, func(m map[string]any) bool { return m["id"] == float64(1) }, "the first tools/list")
+		addTool(mcpServer, "late")
+		send(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":` + modernMetaJSON + `}}`)
+		for {
+			msg := awaitMessage(t, out, func(map[string]any) bool { return true }, "the second tools/list")
+			if msg["id"] == float64(2) {
+				return
+			}
+			require.False(t, isListChanged(msg), "a broadcast reached a client that never asked: %v", msg)
+		}
+	})
+
+	t.Run("a handshake-era client", func(t *testing.T) {
+		mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+		send, out := stdioPipes(t, mcpServer)
+		send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`)
+		awaitMessage(t, out, func(m map[string]any) bool { return m["id"] == float64(1) }, "the initialize result")
+		send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+		addTool(mcpServer, "late")
+		changed := awaitMessage(t, out, isListChanged, "tools/list_changed for the legacy client")
+		params, _ := changed["params"].(map[string]any)
+		require.Nil(t, params["_meta"], "a legacy broadcast carries no subscription id")
+	})
 }

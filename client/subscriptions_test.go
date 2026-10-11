@@ -57,7 +57,10 @@ func TestListenStreamsTheSubscribedNotificationsUntilStopped(t *testing.T) {
 	s.AddTool(mcp.NewTool("late"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText("ok"), nil
 	})
-	assert.Equal(t, mcp.MethodNotificationToolsListChanged, receive(t, notifications).Method)
+	changed := receive(t, notifications)
+	assert.Equal(t, mcp.MethodNotificationToolsListChanged, changed.Method)
+	assert.Equal(t, ack.Params.Meta[mcp.MetaKeySubscriptionID], changed.Params.Meta[mcp.MetaKeySubscriptionID],
+		"every notification on the stream carries the stream's id")
 	assert.Equal(t, int32(0), closed.Load(), "the stream stays open while the context lives")
 
 	stop()

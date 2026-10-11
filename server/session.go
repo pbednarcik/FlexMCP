@@ -180,12 +180,32 @@ func (s *MCPServer) sendNotificationToAllClients(notification mcp.JSONRPCNotific
 
 func (s *MCPServer) broadcastToSession(session ClientSession, notification mcp.JSONRPCNotification) {
 	// From protocol version 2026-07-28 every server-to-client notification is
-	// opt-in: a session that opened a subscriptions/listen stream receives
-	// only the types it asked for (SEP-2575). Sessions that never opened one
-	// are unaffected.
+	// opt-in (SEP-2575). A session that holds subscriptions/listen streams on
+	// one long-lived channel receives a broadcast once per stream that asked
+	// for it, tagged with the stream's id, and not at all without one;
+	// a handshake-era client on such a session is served below, unfiltered.
+	if streams, ok := session.(SessionWithSubscriptionStreams); ok {
+		open, modern := streams.SubscriptionStreams()
+		if modern {
+			for _, stream := range open {
+				if filterAllows(stream.Filter, notification.Method) {
+					s.deliverBroadcast(session, tagSubscription(notification, stream.ID))
+				}
+			}
+			return
+		}
+	}
+	// A request's own session that opened a stream receives only the types
+	// it asked for. Sessions that never opened one are unaffected.
 	if !subscriptionAllowsNotification(session, notification.Method) {
 		return
 	}
+	s.deliverBroadcast(session, notification)
+}
+
+// deliverBroadcast queues a broadcast notification on a session, reporting a
+// full channel through the error hook.
+func (s *MCPServer) deliverBroadcast(session ClientSession, notification mcp.JSONRPCNotification) {
 	if sessionWithStreamableHTTPConfig, ok := session.(SessionWithStreamableHTTPConfig); ok {
 		sessionWithStreamableHTTPConfig.UpgradeToSSEWhenReceiveNotification()
 	}
