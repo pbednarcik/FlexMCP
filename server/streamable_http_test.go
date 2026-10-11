@@ -1332,3 +1332,87 @@ func TestStreamableHTTP_ShutdownEndsOpenListenStreams(t *testing.T) {
 		t.Fatal("Serve did not return")
 	}
 }
+
+// writeRecorder notes whether anything was written to a response.
+type writeRecorder struct {
+	http.ResponseWriter
+	wrote atomic.Bool
+}
+
+func (w *writeRecorder) WriteHeader(status int) {
+	w.wrote.Store(true)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *writeRecorder) Write(p []byte) (int, error) {
+	w.wrote.Store(true)
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *writeRecorder) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// TestStreamableHTTP_ClosingTheStreamCancelsTheRequest pins Transports.md row
+// 24 at the transport: a modern client that closes its request's connection
+// has cancelled the request, the handler's context ends, and the server
+// writes nothing for it.
+func TestStreamableHTTP_ClosingTheStreamCancelsTheRequest(t *testing.T) {
+	started := make(chan struct{})
+	ended := make(chan error, 1)
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(false))
+	mcpServer.AddTool(mcp.NewTool("block"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		close(started)
+		<-ctx.Done()
+		ended <- ctx.Err()
+		return nil, ctx.Err()
+	})
+	httpServer := NewStreamableHTTPServer(mcpServer)
+
+	var recorder *writeRecorder
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder = &writeRecorder{ResponseWriter: w}
+		httpServer.ServeHTTP(recorder, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"block","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`
+	ctx, closeStream := context.WithCancel(t.Context())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
+	req.Header.Set(mcp.HeaderMethod, string(mcp.MethodToolsCall))
+	req.Header.Set(mcp.HeaderName, "block")
+
+	clientDone := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		clientDone <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler did not start")
+	}
+	closeStream()
+	require.Error(t, <-clientDone, "the client gave up on the request")
+
+	select {
+	case err := <-ended:
+		assert.ErrorIs(t, err, context.Canceled, "closing the stream ends the handler's context")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler's context did not end when the stream closed")
+	}
+
+	// Close waits for the handler to return, so the recorder is final.
+	ts.Close()
+	assert.False(t, recorder.wrote.Load(), "nothing is written for a cancelled request")
+}
