@@ -234,7 +234,7 @@ func (c *Client) callToolOnce(
 	params.MultiRoundTripParams = roundTrip
 
 	response, err := c.sendRequest(ctx, string(mcp.MethodToolsCall), params, header)
-	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok && strings.HasPrefix(mismatch.Header, mcp.HeaderParamPrefix) {
+	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok && isParamHeader(mismatch.Header) {
 		c.forgetTool(params.Name)
 		if _, listErr := c.ListTools(ctx, mcp.ListToolsRequest{}); listErr != nil {
 			return nil, fmt.Errorf("%w (listing the tools again failed: %w)", err, listErr)
@@ -316,4 +316,11 @@ func readResourceNeedsInput(result *mcp.ReadResourceResult) (mcp.InputRequests, 
 		return nil, "", false
 	}
 	return result.InputRequests, result.RequestState, true
+}
+
+// isParamHeader reports whether name is an Mcp-Param-* header; header names
+// compare case-insensitively, however the server spelled the one it refused.
+func isParamHeader(name string) bool {
+	prefix := mcp.HeaderParamPrefix
+	return len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix)
 }

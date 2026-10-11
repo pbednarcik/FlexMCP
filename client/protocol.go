@@ -48,22 +48,39 @@ var (
 // "(devel)" when built from its own tree.
 func defaultClientInfo() mcp.Implementation {
 	defaultInfoOnce.Do(func() {
-		defaultInfo = mcp.Implementation{Name: "mcp-go", Version: "(devel)"}
 		info, ok := debug.ReadBuildInfo()
 		if !ok {
-			return
+			info = nil
 		}
-		for _, dep := range info.Deps {
-			if dep.Path == modulePath && dep.Version != "" {
-				defaultInfo.Version = dep.Version
-				return
-			}
-		}
-		if info.Main.Path == modulePath && info.Main.Version != "" {
-			defaultInfo.Version = info.Main.Version
-		}
+		defaultInfo = clientInfoFrom(info)
 	})
 	return defaultInfo
+}
+
+// clientInfoFrom names this SDK at the version the build information records
+// for it: a replaced dependency carries the replacement's version, and a
+// replacement without one (a local checkout) is "(devel)".
+func clientInfoFrom(info *debug.BuildInfo) mcp.Implementation {
+	result := mcp.Implementation{Name: "mcp-go", Version: "(devel)"}
+	if info == nil {
+		return result
+	}
+	for _, dep := range info.Deps {
+		if dep.Path != modulePath {
+			continue
+		}
+		if dep.Replace != nil {
+			dep = dep.Replace
+		}
+		if dep.Version != "" {
+			result.Version = dep.Version
+		}
+		return result
+	}
+	if info.Main.Path == modulePath && info.Main.Version != "" {
+		result.Version = info.Main.Version
+	}
+	return result
 }
 
 // legacyRequiringTransport is implemented by transports that have been
@@ -93,12 +110,18 @@ func (c *Client) effectiveCapabilities() mcp.ClientCapabilities {
 	if c.samplingHandler != nil && capabilities.Sampling == nil {
 		capabilities.Sampling = &mcp.SamplingCapability{}
 	}
-	if c.rootsHandler != nil && capabilities.Roots == nil {
-		// The listChanged sub-capability left with its notification in
-		// protocol version 2026-07-28; it is declared on the handshake era only.
+	// The listChanged sub-capability left with its notification in
+	// protocol version 2026-07-28; it is declared on the handshake era only,
+	// whether synthesized for a handler or supplied by the caller.
+	switch {
+	case c.rootsHandler != nil && capabilities.Roots == nil:
 		capabilities.Roots = &struct {
 			ListChanged bool `json:"listChanged,omitempty"`
 		}{ListChanged: !c.isModern()}
+	case capabilities.Roots != nil && capabilities.Roots.ListChanged && c.isModern():
+		capabilities.Roots = &struct {
+			ListChanged bool `json:"listChanged,omitempty"`
+		}{}
 	}
 	if c.elicitationHandler != nil && capabilities.Elicitation == nil {
 		capabilities.Elicitation = &mcp.ElicitationCapability{}

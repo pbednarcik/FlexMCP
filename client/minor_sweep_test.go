@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -145,12 +147,13 @@ func TestRootsMustBeFileURIs(t *testing.T) {
 // refreshingToolsServer serves a tool whose x-mcp-header annotation changes
 // between listings, and rejects a tools/call that mirrors the old header.
 type refreshingToolsServer struct {
-	mu         sync.Mutex
-	listings   int
-	calls      []http.Header
-	t          *testing.T
-	firstParam string // the header of the first listing
-	laterParam string // the header of every later listing
+	mu              sync.Mutex
+	listings        int
+	calls           []http.Header
+	t               *testing.T
+	firstParam      string // the header of the first listing
+	laterParam      string // the header of every later listing
+	lowercaseHeader bool   // name the header in lower case in the error's data
 }
 
 func (s *refreshingToolsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -175,8 +178,12 @@ func (s *refreshingToolsServer) ServeHTTP(w http.ResponseWriter, r *http.Request
 	case string(mcp.MethodToolsCall):
 		s.calls = append(s.calls, r.Header.Clone())
 		if r.Header.Get(mcp.HeaderParamPrefix+s.laterParam) == "" {
+			name := mcp.HeaderParamPrefix + s.laterParam
+			if s.lowercaseHeader {
+				name = strings.ToLower(name)
+			}
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":"header mismatch","data":{"header":%q}}}`, request.ID, mcp.HEADER_MISMATCH, mcp.HeaderParamPrefix+s.laterParam)
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":%d,"message":"header mismatch","data":{"header":%q}}}`, request.ID, mcp.HEADER_MISMATCH, name)
 			return
 		}
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
@@ -235,6 +242,87 @@ func TestTaskResultTypeNeedsTheTasksCapability(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+// Header names compare case-insensitively: a server naming the header in
+// lower case still gets the refresh and the retry.
+func TestCallToolRetriesOnALowercaseParamHeaderName(t *testing.T) {
+	server := &refreshingToolsServer{t: t, firstParam: "Region", laterParam: "Zone", lowercaseHeader: true}
+	httpServer := httptest.NewServer(server)
+	defer httpServer.Close()
+	trans, err := transport.NewStreamableHTTP(httpServer.URL)
+	require.NoError(t, err)
+	c := NewClient(trans)
+	t.Cleanup(func() { _ = c.Close() })
+	require.NoError(t, c.Start(t.Context()))
+	_, err = c.Initialize(t.Context(), mcp.InitializeRequest{})
+	require.NoError(t, err)
+	_, err = c.ListTools(t.Context(), mcp.ListToolsRequest{})
+	require.NoError(t, err)
+
+	_, err = c.CallTool(t.Context(), mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "q", Arguments: map[string]any{"region": "eu"}}})
+	require.NoError(t, err)
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	assert.Len(t, server.calls, 2, "the retry happened")
+}
+
+// A roots capability the caller supplied with listChanged is sent without it
+// on the modern era, where the sub-capability is gone; what the caller
+// configured is left as it is, so a handshake-era connection still sends it.
+func TestSuppliedRootsCapabilityLosesListChangedOnTheModernEra(t *testing.T) {
+	var roots json.RawMessage
+	var mu sync.Mutex
+	tr := &scriptedTransport{respond: modernScript(func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+		var capabilities struct {
+			Roots json.RawMessage `json:"roots"`
+		}
+		_ = json.Unmarshal(requestMeta(t, request)[mcp.MetaKeyClientCapabilities], &capabilities)
+		mu.Lock()
+		roots = capabilities.Roots
+		mu.Unlock()
+		return resultResponse(request, `{"tools":[]}`), nil
+	})}
+	supplied := mcp.ClientCapabilities{Roots: &struct {
+		ListChanged bool `json:"listChanged,omitempty"`
+	}{ListChanged: true}}
+	c := connectScripted(t, tr, WithClientCapabilities(supplied))
+
+	_, err := c.ListTools(t.Context(), mcp.ListToolsRequest{})
+	require.NoError(t, err)
+	mu.Lock()
+	assert.JSONEq(t, `{}`, string(roots))
+	mu.Unlock()
+	assert.True(t, c.GetClientCapabilities().Roots.ListChanged, "the configuration is untouched")
+}
+
+// The default clientInfo names this SDK at the version the binary was built
+// against: the dependency's version, the replacement's when the module is
+// replaced (a local replacement has none), the main module's when this is
+// the main module.
+func TestDefaultClientInfoReadsTheBuildInfo(t *testing.T) {
+	module := func(version string, replace *debug.Module) *debug.Module {
+		return &debug.Module{Path: modulePath, Version: version, Replace: replace}
+	}
+	tests := []struct {
+		name string
+		info *debug.BuildInfo
+		want string
+	}{
+		{name: "no build info", want: "(devel)"},
+		{name: "a dependency", info: &debug.BuildInfo{Main: debug.Module{Path: "example.com/app"}, Deps: []*debug.Module{module("v0.44.0", nil)}}, want: "v0.44.0"},
+		{name: "replaced by a local checkout", info: &debug.BuildInfo{Main: debug.Module{Path: "example.com/app"}, Deps: []*debug.Module{module("v0.44.0", &debug.Module{Path: "../mcp-go"})}}, want: "(devel)"},
+		{name: "replaced by a fork at a version", info: &debug.BuildInfo{Main: debug.Module{Path: "example.com/app"}, Deps: []*debug.Module{module("v0.44.0", &debug.Module{Path: "example.com/fork", Version: "v0.50.1"})}}, want: "v0.50.1"},
+		{name: "the main module", info: &debug.BuildInfo{Main: debug.Module{Path: modulePath, Version: "v0.45.0"}}, want: "v0.45.0"},
+		{name: "the main module from its tree", info: &debug.BuildInfo{Main: debug.Module{Path: modulePath, Version: "(devel)"}}, want: "(devel)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := clientInfoFrom(tt.info)
+			assert.Equal(t, "mcp-go", info.Name)
+			assert.Equal(t, tt.want, info.Version)
 		})
 	}
 }

@@ -58,8 +58,7 @@ func TestOAuthHandler_RefusesAnAuthorizationServerWithoutPKCE(t *testing.T) {
 			handler := pkceHandler(t, &tokenAuthServer{codeChallengeMethods: methods})
 
 			_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
-			require.Error(t, err)
-			assert.ErrorContains(t, err, "PKCE")
+			require.ErrorIs(t, err, ErrPKCENotSupported)
 		})
 	}
 }
@@ -70,13 +69,11 @@ func TestOAuthHandler_RequiresACodeChallenge(t *testing.T) {
 	handler := pkceHandler(t, &tokenAuthServer{codeChallengeMethods: []string{"S256"}})
 
 	_, err := handler.GetAuthorizationURL(t.Context(), "state", "")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "PKCE")
+	require.ErrorIs(t, err, ErrPKCERequired, "no challenge: the flow does not start")
 
 	handler.SetExpectedState("state")
 	err = handler.ProcessAuthorizationResponse(t.Context(), "code", "state", "")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "PKCE")
+	require.ErrorIs(t, err, ErrPKCERequired, "no verifier: the code is not exchanged")
 }
 
 // PKCEDisabled is the one way out, for an authorization server known to
