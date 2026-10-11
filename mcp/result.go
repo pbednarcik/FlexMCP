@@ -30,8 +30,9 @@ func (t ResultType) IsComplete() bool {
 }
 
 // Accepted reports whether a client accepts the result type: the core values
-// and an absent one always, the Tasks extension's only when tasks says the
-// connection declared that capability. Any other value is invalid.
+// and an absent one always, the Tasks extension's "task" only when tasks
+// says the request may be answered with one (the connection declared the
+// extension, and the request is tools/call). Any other value is invalid.
 func (t ResultType) Accepted(tasks bool) bool {
 	switch t {
 	case "", ResultTypeComplete, ResultTypeInputRequired:

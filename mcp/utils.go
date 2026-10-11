@@ -865,9 +865,10 @@ func ParseCallToolResult(rawMessage *json.RawMessage) (*CallToolResult, error) {
 	if err := json.Unmarshal(*rawMessage, &probe); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
-	// A result asking for more input (SEP-2322) carries only the input
-	// requests and the request state, so it legitimately has no content.
-	if probe.Content == nil && probe.ResultType != ResultTypeInputRequired {
+	// Only a complete result carries content: one asking for more input
+	// (SEP-2322) holds the input requests and the request state, and one
+	// accepted as a task (the Tasks extension) holds the task.
+	if probe.Content == nil && probe.ResultType.IsComplete() {
 		return nil, fmt.Errorf("content is missing")
 	}
 

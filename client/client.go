@@ -800,14 +800,38 @@ func (c *Client) Complete(
 }
 
 // checkResultType refuses a resultType the client does not accept: the
-// core values, and those of the extensions this connection declared (the
-// Tasks extension's "task" with the tasks capability); any other value is
+// core values are accepted; "task" belongs to the Tasks extension, which
+// answers tools/call alone (see checkToolResultType); any other value is
 // invalid rather than complete.
 func (c *Client) checkResultType(resultType mcp.ResultType) error {
-	if resultType.Accepted(c.clientCapabilities.Tasks != nil) {
+	return checkResultType(resultType, false)
+}
+
+// checkToolResultType is checkResultType for the answer to tools/call, the
+// one request the Tasks extension may answer with a task: "task" is accepted
+// when this connection declared the extension.
+func (c *Client) checkToolResultType(resultType mcp.ResultType) error {
+	return checkResultType(resultType, c.acceptsTasks())
+}
+
+func checkResultType(resultType mcp.ResultType, tasks bool) error {
+	if resultType.Accepted(tasks) {
 		return nil
 	}
 	return fmt.Errorf("unaccepted resultType %q in the result", resultType)
+}
+
+// acceptsTasks reports whether this connection declared the Tasks extension:
+// extensions["io.modelcontextprotocol/tasks"] in the capabilities every
+// modern request carries. Before 2026-07-28 there was no resultType, and the
+// tasks capability of that era is the client's own, for the requests it
+// receives, so a handshake-era server is never answered with a task.
+func (c *Client) acceptsTasks() bool {
+	if !c.isModern() {
+		return false
+	}
+	_, ok := c.clientCapabilities.Extensions[mcp.ExtensionTasks]
+	return ok
 }
 
 // RootListChanges sends a roots list-changed notification to the server.

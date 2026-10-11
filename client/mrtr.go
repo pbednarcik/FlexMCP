@@ -248,7 +248,7 @@ func (c *Client) callToolOnce(
 	if err != nil {
 		return nil, err
 	}
-	return result, c.checkResultType(result.ResultType)
+	return result, c.checkToolResultType(result.ResultType)
 }
 
 // getPromptOnce issues a single prompts/get request.

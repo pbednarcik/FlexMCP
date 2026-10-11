@@ -154,6 +154,12 @@ func NewTasksCapabilityWithToolsOnly() *TasksCapability {
 // Related Task Metadata Functions
 //
 
+// ExtensionTasks is the identifier of the Tasks extension of protocol
+// version 2026-07-28: the key under capabilities.extensions by which a
+// client declares, on every request, that a tools/call may be answered with
+// a task, and a server that it serves tasks.
+const ExtensionTasks = "io.modelcontextprotocol/tasks"
+
 // RelatedTaskMetaKey is the metadata key for associating a message with a task.
 const RelatedTaskMetaKey = "io.modelcontextprotocol/related-task"
 

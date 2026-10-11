@@ -222,26 +222,62 @@ func TestCallToolRefreshesTheToolAfterAParamHeaderMismatch(t *testing.T) {
 	assert.Empty(t, server.calls[1].Get("Mcp-Param-Region"), "the stale header is gone")
 }
 
-// The "task" result type belongs to the Tasks extension: a client accepts
-// it only on a connection where it declared that capability.
-func TestTaskResultTypeNeedsTheTasksCapability(t *testing.T) {
-	for name, options := range map[string][]ClientOption{
-		"undeclared": nil,
-		"declared":   {WithClientCapabilities(mcp.ClientCapabilities{Tasks: &mcp.TasksCapability{}})},
-	} {
-		t.Run(name, func(t *testing.T) {
-			tr := &scriptedTransport{respond: modernScript(func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
-				return resultResponse(request, `{"resultType":"task","tools":[]}`), nil
-			})}
-			c := connectScripted(t, tr, options...)
+// The "task" result type belongs to the Tasks extension, which a client
+// declares as extensions["io.modelcontextprotocol/tasks"] in the capabilities
+// every modern request carries, and only tools/call can be answered with a
+// task. The tasks capability of 2025-11-25 is another thing (the client's own,
+// for the requests it receives), and before 2026-07-28 there was no
+// resultType at all.
+func TestTaskResultTypeNeedsTheTasksExtension(t *testing.T) {
+	const taskResult = `{"resultType":"task","taskId":"t1","status":"working","createdAt":"2026-01-01T00:00:00Z","lastUpdatedAt":"2026-01-01T00:00:00Z","ttlMs":null,"pollIntervalMs":1000}`
+	withExtension := WithClientCapabilities(mcp.ClientCapabilities{Extensions: map[string]any{mcp.ExtensionTasks: map[string]any{}}})
+	withLegacyTasks := WithClientCapabilities(mcp.ClientCapabilities{Tasks: &mcp.TasksCapability{}})
+	callTool := func(c *Client) (mcp.ResultType, error) {
+		result, err := c.CallTool(t.Context(), mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t"}})
+		if err != nil {
+			return "", err
+		}
+		return result.ResultType, nil
+	}
+	listTools := func(c *Client) (mcp.ResultType, error) {
+		result, err := c.ListTools(t.Context(), mcp.ListToolsRequest{})
+		if err != nil {
+			return "", err
+		}
+		return result.ResultType, nil
+	}
+	tests := []struct {
+		name     string
+		options  []ClientOption
+		legacy   bool
+		call     func(*Client) (mcp.ResultType, error)
+		accepted bool
+	}{
+		{name: "tools/call with the extension", options: []ClientOption{withExtension}, call: callTool, accepted: true},
+		{name: "tools/call without it", call: callTool},
+		{name: "tools/call with only the 2025-11-25 tasks capability", options: []ClientOption{withLegacyTasks}, call: callTool},
+		{name: "tools/list with the extension", options: []ClientOption{withExtension}, call: listTools},
+		{name: "tools/call with the extension on the handshake era", options: []ClientOption{withExtension, WithLegacyProtocolOnly()}, legacy: true, call: callTool},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			answer := func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+				if tt.legacy && request.Method == string(mcp.MethodInitialize) {
+					return resultResponse(request, legacyInitializeResult), nil
+				}
+				return resultResponse(request, taskResult), nil
+			}
+			tr := &scriptedTransport{respond: modernScript(answer)}
+			c := connectScripted(t, tr, tt.options...)
 
-			_, err := c.ListTools(t.Context(), mcp.ListToolsRequest{})
-			if options == nil {
+			resultType, err := tt.call(c)
+			if !tt.accepted {
 				require.Error(t, err)
 				assert.ErrorContains(t, err, `unaccepted resultType "task"`)
-			} else {
-				require.NoError(t, err)
+				return
 			}
+			require.NoError(t, err)
+			assert.Equal(t, mcp.ResultTypeTask, resultType)
 		})
 	}
 }
