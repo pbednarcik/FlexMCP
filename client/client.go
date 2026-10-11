@@ -296,11 +296,12 @@ func (c *Client) sendRequest(
 // references it. Over stdio that is the only way to cancel a request, and
 // protocol version 2026-07-28 requires it there.
 //
-// Over HTTP nothing is sent: on protocol version 2026-07-28 the transport
-// ending the request's stream is the cancellation, and earlier versions keep
-// the behaviour they had. The handshake is left alone, since initialize must
-// not be cancelled and nothing else is sent before it completes, and so are
-// task-augmented requests, which are cancelled with tasks/cancel instead.
+// Over HTTP on protocol version 2026-07-28 nothing is sent: the transport
+// ending the request's stream is the cancellation. Before that version a
+// closed stream is not one, so the notification goes out there too. The
+// handshake is left alone, since initialize must not be cancelled and
+// nothing else is sent before it completes, and so are task-augmented
+// requests, which are cancelled with tasks/cancel instead.
 func (c *Client) cancelRequest(ctx context.Context, request transport.JSONRPCRequest) {
 	if !c.initialized.Load() ||
 		request.Method == string(mcp.MethodInitialize) ||
@@ -308,7 +309,7 @@ func (c *Client) cancelRequest(ctx context.Context, request transport.JSONRPCReq
 		isTaskAugmented(request.Params) {
 		return
 	}
-	if _, ok := c.transport.(transport.HTTPConnection); ok {
+	if _, ok := c.transport.(transport.HTTPConnection); ok && c.isModern() {
 		return
 	}
 	notification := mcp.JSONRPCNotification{

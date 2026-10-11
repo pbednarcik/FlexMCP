@@ -295,3 +295,60 @@ func TestClient_NoCancellationNotificationOverHTTP(t *testing.T) {
 	defer mu.Unlock()
 	assert.NotContains(t, methods, string(mcp.MethodNotificationCancelled))
 }
+
+// Before protocol version 2026-07-28 a closed stream is not a cancellation on
+// Streamable HTTP: the server is told not to take it as one, so the client
+// sends notifications/cancelled there as it does on stdio.
+func TestClient_CancellationNotificationOverLegacyHTTP(t *testing.T) {
+	var mu sync.Mutex
+	var methods []string
+	cancelled := make(chan struct{}, 1)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var message struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&message)
+		mu.Lock()
+		methods = append(methods, message.Method)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch message.Method {
+		case string(mcp.MethodServerDiscover):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"error":{"code":-32601,"message":"method not found"}}`))
+		case string(mcp.MethodInitialize):
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"protocolVersion":"` + mcp.LATEST_LEGACY_PROTOCOL_VERSION + `","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`))
+		case string(mcp.MethodToolsCall):
+			<-r.Context().Done()
+		case string(mcp.MethodNotificationCancelled):
+			cancelled <- struct{}{}
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer httpServer.Close()
+
+	trans, err := transport.NewStreamableHTTP(httpServer.URL)
+	require.NoError(t, err)
+	c := NewClient(trans)
+	t.Cleanup(func() { _ = c.Close() })
+	require.NoError(t, c.Start(t.Context()))
+	result, err := c.Initialize(t.Context(), mcp.InitializeRequest{})
+	require.NoError(t, err)
+	require.Equal(t, mcp.LATEST_LEGACY_PROTOCOL_VERSION, result.ProtocolVersion)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err = c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "slow"}})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("no notifications/cancelled reached the server; it saw %v", methods)
+	}
+}
