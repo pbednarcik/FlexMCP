@@ -272,6 +272,53 @@ func TestStreamableHTTP_TasksAreNotListableWithoutAnIdentity(t *testing.T) {
 	})
 }
 
+// A legacy HTTP client has no stream and no registered session, so nothing
+// the server sends later can reach it: its initialize promises no
+// list_changed notification for tools, prompts or resources. A session with
+// an ID, such as stdio, keeps the promise, since it is delivered there.
+func TestStreamableHTTP_LegacyInitializePromisesNoListChanged(t *testing.T) {
+	mcpServer := NewMCPServer("test-mcp-server", "1.0",
+		WithToolCapabilities(true), WithPromptCapabilities(true), WithResourceCapabilities(false, true))
+	server := NewTestStreamableHTTPServer(mcpServer)
+
+	initialize := map[string]any{"jsonrpc": "2.0", "id": 1, "method": mcp.MethodInitialize, "params": map[string]any{
+		"protocolVersion": mcp.LATEST_LEGACY_PROTOCOL_VERSION,
+		"clientInfo":      map[string]any{"name": "legacy", "version": "1.0.0"},
+		"capabilities":    map[string]any{},
+	}}
+
+	t.Run("over HTTP", func(t *testing.T) {
+		resp, err := postJSON(server.URL, initialize)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var envelope struct {
+			Result mcp.InitializeResult `json:"result"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&envelope))
+		capabilities := envelope.Result.Capabilities
+		require.NotNil(t, capabilities.Tools)
+		assert.False(t, capabilities.Tools.ListChanged, "tools.listChanged promised to a client it cannot reach")
+		require.NotNil(t, capabilities.Prompts)
+		assert.False(t, capabilities.Prompts.ListChanged, "prompts.listChanged promised to a client it cannot reach")
+		require.NotNil(t, capabilities.Resources)
+		assert.False(t, capabilities.Resources.ListChanged, "resources.listChanged promised to a client it cannot reach")
+	})
+
+	t.Run("on a session with an ID", func(t *testing.T) {
+		body, err := json.Marshal(initialize)
+		require.NoError(t, err)
+		ctx := mcpServer.WithContext(t.Context(), fakeSess{sessionID: "stdio"})
+		response, ok := mcpServer.HandleMessage(ctx, body).(mcp.JSONRPCResponse)
+		require.True(t, ok, "%v", response)
+		result, ok := response.Result.(mcp.InitializeResult)
+		require.True(t, ok, "%T", response.Result)
+		assert.True(t, result.Capabilities.Tools.ListChanged)
+		assert.True(t, result.Capabilities.Prompts.ListChanged)
+		assert.True(t, result.Capabilities.Resources.ListChanged)
+	})
+}
+
 func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
 	server := NewTestStreamableHTTPServer(mcpServer)

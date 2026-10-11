@@ -1275,10 +1275,24 @@ func (s *MCPServer) handleInitialize(
 	if capabilities.Resources != nil {
 		capabilities.Resources.Subscribe = false
 	}
-	// A session with no ID cannot be told from another, so it is not offered
-	// tasks/list (Tasks.md row 35); see listTasks.
-	if session := ClientSessionFromContext(ctx); session != nil && session.SessionID() == "" && capabilities.Tasks != nil {
-		capabilities.Tasks.List = nil
+	// A session with no ID is a request's own: nothing the server sends later
+	// reaches it, so it is promised no list_changed notification, and it
+	// cannot be told from another, so it is not offered tasks/list (Tasks.md
+	// row 35; see listTasks). A session with an ID, such as stdio, is
+	// delivered to and keeps both.
+	if session := ClientSessionFromContext(ctx); session != nil && session.SessionID() == "" {
+		if capabilities.Tools != nil {
+			capabilities.Tools.ListChanged = false
+		}
+		if capabilities.Prompts != nil {
+			capabilities.Prompts.ListChanged = false
+		}
+		if capabilities.Resources != nil {
+			capabilities.Resources.ListChanged = false
+		}
+		if capabilities.Tasks != nil {
+			capabilities.Tasks.List = nil
+		}
 	}
 
 	result := mcp.InitializeResult{
