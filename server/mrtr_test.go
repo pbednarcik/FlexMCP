@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -135,6 +137,139 @@ func TestMultiRoundTrip_LegacyClientGetsAnError(t *testing.T) {
 			assert.ErrorIs(t, reqErr, tt.want)
 		})
 	}
+}
+
+// callToolAs invokes a tool through the full dispatch path as a modern client
+// that declared caps on the request.
+func callToolAs(t *testing.T, srv *MCPServer, params mcp.CallToolParams, caps mcp.ClientCapabilities) (any, *requestError) {
+	t.Helper()
+	ctx := srv.WithContext(t.Context(), newMRTRSession("session"))
+	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{
+		Modern:             true,
+		ProtocolVersion:    mcp.ProtocolVersion20260728,
+		ClientCapabilities: &caps,
+	})
+	return srv.handleToolCall(ctx, 1, mcp.CallToolRequest{Params: params})
+}
+
+// A server never asks a client for input its declared capabilities cannot
+// serve (Patterns.md row 5, ClientFeatures.md rows 2 and 22): the call is
+// refused with -32021, and the error's data names the capabilities the client
+// would need (BaseProtocol.md row 28).
+func TestMultiRoundTrip_RefusesInputTheClientCannotServe(t *testing.T) {
+	srv := newMRTRServer(t)
+	srv.AddTool(mcp.NewTool("signIn"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return NewInputRequestBuilder("").Elicit("login", mcp.ElicitationParams{
+			Mode: mcp.ElicitationModeURL, Message: "sign in", URL: "https://example.com/login",
+		}).ToolResult(), nil
+	})
+	srv.AddTool(mcp.NewTool("summarise"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return NewInputRequestBuilder("").Sample("summary", mcp.CreateMessageParams{
+			MaxTokens: 10, Tools: []mcp.Tool{mcp.NewTool("lookup")},
+		}).ToolResult(), nil
+	})
+	srv.AddTool(mcp.NewTool("whereAmI"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return NewInputRequestBuilder("").Roots("roots").ToolResult(), nil
+	})
+
+	elicitation := func(url bool) *mcp.ElicitationCapability {
+		c := &mcp.ElicitationCapability{}
+		if url {
+			c.URL = &struct{}{}
+		}
+		return c
+	}
+	sampling := func(tools bool) *mcp.SamplingCapability {
+		c := &mcp.SamplingCapability{}
+		if tools {
+			c.Tools = &struct{}{}
+		}
+		return c
+	}
+	roots := &struct {
+		ListChanged bool `json:"listChanged,omitempty"`
+	}{}
+
+	tests := []struct {
+		name     string
+		tool     string
+		declared mcp.ClientCapabilities
+		// missing names the capability the error must report; empty when the
+		// client can serve the request.
+		missing string
+		// required checks the error's data.requiredCapabilities.
+		required func(mcp.ClientCapabilities) bool
+	}{
+		{
+			name: "form elicitation needs elicitation", tool: "confirmThenGreet",
+			missing:  "elicitation",
+			required: func(c mcp.ClientCapabilities) bool { return c.Elicitation != nil && c.Elicitation.URL == nil },
+		},
+		{
+			name: "form elicitation is served with elicitation", tool: "confirmThenGreet",
+			declared: mcp.ClientCapabilities{Elicitation: elicitation(false)},
+		},
+		{
+			name: "url elicitation needs elicitation.url", tool: "signIn",
+			declared: mcp.ClientCapabilities{Elicitation: elicitation(false)},
+			missing:  "elicitation.url",
+			required: func(c mcp.ClientCapabilities) bool { return c.Elicitation != nil && c.Elicitation.URL != nil },
+		},
+		{
+			name: "url elicitation is served with elicitation.url", tool: "signIn",
+			declared: mcp.ClientCapabilities{Elicitation: elicitation(true)},
+		},
+		{
+			name: "sampling with tools needs sampling.tools", tool: "summarise",
+			declared: mcp.ClientCapabilities{Sampling: sampling(false)},
+			missing:  "sampling.tools",
+			required: func(c mcp.ClientCapabilities) bool { return c.Sampling != nil && c.Sampling.Tools != nil },
+		},
+		{
+			name: "sampling with tools is served with sampling.tools", tool: "summarise",
+			declared: mcp.ClientCapabilities{Sampling: sampling(true)},
+		},
+		{
+			name: "roots needs roots", tool: "whereAmI",
+			missing:  "roots",
+			required: func(c mcp.ClientCapabilities) bool { return c.Roots != nil },
+		},
+		{
+			name: "roots is served with roots", tool: "whereAmI",
+			declared: mcp.ClientCapabilities{Roots: roots},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, reqErr := callToolAs(t, srv, mcp.CallToolParams{Name: tt.tool}, tt.declared)
+			if tt.missing == "" {
+				require.Nil(t, reqErr)
+				assert.True(t, result.(*mcp.CallToolResult).NeedsInput())
+				return
+			}
+			assert.Nil(t, result)
+			require.NotNil(t, reqErr)
+			assert.Equal(t, mcp.MISSING_REQUIRED_CLIENT_CAPABILITY, reqErr.code)
+			assert.True(t, mcp.IsMissingRequiredClientCapability(reqErr))
+			assert.ErrorContains(t, reqErr, tt.missing)
+			data, ok := reqErr.data.(mcp.MissingRequiredClientCapabilityData)
+			require.True(t, ok, "error data is %T, want the required capabilities", reqErr.data)
+			assert.True(t, tt.required(data.RequiredCapabilities), "data.requiredCapabilities = %+v", data.RequiredCapabilities)
+		})
+	}
+
+	// Over HTTP the refusal is 400 with the same data in the body.
+	t.Run("over HTTP", func(t *testing.T) {
+		httpServer := httptest.NewServer(NewStreamableHTTPServer(srv))
+		t.Cleanup(httpServer.Close)
+		resp := postModern(t, httpServer.URL, mcp.MethodToolsCall, map[string]any{"name": "confirmThenGreet"})
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		errDetails := decodeJSONRPC(t, resp)["error"].(map[string]any)
+		assert.Equal(t, float64(mcp.MISSING_REQUIRED_CLIENT_CAPABILITY), errDetails["code"])
+		data, _ := errDetails["data"].(map[string]any)
+		required, _ := data["requiredCapabilities"].(map[string]any)
+		assert.Contains(t, required, "elicitation")
+	})
 }
 
 func TestMultiRoundTrip_InputResponseAccessors(t *testing.T) {

@@ -169,7 +169,9 @@ func errorResponseForProtocolError(id any, err error) mcp.JSONRPCMessage {
 	}
 
 	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
-		return createErrorResponse(id, mcp.MISSING_REQUIRED_CLIENT_CAPABILITY, missing.Error())
+		response := missing.JSONRPCError()
+		response.ID = mcp.NewRequestId(id)
+		return response
 	}
 
 	return createErrorResponse(id, mcp.INVALID_PARAMS, err.Error())

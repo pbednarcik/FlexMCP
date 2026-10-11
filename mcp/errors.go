@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Sentinel errors for common JSON-RPC error codes.
@@ -122,14 +123,68 @@ func (e HeaderMismatchError) Is(target error) bool {
 }
 
 // MissingRequiredClientCapabilityError is returned when a request omits a
-// client capability the server requires to serve it (SEP-2575).
+// client capability the server needs to serve it (SEP-2575): the server
+// never relies on a capability the request did not declare, and answers
+// -32021 naming the capabilities it would need.
 type MissingRequiredClientCapabilityError struct {
-	// Capability names the missing capability, e.g. "elicitation".
-	Capability string
+	// Required holds the capabilities the request would have to declare,
+	// as a ClientCapabilities object: elicitation (with url for URL mode),
+	// sampling (with tools), roots.
+	Required ClientCapabilities
 }
 
 func (e MissingRequiredClientCapabilityError) Error() string {
-	return fmt.Sprintf("missing required client capability: %q", e.Capability)
+	names := requiredCapabilityNames(e.Required)
+	if len(names) == 0 {
+		return "missing required client capability"
+	}
+	return "missing required client capability: " + strings.Join(names, ", ")
+}
+
+// requiredCapabilityNames spells the capabilities a ClientCapabilities value
+// declares, as dotted paths, for an error message.
+func requiredCapabilityNames(c ClientCapabilities) []string {
+	var names []string
+	if c.Elicitation != nil {
+		if c.Elicitation.URL != nil {
+			names = append(names, "elicitation.url")
+		} else {
+			names = append(names, "elicitation")
+		}
+	}
+	if c.Sampling != nil {
+		switch {
+		case c.Sampling.Tools != nil:
+			names = append(names, "sampling.tools")
+		case c.Sampling.Context != nil:
+			names = append(names, "sampling.context")
+		default:
+			names = append(names, "sampling")
+		}
+	}
+	if c.Roots != nil {
+		names = append(names, "roots")
+	}
+	return names
+}
+
+// MissingRequiredClientCapabilityData is the data member of a
+// [MISSING_REQUIRED_CLIENT_CAPABILITY] error.
+type MissingRequiredClientCapabilityData struct {
+	// RequiredCapabilities is the set the request would have to declare.
+	RequiredCapabilities ClientCapabilities `json:"requiredCapabilities"`
+}
+
+// JSONRPCError renders the error as a JSON-RPC error response body.
+func (e MissingRequiredClientCapabilityError) JSONRPCError() JSONRPCError {
+	return JSONRPCError{
+		JSONRPC: JSONRPC_VERSION,
+		Error: JSONRPCErrorDetails{
+			Code:    MISSING_REQUIRED_CLIENT_CAPABILITY,
+			Message: e.Error(),
+			Data:    MissingRequiredClientCapabilityData{RequiredCapabilities: e.Required},
+		},
+	}
 }
 
 // Is implements the errors.Is interface for better error handling.
@@ -193,18 +248,13 @@ func (e *JSONRPCErrorDetails) AsError() error {
 	case HEADER_MISMATCH:
 		return HeaderMismatchError{Reason: e.Message}
 	case MISSING_REQUIRED_CLIENT_CAPABILITY:
-		capability := ""
+		var data MissingRequiredClientCapabilityData
 		if e.Data != nil {
 			if dataBytes, marshalErr := json.Marshal(e.Data); marshalErr == nil {
-				var data struct {
-					Capability string `json:"capability"`
-				}
-				if json.Unmarshal(dataBytes, &data) == nil {
-					capability = data.Capability
-				}
+				_ = json.Unmarshal(dataBytes, &data)
 			}
 		}
-		return MissingRequiredClientCapabilityError{Capability: capability}
+		return MissingRequiredClientCapabilityError{Required: data.RequiredCapabilities}
 	case UNSUPPORTED_PROTOCOL_VERSION:
 		var data UnsupportedProtocolVersionData
 		if e.Data != nil {

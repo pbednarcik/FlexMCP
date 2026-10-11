@@ -112,6 +112,9 @@ func TestCallToolAnswersRootsAndSamplingRequests(t *testing.T) {
 		options []ClientOption
 		want    string
 		wantErr string
+		// wantMissing names the capability the server reports missing
+		// (-32021) when the client never declared it.
+		wantMissing string
 	}{
 		{
 			name:    "roots are answered",
@@ -126,9 +129,11 @@ func TestCallToolAnswersRootsAndSamplingRequests(t *testing.T) {
 			want:    "echo: summarise this",
 		},
 		{
-			name:    "no roots handler",
-			tool:    "list_roots",
-			wantErr: "no roots handler configured",
+			// A client with no roots handler declares no roots capability, so
+			// the server refuses to ask rather than asking what it cannot answer.
+			name:        "no roots handler",
+			tool:        "list_roots",
+			wantMissing: "roots",
 		},
 		{
 			name:    "a failing roots handler",
@@ -137,9 +142,9 @@ func TestCallToolAnswersRootsAndSamplingRequests(t *testing.T) {
 			wantErr: "roots unavailable",
 		},
 		{
-			name:    "no sampling handler",
-			tool:    "summarise",
-			wantErr: "no sampling handler configured",
+			name:        "no sampling handler",
+			tool:        "summarise",
+			wantMissing: "sampling",
 		},
 	}
 	for _, tt := range tests {
@@ -148,6 +153,12 @@ func TestCallToolAnswersRootsAndSamplingRequests(t *testing.T) {
 			c := connectInProcess(t, newInputServer(&calls), "", tt.options...)
 
 			result, err := c.CallTool(t.Context(), mcp.CallToolRequest{Params: mcp.CallToolParams{Name: tt.tool}})
+			if tt.wantMissing != "" {
+				require.ErrorContains(t, err, tt.wantMissing)
+				assert.True(t, mcp.IsMissingRequiredClientCapability(err), "want the server's -32021, got %v", err)
+				assert.Equal(t, int32(1), calls.Load(), "the server refuses once, the client does not retry")
+				return
+			}
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.ErrorContains(t, err, "fulfilling input request")

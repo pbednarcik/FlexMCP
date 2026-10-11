@@ -16,9 +16,16 @@ import (
 // has to start. Protocol version 2026-07-28 reserves the code and asks for
 // the elicitation through a multi round-trip request instead, so the code is
 // chosen per request, as for resourceNotFoundCode.
+//
+// mcp.MissingRequiredClientCapabilityError, from resolveMultiRoundTrip or
+// from a handler itself, is -32021 carrying the required capabilities.
 func handlerError(ctx context.Context, id any, err error) *requestError {
 	if required, ok := asURLElicitationRequired(err); ok && !mcp.IsModernProtocol(RequestProtocolVersion(ctx)) {
 		details := required.JSONRPCError().Error
+		return &requestError{id: id, code: details.Code, err: err, data: details.Data}
+	}
+	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
+		details := missing.JSONRPCError().Error
 		return &requestError{id: id, code: details.Code, err: err, data: details.Data}
 	}
 	return &requestError{id: id, code: mcp.INTERNAL_ERROR, err: err}

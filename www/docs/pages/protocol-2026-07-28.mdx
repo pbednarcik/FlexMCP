@@ -107,14 +107,14 @@ carry whatever your handler needs to pick up where it left off. It is the right
 place for a continuation token; it is not a place for secrets, since the client
 can read it.
 
-Against a client using an earlier revision, mcp-go issues the
-`elicitation/create` that client understands and re-invokes your handler with
-the answer. You do not write that path.
-
-`RequestSampling`, `RequestElicitation`, and `RequestRoots` still exist, but
-return an error when the client speaks `2026-07-28` or later, where the pattern
-was removed. In-process servers are unaffected, since they call the handler
-directly rather than sending a message.
+The server never asks for what the client cannot answer. Each input request
+needs a capability the request declared in its `_meta`: `elicitation` (with
+`url` for URL mode), `sampling` (with `tools` when the request carries tools),
+or `roots`. A client that did not declare it gets error `-32021` instead,
+whose `data.requiredCapabilities` names the set it would need. A client on an
+earlier revision cannot answer an input request at all, and the server sends
+no requests of its own, so that call fails with
+`server.ErrInputRequiresModernClient`.
 
 ### Subscriptions
 

@@ -168,25 +168,86 @@ func clientSupportsMultiRoundTrip(ctx context.Context) bool {
 }
 
 // resolveMultiRoundTrip passes an input_required result through to a client
-// that understands the multi round-trip pattern, and refuses it for one that
-// predates protocol version 2026-07-28: with ErrLoadShedding when the handler
-// asked nothing and only wants a retry, ErrInputRequiresModernClient otherwise.
+// that understands the multi round-trip pattern and declared the capabilities
+// its input requests need, and refuses it otherwise: a modern client that
+// lacks a capability gets mcp.MissingRequiredClientCapabilityError naming the
+// set the request would need; a client that predates protocol version
+// 2026-07-28 gets ErrLoadShedding when the handler asked nothing and only
+// wants a retry, ErrInputRequiresModernClient otherwise.
 func resolveMultiRoundTrip[T any](
 	ctx context.Context,
 	result *T,
 	needsInput func(*T) (mcp.InputRequests, string, bool),
 ) (*T, error) {
-	if clientSupportsMultiRoundTrip(ctx) {
-		return result, nil
-	}
 	requests, _, pending := needsInput(result)
 	if !pending {
+		return result, nil
+	}
+	if clientSupportsMultiRoundTrip(ctx) {
+		// A server never relies on a capability the request did not declare,
+		// so it asks nothing the client could not answer.
+		required := requiredClientCapabilities(requests)
+		if clientLacks(RequestProtocolInfoFromContext(ctx), required) {
+			return nil, mcp.MissingRequiredClientCapabilityError{Required: required}
+		}
 		return result, nil
 	}
 	if len(requests) == 0 {
 		return nil, ErrLoadShedding
 	}
 	return nil, ErrInputRequiresModernClient
+}
+
+// requiredClientCapabilities is the set of client capabilities the given
+// input requests need: elicitation, with url for a URL-mode elicitation;
+// sampling, with tools when the request carries tools; roots.
+func requiredClientCapabilities(requests mcp.InputRequests) mcp.ClientCapabilities {
+	var required mcp.ClientCapabilities
+	for _, request := range requests {
+		switch request.Method {
+		case mcp.MethodElicitationCreate:
+			if required.Elicitation == nil {
+				required.Elicitation = &mcp.ElicitationCapability{}
+			}
+			if request.Elicitation != nil && request.Elicitation.Mode == mcp.ElicitationModeURL {
+				required.Elicitation.URL = &struct{}{}
+			}
+		case mcp.MethodSamplingCreateMessage:
+			if required.Sampling == nil {
+				required.Sampling = &mcp.SamplingCapability{}
+			}
+			if request.Sampling != nil && (len(request.Sampling.Tools) > 0 || request.Sampling.ToolChoice != nil) {
+				required.Sampling.Tools = &struct{}{}
+			}
+		case mcp.MethodListRoots:
+			if required.Roots == nil {
+				required.Roots = &struct {
+					ListChanged bool `json:"listChanged,omitempty"`
+				}{}
+			}
+		}
+	}
+	return required
+}
+
+// clientLacks reports whether the capabilities a request declared fall short
+// of required. A declared elicitation with no modes means form mode only.
+func clientLacks(info *RequestProtocolInfo, required mcp.ClientCapabilities) bool {
+	declared := &mcp.ClientCapabilities{}
+	if info != nil && info.ClientCapabilities != nil {
+		declared = info.ClientCapabilities
+	}
+	if required.Elicitation != nil {
+		if declared.Elicitation == nil || (required.Elicitation.URL != nil && declared.Elicitation.URL == nil) {
+			return true
+		}
+	}
+	if required.Sampling != nil {
+		if declared.Sampling == nil || (required.Sampling.Tools != nil && declared.Sampling.Tools == nil) {
+			return true
+		}
+	}
+	return required.Roots != nil && declared.Roots == nil
 }
 
 // callToolResultNeedsInput reports whether a tools/call result asks the client

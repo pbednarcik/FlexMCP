@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -251,31 +252,35 @@ func TestHeaderMismatchErrorRoundTripsThroughJSONRPC(t *testing.T) {
 	assert.Equal(t, err.Error(), mismatch.Reason)
 }
 
-func TestMissingRequiredClientCapabilityErrorCarriesCapabilityOverTheWire(t *testing.T) {
-	err := MissingRequiredClientCapabilityError{Capability: "elicitation"}
-	assert.EqualError(t, err, `missing required client capability: "elicitation"`)
+func TestMissingRequiredClientCapabilityErrorCarriesTheRequiredSetOverTheWire(t *testing.T) {
+	required := ClientCapabilities{Elicitation: &ElicitationCapability{URL: &struct{}{}}}
+	err := MissingRequiredClientCapabilityError{Required: required}
+	assert.EqualError(t, err, "missing required client capability: elicitation.url")
 
 	wrapped := fmt.Errorf("tools/call: %w", err)
 	assert.True(t, errors.Is(wrapped, MissingRequiredClientCapabilityError{}))
 	assert.True(t, IsMissingRequiredClientCapability(wrapped))
 	assert.False(t, IsMissingRequiredClientCapability(HeaderMismatchError{}))
 
-	// Over the wire the capability travels in the error data, which arrives
-	// as a decoded map.
-	details := JSONRPCErrorDetails{
-		Code:    MISSING_REQUIRED_CLIENT_CAPABILITY,
-		Message: err.Error(),
-		Data:    map[string]any{"capability": "elicitation"},
-	}
+	// The JSON-RPC form carries the required set as data.requiredCapabilities
+	// (BaseProtocol.md row 28); decoded on the far side it comes back typed.
+	rendered := err.JSONRPCError()
+	assert.Equal(t, MISSING_REQUIRED_CLIENT_CAPABILITY, rendered.Error.Code)
+	wire, marshalErr := json.Marshal(rendered.Error)
+	require.NoError(t, marshalErr)
+	assert.Contains(t, string(wire), `"requiredCapabilities":{"elicitation":{"url":{}}}`)
+	var details JSONRPCErrorDetails
+	require.NoError(t, json.Unmarshal(wire, &details))
 	var decoded MissingRequiredClientCapabilityError
 	require.True(t, errors.As(details.AsError(), &decoded))
-	assert.Equal(t, "elicitation", decoded.Capability)
+	require.NotNil(t, decoded.Required.Elicitation)
+	assert.NotNil(t, decoded.Required.Elicitation.URL)
 
 	// Without data the error is still typed, just anonymous.
 	details.Data = nil
-	decoded = MissingRequiredClientCapabilityError{Capability: "stale"}
+	decoded = MissingRequiredClientCapabilityError{Required: required}
 	require.True(t, errors.As(details.AsError(), &decoded))
-	assert.Empty(t, decoded.Capability)
+	assert.Equal(t, ClientCapabilities{}, decoded.Required)
 }
 
 func TestAsErrorURLElicitationRequiredWithoutData(t *testing.T) {
