@@ -731,9 +731,19 @@ func stdioPipes(t *testing.T, mcpServer *MCPServer) (send func(line string), out
 			}
 		}
 	}()
-	return func(line string) {
-		go func() { _, _ = stdinWriter.Write([]byte(line + "\n")) }()
-	}, messages
+	// One writer goroutine keeps the lines in the order they were sent, which
+	// a goroutine per line does not; it is off the test's goroutine so a
+	// stalled read loop fails a test by timeout rather than blocking it.
+	lines := make(chan string, 64)
+	go func() {
+		for line := range lines {
+			if _, err := stdinWriter.Write([]byte(line + "\n")); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() { close(lines) })
+	return func(line string) { lines <- line }, messages
 }
 
 // awaitMessage returns the next message matching want, skipping others.
