@@ -227,3 +227,113 @@ func TestCallToolParamsPreserveRawArgumentsAlongsideRoundTripFields(t *testing.T
 	assert.Contains(t, string(encoded), "9007199254740993", "raw arguments survive")
 	assert.Contains(t, string(encoded), "step=2")
 }
+
+func TestInputRequestRefusesMissingOrMalformedParams(t *testing.T) {
+	// A request built without its parameters is caught before it reaches the
+	// wire rather than being sent as "params": null.
+	_, err := json.Marshal(InputRequest{Method: MethodElicitationCreate})
+	require.ErrorContains(t, err, "missing elicitation params")
+	_, err = json.Marshal(InputRequest{Method: MethodSamplingCreateMessage})
+	require.ErrorContains(t, err, "missing sampling params")
+
+	tests := []struct {
+		name string
+		wire string
+		want string
+	}{
+		{"not an object", `[]`, "cannot unmarshal"},
+		{"elicitation params of the wrong shape", `{"method":"elicitation/create","params":"nope"}`, "input request elicitation/create"},
+		{"sampling params of the wrong shape", `{"method":"sampling/createMessage","params":[1]}`, "input request sampling/createMessage"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var request InputRequest
+			require.ErrorContains(t, json.Unmarshal([]byte(tt.wire), &request), tt.want)
+		})
+	}
+}
+
+func TestInputResponseVariantsRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		method   MCPMethod
+		response InputResponse
+		wire     string
+		check    func(t *testing.T, decoded InputResponse)
+	}{
+		{
+			name:   "sampling",
+			method: MethodSamplingCreateMessage,
+			response: NewSamplingInputResponse(CreateMessageResult{
+				Role: RoleAssistant, Content: NewTextContent("hi"),
+				Model: "test-model",
+			}),
+			wire: `{"model":"test-model","role":"assistant","content":{"type":"text","text":"hi"}}`,
+			check: func(t *testing.T, decoded InputResponse) {
+				require.NotNil(t, decoded.Sampling)
+				assert.Equal(t, "test-model", decoded.Sampling.Model)
+				assert.Equal(t, RoleAssistant, decoded.Sampling.Role)
+			},
+		},
+		{
+			name:     "roots",
+			method:   MethodListRoots,
+			response: NewRootsInputResponse(ListRootsResult{Roots: []Root{{URI: "file:///tmp", Name: "tmp"}}}),
+			wire:     `{"roots":[{"uri":"file:///tmp","name":"tmp"}]}`,
+			check: func(t *testing.T, decoded InputResponse) {
+				require.NotNil(t, decoded.Roots)
+				assert.Equal(t, []Root{{URI: "file:///tmp", Name: "tmp"}}, decoded.Roots.Roots)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tt.response)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.wire, string(encoded))
+
+			var decoded InputResponse
+			require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+			// Until it is paired with its request the response is forwarded
+			// verbatim.
+			forwarded, err := json.Marshal(decoded)
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.wire, string(forwarded))
+
+			require.NoError(t, decoded.DecodeFor(tt.method))
+			tt.check(t, decoded)
+		})
+	}
+}
+
+func TestInputResponseDecodeForRefusals(t *testing.T) {
+	var empty InputResponse
+	assert.NoError(t, empty.DecodeFor(MethodElicitationCreate), "nothing to decode")
+	encoded, err := json.Marshal(empty)
+	require.NoError(t, err)
+	assert.Equal(t, "null", string(encoded))
+
+	var scalar InputResponse
+	require.NoError(t, json.Unmarshal([]byte(`"not an object"`), &scalar))
+	for _, method := range []MCPMethod{MethodElicitationCreate, MethodSamplingCreateMessage, MethodListRoots} {
+		assert.ErrorContains(t, scalar.DecodeFor(method), "input response "+string(method))
+	}
+	assert.ErrorContains(t, scalar.DecodeFor(MethodToolsCall), `unsupported input response method "tools/call"`)
+}
+
+func TestInputResponsesDecodeForNamesTheFailingID(t *testing.T) {
+	requests := InputRequests{
+		"where": NewRootsInputRequest(),
+		"guess": NewSamplingInputRequest(CreateMessageParams{MaxTokens: 1}),
+	}
+
+	var responses InputResponses
+	require.NoError(t, json.Unmarshal([]byte(`{"where":{"roots":[]},"guess":5}`), &responses))
+
+	err := responses.DecodeFor(requests)
+	require.ErrorContains(t, err, `input response "guess"`)
+	assert.ErrorContains(t, err, "sampling/createMessage")
+}

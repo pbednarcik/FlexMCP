@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -207,4 +208,28 @@ func TestNewInitializeResult(t *testing.T) {
 	assert.Equal(t, capabilities, result.Capabilities)
 	assert.Equal(t, serverInfo, result.ServerInfo)
 	assert.Equal(t, instructions, result.Instructions)
+}
+
+func TestGetTextFromContentAcceptsTypedAndDecodedContent(t *testing.T) {
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"text","text":"from the wire"}`), &decoded))
+
+	tests := []struct {
+		name    string
+		content any
+		want    string
+	}{
+		{"typed text", NewTextContent("typed"), "typed"},
+		{"decoded text", decoded, "from the wire"},
+		{"plain string", "plain", "plain"},
+		{"decoded non-text", map[string]any{"type": "image"}, "map[type:image]"},
+		{"decoded text without a text field", map[string]any{"type": "text"}, "map[type:text]"},
+		{"anything else", 42, "42"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, GetTextFromContent(tt.content))
+		})
+	}
 }

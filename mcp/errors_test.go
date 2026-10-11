@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -229,4 +231,59 @@ func TestJSONRPCErrorDetails_AsError_URLElicitationRequired(t *testing.T) {
 	require.Equal(t, 1, len(urlErr.Elicitations))
 	require.Equal(t, "123", urlErr.Elicitations[0].ElicitationID)
 	require.Equal(t, "https://example.com/auth", urlErr.Elicitations[0].URL)
+}
+
+func TestHeaderMismatchErrorRoundTripsThroughJSONRPC(t *testing.T) {
+	err := HeaderMismatchError{Header: "MCP-Protocol-Version", Reason: "header 2025-11-25 disagrees with body 2026-07-28"}
+	assert.EqualError(t, err, "header mismatch: MCP-Protocol-Version: header 2025-11-25 disagrees with body 2026-07-28")
+	assert.EqualError(t, HeaderMismatchError{Reason: "missing"}, "header mismatch: missing")
+
+	wrapped := fmt.Errorf("serving request: %w", err)
+	assert.True(t, errors.Is(wrapped, HeaderMismatchError{}))
+	assert.True(t, IsHeaderMismatch(wrapped))
+	assert.False(t, IsHeaderMismatch(errors.New("other")))
+
+	// The wire carries only the message; the client still gets the typed error.
+	details := JSONRPCErrorDetails{Code: HEADER_MISMATCH, Message: err.Error()}
+	fromWire := details.AsError()
+	var mismatch HeaderMismatchError
+	require.True(t, errors.As(fromWire, &mismatch))
+	assert.Equal(t, err.Error(), mismatch.Reason)
+}
+
+func TestMissingRequiredClientCapabilityErrorCarriesCapabilityOverTheWire(t *testing.T) {
+	err := MissingRequiredClientCapabilityError{Capability: "elicitation"}
+	assert.EqualError(t, err, `missing required client capability: "elicitation"`)
+
+	wrapped := fmt.Errorf("tools/call: %w", err)
+	assert.True(t, errors.Is(wrapped, MissingRequiredClientCapabilityError{}))
+	assert.True(t, IsMissingRequiredClientCapability(wrapped))
+	assert.False(t, IsMissingRequiredClientCapability(HeaderMismatchError{}))
+
+	// Over the wire the capability travels in the error data, which arrives
+	// as a decoded map.
+	details := JSONRPCErrorDetails{
+		Code:    MISSING_REQUIRED_CLIENT_CAPABILITY,
+		Message: err.Error(),
+		Data:    map[string]any{"capability": "elicitation"},
+	}
+	var decoded MissingRequiredClientCapabilityError
+	require.True(t, errors.As(details.AsError(), &decoded))
+	assert.Equal(t, "elicitation", decoded.Capability)
+
+	// Without data the error is still typed, just anonymous.
+	details.Data = nil
+	decoded = MissingRequiredClientCapabilityError{Capability: "stale"}
+	require.True(t, errors.As(details.AsError(), &decoded))
+	assert.Empty(t, decoded.Capability)
+}
+
+func TestAsErrorURLElicitationRequiredWithoutData(t *testing.T) {
+	details := JSONRPCErrorDetails{Code: URL_ELICITATION_REQUIRED, Message: "URL elicitation required"}
+	err := details.AsError()
+
+	assert.True(t, errors.Is(err, URLElicitationRequiredError{}))
+	var typed URLElicitationRequiredError
+	require.True(t, errors.As(err, &typed))
+	assert.Empty(t, typed.Elicitations)
 }
