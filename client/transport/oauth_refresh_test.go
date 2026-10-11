@@ -82,11 +82,13 @@ func newRefreshTestHandler(t *testing.T, server *refreshServer) (*OAuthHandler, 
 		RefreshToken: "single-use",
 		ExpiresAt:    time.Now().Add(-time.Minute),
 	}))
-	return NewOAuthHandler(OAuthConfig{
+	handler := NewOAuthHandler(OAuthConfig{
 		ClientID:              "client",
 		TokenStore:            store,
 		AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
-	}), store
+	})
+	handler.SetBaseURL(server.URL + "/mcp")
+	return handler, store
 }
 
 // Callers that find the access token expired at the same time share one

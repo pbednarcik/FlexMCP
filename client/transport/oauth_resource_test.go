@@ -134,3 +134,46 @@ func TestOAuthHandler_SetBaseURLForgetsTheAdvertisedMetadata(t *testing.T) {
 		assert.ErrorContains(t, err, "does not match base URL")
 	})
 }
+
+// Discovery starts from the MCP server's URL and nowhere else: a handler
+// that does not know it does not look at the redirect origin, where a
+// metadata document naming the callback listener would otherwise make that
+// listener the resource.
+func TestOAuthHandler_DoesNotDiscoverFromTheRedirectOrigin(t *testing.T) {
+	as := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+	callbackOrigin := resourceServer(t, as.URL)
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", RedirectURI: callbackOrigin.URL + "/callback", TokenStore: NewMemoryTokenStore()})
+
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.ErrorIs(t, err, ErrResourceUnknown)
+	assert.Empty(t, handler.getResourceURL(), "the callback listener is not the resource")
+}
+
+// Every token request names the resource (RFC 8707): a refresh or a code
+// exchange on a handler that does not know the MCP server is refused, not
+// sent without one.
+func TestOAuthHandler_TokenRequestsNameTheResource(t *testing.T) {
+	server := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+	httpServer := server.start(t)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",
+	})
+
+	_, err := handler.RefreshToken(t.Context(), "refresh")
+	require.ErrorIs(t, err, ErrResourceUnknown)
+	handler.SetExpectedState("state")
+	err = handler.ProcessAuthorizationResponse(t.Context(), "code", "state", "verifier")
+	require.ErrorIs(t, err, ErrResourceUnknown)
+	server.mu.Lock()
+	assert.Empty(t, server.forms, "no token request went out without the resource")
+	server.mu.Unlock()
+
+	handler.SetBaseURL(httpServer.URL + "/mcp")
+	_, err = handler.RefreshToken(t.Context(), "refresh")
+	require.NoError(t, err)
+	_, _, _, form := server.lastTokenRequest(t)
+	assert.Equal(t, httpServer.URL+"/mcp", form.Get("resource"))
+}

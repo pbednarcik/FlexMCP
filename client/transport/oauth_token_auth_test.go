@@ -122,6 +122,7 @@ func TestOAuthHandler_TokenEndpointAuthMethod(t *testing.T) {
 				AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
 				PKCEEnabled:           true,
 			})
+			handler.SetBaseURL(server.URL + "/mcp")
 
 			exchangeCode(t, handler)
 			user, password, basic, form := as.lastTokenRequest(t)
@@ -179,6 +180,7 @@ func TestOAuthHandler_TokenEndpointAuthMethodFromRegistration(t *testing.T) {
 				AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
 				PKCEEnabled:           true,
 			})
+			handler.SetBaseURL(server.URL + "/mcp")
 			require.NoError(t, handler.RegisterClient(t.Context(), "test-client"))
 			assert.Equal(t, tt.method, handler.GetTokenEndpointAuthMethod())
 
@@ -221,6 +223,7 @@ func TestOAuthHandler_ConfiguredTokenEndpointAuthMethod(t *testing.T) {
 				AuthServerMetadataURL:   server.URL + "/.well-known/oauth-authorization-server",
 				PKCEEnabled:             true,
 			})
+			handler.SetBaseURL(server.URL + "/mcp")
 			assert.Equal(t, tt.method, handler.GetTokenEndpointAuthMethod())
 
 			exchangeCode(t, handler)
@@ -244,6 +247,7 @@ func TestOAuthHandler_BasicCredentialsAreFormEncoded(t *testing.T) {
 		AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
 		PKCEEnabled:           true,
 	})
+	handler.SetBaseURL(server.URL + "/mcp")
 
 	exchangeCode(t, handler)
 	as.mu.Lock()

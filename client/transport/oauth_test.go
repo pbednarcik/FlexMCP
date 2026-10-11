@@ -225,10 +225,7 @@ func TestOAuthHandler_GetServerMetadata_EmptyURL(t *testing.T) {
 		t.Fatalf("Expected error when getting server metadata with empty URL")
 	}
 
-	if !strings.Contains(err.Error(), "failed to extract base URL") &&
-		!strings.Contains(err.Error(), "no base URL available") {
-		t.Errorf("Expected error message to mention missing base URL, got %s", err.Error())
-	}
+	require.ErrorIs(t, err, ErrResourceUnknown, "no MCP server URL: nothing to discover from")
 }
 
 func TestOAuthError(t *testing.T) {
@@ -1039,6 +1036,7 @@ func TestOAuthHandler_RefreshToken_GitHubErrorIn200Response(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 
 	// Attempt to refresh with a "bad" token
 	ctx := t.Context()
@@ -1098,6 +1096,7 @@ func TestOAuthHandler_RefreshToken_EmptyAccessToken(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 
 	ctx := t.Context()
 	token, err := handler.RefreshToken(ctx, "test-refresh-token")
@@ -1165,6 +1164,7 @@ func TestOAuthHandler_RefreshToken_RefreshTokenRotation(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 	ctx := t.Context()
 	token1, err := handler.RefreshToken(ctx, "ghr_original")
 	require.NoError(t, err, "First refresh should succeed")
@@ -1243,6 +1243,7 @@ func TestOAuthHandler_RefreshToken_SingleUseRefreshToken(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 	ctx := t.Context()
 
 	// First use of refresh token - should succeed
@@ -1307,6 +1308,7 @@ func TestOAuthHandler_ProcessAuthorizationResponse_ErrorIn200(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 	ctx := t.Context()
 
 	// Set expected state
@@ -1366,6 +1368,7 @@ func TestOAuthHandler_RefreshToken_KeepsOldRefreshToken(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 	ctx := t.Context()
 
 	originalRefreshToken := "ghr_original_refresh_token"
@@ -1421,6 +1424,7 @@ func TestOAuthHandler_RefreshToken_ProperHTTP400Error(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 	ctx := t.Context()
 
 	// Attempt refresh
@@ -2288,6 +2292,7 @@ func TestOAuthHandler_ProcessAuthorizationResponse_201Created(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 	ctx := t.Context()
 
 	const state = "test-state"
@@ -2342,6 +2347,7 @@ func TestOAuthHandler_RefreshToken_201Created(t *testing.T) {
 	}
 
 	handler := NewOAuthHandler(config)
+	handler.SetBaseURL(server.URL + "/mcp")
 
 	token, err := handler.RefreshToken(t.Context(), "old-refresh-token")
 	require.NoError(t, err, "refresh token exchange should succeed for HTTP 201 Created")

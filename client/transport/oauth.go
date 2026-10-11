@@ -52,10 +52,10 @@ var (
 	// leads to another: credentials belong to the issuer that gave them, so
 	// the client has to register again.
 	ErrClientRegisteredElsewhere = errors.New("the client is registered with another authorization server; register again")
-	// ErrResourceUnknown is returned when an authorization flow would start
-	// without knowing the MCP server it is for: neither a base URL (set by
-	// the transports, or SetBaseURL) nor protected resource metadata named
-	// it, and the resource parameter cannot be sent.
+	// ErrResourceUnknown is returned when discovery, an authorization flow or
+	// a token request would start without knowing the MCP server it is for:
+	// no base URL (set by the transports, or SetBaseURL) names it, so there
+	// is nothing to discover from and no resource parameter to send.
 	ErrResourceUnknown = errors.New("the MCP server to authorize for is not known: set its URL before starting authorization")
 )
 
@@ -419,13 +419,15 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, refreshToken string) (*
 		return nil, fmt.Errorf("failed to get server metadata: %w", err)
 	}
 
+	// RFC 8707: every token request names the resource.
+	resourceURL := h.getResourceURL()
+	if resourceURL == "" {
+		return nil, ErrResourceUnknown
+	}
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
-	// RFC 8707: Include resource parameter on refresh requests
-	if resourceURL := h.getResourceURL(); resourceURL != "" {
-		data.Set("resource", resourceURL)
-	}
+	data.Set("resource", resourceURL)
 
 	req, err := h.newTokenRequest(ctx, metadata, data)
 	if err != nil {
@@ -878,16 +880,16 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		protectedResourceMetadataURL = h.config.ProtectedResourceMetadataURL
 	}
 	validateIssuer := !h.config.SkipIssuerMetadataValidation
+	baseURL := h.baseURL
+	h.metadataMu.Unlock()
+
 	// RFC 8707: the resource parameter names the MCP server on every
 	// authorization and token request, whether or not the authorization
 	// server supports it. Protected resource metadata may name the resource
 	// below; until it does, and on every path where there is none, the MCP
-	// server's own URL is the resource. Only the URL the handler was given
-	// counts: extractBaseURL's fallback to the redirect URI names the
-	// callback listener, which is no resource.
-	resourceURL := h.baseURL
-	baseURL, baseURLErr := h.extractBaseURL()
-	h.metadataMu.Unlock()
+	// server's own URL is the resource. Without one, the authorization and
+	// token requests refuse with ErrResourceUnknown.
+	resourceURL := baseURL
 
 	// If AuthServerMetadataURL is explicitly provided, use it directly
 	if authServerMetadataURL != "" {
@@ -898,9 +900,12 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
 	}
 
-	// Always extract base URL for fallback scenarios
-	if baseURLErr != nil {
-		return metadataDiscoveryResult{}, fmt.Errorf("failed to extract base URL: %w", baseURLErr)
+	// Discovery from here starts from the MCP server's URL and nowhere
+	// else: the redirect URI names the callback listener, which is no
+	// resource, and a metadata document found at its origin must not make
+	// it one.
+	if baseURL == "" {
+		return metadataDiscoveryResult{}, ErrResourceUnknown
 	}
 
 	// Determine the protected resource metadata URL with priority:
@@ -1282,29 +1287,6 @@ func authorizationServerMetadataURLs(issuerURL string) []string {
 	return urls
 }
 
-// extractBaseURL extracts the base URL from the first request
-func (h *OAuthHandler) extractBaseURL() (string, error) {
-	// If we have a base URL from a previous request, use it
-	if h.baseURL != "" {
-		return h.baseURL, nil
-	}
-
-	// Otherwise, we need to infer it from the redirect URI
-	if h.config.RedirectURI == "" {
-		return "", fmt.Errorf("no base URL available and no redirect URI provided")
-	}
-
-	// Parse the redirect URI to extract the authority
-	parsedURL, err := url.Parse(h.config.RedirectURI)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse redirect URI: %w", err)
-	}
-
-	// Use the scheme and host from the redirect URI
-	baseURL := fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host)
-	return baseURL, nil
-}
-
 // GetServerMetadata is a public wrapper for getServerMetadata
 func (h *OAuthHandler) GetServerMetadata(ctx context.Context) (*AuthServerMetadata, error) {
 	return h.getServerMetadata(ctx)
@@ -1546,18 +1528,19 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 		return fmt.Errorf("%w: the code is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, issuer, metadata.Issuer)
 	}
 
+	// RFC 8707: every token request names the resource.
+	resourceURL := h.getResourceURL()
+	if resourceURL == "" {
+		return ErrResourceUnknown
+	}
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
 	data.Set("redirect_uri", h.config.RedirectURI)
+	data.Set("resource", resourceURL)
 
 	if codeVerifier != "" {
 		data.Set("code_verifier", codeVerifier)
-	}
-
-	// RFC 8707: Include resource parameter in token exchange
-	if resourceURL := h.getResourceURL(); resourceURL != "" {
-		data.Set("resource", resourceURL)
 	}
 
 	req, err := h.newTokenRequest(ctx, metadata, data)
