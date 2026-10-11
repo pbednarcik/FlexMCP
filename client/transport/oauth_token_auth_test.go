@@ -14,11 +14,13 @@ import (
 )
 
 // tokenAuthServer is an authorization server that lists supported as its
-// token endpoint authentication methods, answers registration with
-// registration, and records every token request.
+// token endpoint authentication methods and codeChallengeMethods as its PKCE
+// methods, answers registration with registration, and records every token
+// request.
 type tokenAuthServer struct {
-	supported    []string
-	registration map[string]any
+	supported            []string
+	codeChallengeMethods []string
+	registration         map[string]any
 
 	mu             sync.Mutex
 	authorizations []string
@@ -38,6 +40,7 @@ func (s *tokenAuthServer) start(t *testing.T) *httptest.Server {
 				TokenEndpoint:                     server.URL + "/token",
 				RegistrationEndpoint:              server.URL + "/register",
 				TokenEndpointAuthMethodsSupported: s.supported,
+				CodeChallengeMethodsSupported:     s.codeChallengeMethods,
 			})
 		case "/register":
 			w.WriteHeader(http.StatusCreated)

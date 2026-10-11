@@ -28,7 +28,6 @@ func TestNewOAuthSSEClientAuthorizesEveryRequest(t *testing.T) {
 		RedirectURI: "http://localhost:8085/callback",
 		Scopes:      []string{"mcp.read"},
 		TokenStore:  tokenStore,
-		PKCEEnabled: true,
 	})
 	require.NoError(t, err)
 	defer c.Close()
@@ -116,7 +115,6 @@ func TestNewOAuthStreamableHttpClient(t *testing.T) {
 		RedirectURI: "http://localhost:8085/callback",
 		Scopes:      []string{"mcp.read", "mcp.write"},
 		TokenStore:  tokenStore,
-		PKCEEnabled: true,
 	}
 
 	// Create client with OAuth

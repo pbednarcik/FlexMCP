@@ -24,6 +24,19 @@ const maxMetadataBodyBytes = 1 << 20 // 1 MiB
 // ErrNoToken is returned when no token is available in the token store
 var ErrNoToken = errors.New("no token available")
 
+var (
+	// ErrPKCERequired is returned when an authorization flow is started
+	// without a code challenge, or finished without the code verifier.
+	ErrPKCERequired = errors.New("PKCE is required: generate a code verifier and its S256 challenge")
+	// ErrPKCENotSupported is returned when the authorization server's metadata
+	// does not list S256 in code_challenge_methods_supported, so PKCE cannot
+	// be verified and the flow does not start.
+	ErrPKCENotSupported = errors.New("PKCE is not supported by the authorization server")
+)
+
+// pkceMethod is the only code challenge method the client uses.
+const pkceMethod = "S256"
+
 // OAuthConfig holds the OAuth configuration for the client
 type OAuthConfig struct {
 	// ClientID is the OAuth client ID
@@ -54,8 +67,18 @@ type OAuthConfig struct {
 	// per RFC9728. If set, this URL will be used to discover the authorization server.
 	// This is typically extracted from the WWW-Authenticate header's resource_metadata parameter.
 	ProtectedResourceMetadataURL string
-	// PKCEEnabled enables PKCE for the OAuth flow (recommended for public clients)
+	// PKCEEnabled used to switch PKCE on. PKCE is always on: MCP clients
+	// must implement it, with S256, and must verify that the authorization
+	// server supports it before sending the user there.
+	//
+	// Deprecated: the field has no effect. See PKCEDisabled.
 	PKCEEnabled bool
+	// PKCEDisabled turns PKCE off: no code challenge is sent, no verifier is
+	// required, and the authorization server's metadata is not checked for
+	// code_challenge_methods_supported. Turning it off weakens security and
+	// breaks the MCP authorization rules; it is meant only for an
+	// authorization server known to lack PKCE.
+	PKCEDisabled bool
 	// SkipIssuerMetadataValidation turns off the check that authorization
 	// server metadata found through protected resource metadata declares the
 	// issuer it was requested for (RFC 8414 §3.3). Turning it off weakens
@@ -1270,7 +1293,10 @@ func (h *OAuthHandler) ProcessAuthorizationResponse(ctx context.Context, code, s
 	data.Set("code", code)
 	data.Set("redirect_uri", h.config.RedirectURI)
 
-	if h.config.PKCEEnabled && codeVerifier != "" {
+	if codeVerifier == "" && !h.config.PKCEDisabled {
+		return ErrPKCERequired
+	}
+	if codeVerifier != "" {
 		data.Set("code_verifier", codeVerifier)
 	}
 
@@ -1404,11 +1430,28 @@ func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServer
 	return req, nil
 }
 
-// GetAuthorizationURL returns the URL for the authorization endpoint
+// GetAuthorizationURL returns the URL for the authorization endpoint.
+//
+// codeChallenge is the S256 challenge of the code verifier the caller will
+// hand to ProcessAuthorizationResponse (see GenerateCodeVerifier and
+// GenerateCodeChallenge). It is required, and the authorization server must
+// list S256 in its metadata, unless OAuthConfig.PKCEDisabled is set.
 func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChallenge string) (string, error) {
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get server metadata: %w", err)
+	}
+
+	if !h.config.PKCEDisabled {
+		if codeChallenge == "" {
+			return "", ErrPKCERequired
+		}
+		// OAuth 2.1 and PKCE define no other way to learn whether the server
+		// supports PKCE, so the metadata decides: without the field, or
+		// without S256 in it, the flow does not start.
+		if !slices.Contains(metadata.CodeChallengeMethodsSupported, pkceMethod) {
+			return "", fmt.Errorf("%w: %q lists %v in code_challenge_methods_supported", ErrPKCENotSupported, metadata.Issuer, metadata.CodeChallengeMethodsSupported)
+		}
 	}
 
 	// Store the state for later validation
@@ -1424,9 +1467,9 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 		params.Set("scope", strings.Join(h.config.Scopes, " "))
 	}
 
-	if h.config.PKCEEnabled && codeChallenge != "" {
+	if codeChallenge != "" {
 		params.Set("code_challenge", codeChallenge)
-		params.Set("code_challenge_method", "S256")
+		params.Set("code_challenge_method", pkceMethod)
 	}
 
 	// RFC 8707: Include resource parameter in authorization URL

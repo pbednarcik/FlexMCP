@@ -336,9 +336,10 @@ func TestOAuthHandler_SetExpectedState_CrossRequestScenario(t *testing.T) {
 
 	// Mock the server metadata for the first handler
 	handler1.serverMetadata = &AuthServerMetadata{
-		Issuer:                server.URL,
-		AuthorizationEndpoint: server.URL + "/authorize",
-		TokenEndpoint:         server.URL + "/token",
+		Issuer:                        server.URL,
+		AuthorizationEndpoint:         server.URL + "/authorize",
+		TokenEndpoint:                 server.URL + "/token",
+		CodeChallengeMethodsSupported: []string{"S256"},
 	}
 
 	// Generate state and get authorization URL (this would typically be done in the init handler)
@@ -1649,9 +1650,10 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 			case "/.well-known/oauth-authorization-server":
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"issuer":                 server.URL,
-					"authorization_endpoint": server.URL + "/authorize",
-					"token_endpoint":         server.URL + "/token",
+					"issuer":                           server.URL,
+					"authorization_endpoint":           server.URL + "/authorize",
+					"token_endpoint":                   server.URL + "/token",
+					"code_challenge_methods_supported": []string{"S256"},
 				})
 			default:
 				w.WriteHeader(http.StatusNotFound)
@@ -1663,7 +1665,6 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 			ClientID:    "test-client",
 			RedirectURI: server.URL + "/callback",
 			TokenStore:  NewMemoryTokenStore(),
-			PKCEEnabled: true,
 		}
 
 		handler := NewOAuthHandler(config)

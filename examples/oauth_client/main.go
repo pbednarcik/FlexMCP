@@ -32,7 +32,7 @@ func main() {
 		RedirectURI:  redirectURI,
 		Scopes:       []string{"mcp.read", "mcp.write"},
 		TokenStore:   tokenStore,
-		PKCEEnabled:  true, // Enable PKCE for public clients
+		// PKCE is always on: the verifier and challenge below are required.
 	}
 
 	// Create the client with OAuth support

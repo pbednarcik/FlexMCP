@@ -411,6 +411,8 @@ func isAuthError(err error) bool {
 }
 ```
 
+PKCE is always on, as the MCP authorization rules require of a client: `GetAuthorizationURL` needs the S256 challenge of a code verifier (`GenerateCodeVerifier`, `GenerateCodeChallenge`) and refuses an authorization server whose metadata does not list `S256` in `code_challenge_methods_supported`; `ProcessAuthorizationResponse` needs the verifier back. `OAuthConfig.PKCEDisabled` switches all of that off for an authorization server known to lack PKCE, at the cost of the protection; `PKCEEnabled` is deprecated and has no effect.
+
 ### StreamableHTTP Connection Pooling
 
 ```go
