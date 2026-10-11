@@ -802,8 +802,8 @@ headers unconditionally would be a security regression. Browser-based MCP
 clients hosted on a different origin than the server will be blocked unless
 you opt in.
 
-Use `server.WithStreamableHTTPCORS` (or `server.WithSSECORS` for the SSE
-transport) to enable CORS handling. The transport then answers preflight
+Use `server.WithStreamableHTTPCORS` to enable CORS handling. The transport
+then answers preflight
 (`OPTIONS`) requests directly and decorates simple cross-origin responses
 with the appropriate `Access-Control-*` headers, including a `Vary: Origin`
 so downstream caches behave correctly.
@@ -824,9 +824,9 @@ Available `CORSOption` helpers:
 | Option                          | Purpose                                                                |
 |---------------------------------|------------------------------------------------------------------------|
 | `WithCORSAllowedOrigins(...)`   | Origins permitted to access the server. `"*"` allows any origin.       |
-| `WithCORSAllowedMethods(...)`   | Methods advertised in preflight (defaults to `GET, POST, DELETE, OPTIONS`). |
-| `WithCORSAllowedHeaders(...)`   | Request headers advertised in preflight (defaults to `Content-Type, Mcp-Session-Id, Authorization`). |
-| `WithCORSExposedHeaders(...)`   | Response headers exposed to JavaScript (defaults to `Mcp-Session-Id`). |
+| `WithCORSAllowedMethods(...)`   | Methods advertised in preflight (defaults to `GET, POST, DELETE, OPTIONS`, so a legacy client's `GET` or `DELETE` reaches the server's `405` rather than a CORS error). |
+| `WithCORSAllowedHeaders(...)`   | Request headers advertised in preflight (defaults to `Content-Type, Authorization, Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Session-Id`, the headers a client of either era sends; a client using `Mcp-Param-*` headers needs them listed here). |
+| `WithCORSExposedHeaders(...)`   | Response headers exposed to JavaScript (defaults to `Mcp-Session-Id`; this server sends none, so the default is for a legacy client that looks for it). |
 | `WithCORSAllowCredentials()`    | Sends `Access-Control-Allow-Credentials: true`.                        |
 | `WithCORSMaxAge(seconds)`       | Sets `Access-Control-Max-Age` for preflight caching.                   |
 

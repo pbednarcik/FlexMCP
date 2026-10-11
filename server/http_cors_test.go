@@ -146,9 +146,9 @@ func TestStreamableHTTP_CORS_Preflight(t *testing.T) {
 }
 
 // With no allowed headers configured, the preflight advertises the headers a
-// client of this server can send. Last-Event-ID is not one: streams are not
-// resumable, and a modern request carrying it is refused.
-func TestStreamableHTTP_CORS_PreflightDefaultHeadersOmitLastEventID(t *testing.T) {
+// client of either era sends (Transports.md rows 27, 31 and 35), and not
+// Last-Event-ID, which a modern request may not carry (row 42).
+func TestStreamableHTTP_CORS_PreflightDefaultHeaders(t *testing.T) {
 	t.Parallel()
 
 	mcp := NewMCPServer("test", "1.0.0")
@@ -168,7 +168,7 @@ func TestStreamableHTTP_CORS_PreflightDefaultHeadersOmitLastEventID(t *testing.T
 	t.Cleanup(func() { _ = resp.Body.Close() })
 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
-	assert.Equal(t, "Content-Type, Mcp-Session-Id, Authorization", resp.Header.Get("Access-Control-Allow-Headers"))
+	assert.Equal(t, "Content-Type, Authorization, Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Session-Id", resp.Header.Get("Access-Control-Allow-Headers"))
 }
 
 func TestStreamableHTTP_CORS_PreflightDisallowedOrigin(t *testing.T) {

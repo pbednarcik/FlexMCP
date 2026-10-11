@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // CORSConfig holds the Cross-Origin Resource Sharing configuration of the
@@ -22,18 +24,22 @@ type CORSConfig struct {
 	AllowedOrigins []string
 
 	// AllowedMethods is the list of HTTP methods allowed for cross-origin
-	// requests. When empty, GET, POST, DELETE and OPTIONS are advertised.
+	// requests. When empty, GET, POST, DELETE and OPTIONS are advertised, so
+	// that a legacy client's GET or DELETE reaches the server's 405 rather
+	// than a CORS error.
 	AllowedMethods []string
 
 	// AllowedHeaders is the list of headers a client may send with the
-	// actual request. When empty, a sensible MCP-aware default of
-	// Content-Type, Mcp-Session-Id and Authorization is
-	// advertised.
+	// actual request. When empty, the headers a client of either era sends
+	// are advertised: Content-Type, Authorization, Mcp-Protocol-Version,
+	// Mcp-Method, Mcp-Name and Mcp-Session-Id. A client that sends
+	// Mcp-Param-* headers needs them listed here.
 	AllowedHeaders []string
 
 	// ExposedHeaders is the list of response headers the browser is
 	// permitted to access from JavaScript. When empty, Mcp-Session-Id is
-	// exposed by default so clients can read newly-issued session IDs.
+	// exposed, for a legacy client that looks for it; this server sends
+	// no session ID.
 	ExposedHeaders []string
 
 	// AllowCredentials, when true, causes the server to send
@@ -177,7 +183,7 @@ func (c *CORSConfig) handlePreflight(w http.ResponseWriter, r *http.Request) boo
 
 	headers := c.AllowedHeaders
 	if len(headers) == 0 {
-		headers = []string{"Content-Type", HeaderKeySessionID, "Authorization"}
+		headers = []string{"Content-Type", "Authorization", mcp.HeaderProtocolVersion, mcp.HeaderMethod, mcp.HeaderName, HeaderKeySessionID}
 	}
 	h.Set("Access-Control-Allow-Headers", strings.Join(headers, ", "))
 
