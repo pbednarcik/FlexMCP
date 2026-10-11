@@ -493,8 +493,8 @@ func TestStreamableHTTP_OAuthMetadataFeedback(t *testing.T) {
 		t.Fatal("Expected error, got nil")
 	}
 
-	// Verify the OAuthHandler was updated with the discovered URL
-	if got := transport.GetOAuthHandler().config.ProtectedResourceMetadataURL; got != expectedMetadataURL {
-		t.Errorf("Expected OAuthHandler.config.ProtectedResourceMetadataURL to be %q, got %q", expectedMetadataURL, got)
+	// Verify the OAuthHandler recorded the advertised URL
+	if got := transport.GetOAuthHandler().advertisedPRMURL; got != expectedMetadataURL {
+		t.Errorf("Expected the advertised metadata URL to be %q, got %q", expectedMetadataURL, got)
 	}
 }

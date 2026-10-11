@@ -2073,7 +2073,8 @@ func TestOAuthHandler_HandleUnauthorizedResponse(t *testing.T) {
 			})
 			handler.SetBaseURL(baseURL)
 			handler.HandleUnauthorizedResponse(tc.response)
-			assert.Equal(t, tc.want, handler.config.ProtectedResourceMetadataURL)
+			assert.Equal(t, tc.want, handler.advertisedPRMURL)
+			assert.Empty(t, handler.config.ProtectedResourceMetadataURL, "what the server advertised is not the caller's configuration")
 		})
 	}
 }
@@ -2091,7 +2092,7 @@ func TestOAuthHandler_HandleUnauthorizedResponse_NoBaseURL(t *testing.T) {
 			"Www-Authenticate": []string{`Bearer resource_metadata="https://example.com/prm"`},
 		},
 	})
-	assert.Equal(t, "", handler.config.ProtectedResourceMetadataURL)
+	assert.Equal(t, "", handler.advertisedPRMURL)
 }
 
 // TestOAuthHandler_HandleUnauthorizedResponse_RelativeBaseURL verifies that
@@ -2109,7 +2110,7 @@ func TestOAuthHandler_HandleUnauthorizedResponse_RelativeBaseURL(t *testing.T) {
 			"Www-Authenticate": []string{`Bearer resource_metadata="also-just-a-path"`},
 		},
 	})
-	assert.Equal(t, "", handler.config.ProtectedResourceMetadataURL)
+	assert.Equal(t, "", handler.advertisedPRMURL)
 }
 
 // TestOAuthHandler_GetServerMetadata_RejectsMismatchedResourceFromAdvertisedPRM

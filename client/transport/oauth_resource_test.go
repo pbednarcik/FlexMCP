@@ -1,6 +1,9 @@
 package transport
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -70,4 +73,64 @@ func TestOAuthHandler_RefusesToStartWithoutAKnownResource(t *testing.T) {
 	parsed, err := url.Parse(authURL)
 	require.NoError(t, err)
 	assert.Equal(t, httpServer.URL+"/mcp", parsed.Query().Get("resource"))
+}
+
+// resourceServer is an MCP server that serves its protected resource
+// metadata, naming itself as the resource and as its authorization server
+// the one given, at the well-known path and at /prm, the one it advertises.
+func resourceServer(t *testing.T, authorizationServer string) *httptest.Server {
+	t.Helper()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-protected-resource" && r.URL.Path != "/prm" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": server.URL, "authorization_servers": []string{authorizationServer}})
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// resourceOf returns the resource parameter of the authorization URL the
+// handler builds.
+func resourceOf(t *testing.T, handler *OAuthHandler) string {
+	t.Helper()
+	authURL, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.NoError(t, err)
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+	return parsed.Query().Get("resource")
+}
+
+// A metadata URL a server advertised in its challenge belongs to that
+// server: a change of the MCP server's URL forgets it, so discovery for the
+// new server starts from its own well-known path. A metadata URL the caller
+// configured is the caller's and stays.
+func TestOAuthHandler_SetBaseURLForgetsTheAdvertisedMetadata(t *testing.T) {
+	as := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+	first := resourceServer(t, as.URL)
+	second := resourceServer(t, as.URL)
+
+	t.Run("advertised", func(t *testing.T) {
+		handler := NewOAuthHandler(OAuthConfig{ClientID: "client", RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+		handler.SetBaseURL(first.URL)
+		handler.HandleUnauthorizedResponse(&http.Response{Header: http.Header{"Www-Authenticate": []string{`Bearer resource_metadata="` + first.URL + `/prm"`}}})
+		assert.Equal(t, first.URL, resourceOf(t, handler))
+
+		handler.SetBaseURL(second.URL)
+		assert.Equal(t, second.URL, resourceOf(t, handler), "discovery for the second server does not read the first's advertised metadata")
+	})
+
+	t.Run("configured", func(t *testing.T) {
+		handler := NewOAuthHandler(OAuthConfig{ClientID: "client", RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore(), ProtectedResourceMetadataURL: first.URL + "/prm"})
+		handler.SetBaseURL(first.URL)
+		assert.Equal(t, first.URL, resourceOf(t, handler))
+
+		handler.SetBaseURL(second.URL)
+		_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+		require.Error(t, err, "the configured metadata names the first server, which is not the second")
+		assert.ErrorContains(t, err, "does not match base URL")
+	})
 }

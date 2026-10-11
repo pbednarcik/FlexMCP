@@ -248,11 +248,16 @@ type OAuthHandler struct {
 	// holding the lock.
 	metadataOnce *sync.Once
 	baseURL      string
-	// metadataMu protects baseURL, serverMetadata, metadataFetchErr,
-	// metadataOnce, config.ProtectedResourceMetadataURL, and resourceURL.
-	// It MUST NOT be held across HTTP I/O — see getServerMetadata for the
-	// snapshot/publish discipline that keeps network round trips out of
-	// the critical section (#871).
+	// advertisedPRMURL is the protected resource metadata URL the MCP server
+	// advertised in its challenge (RFC 9728 §5.1), validated against baseURL;
+	// it belongs to that server, so a change of baseURL forgets it, where
+	// config.ProtectedResourceMetadataURL is the caller's and stays.
+	advertisedPRMURL string
+	// metadataMu protects baseURL, advertisedPRMURL, serverMetadata,
+	// metadataFetchErr, metadataOnce, config.ProtectedResourceMetadataURL,
+	// resourceURL and resourceScopes. It MUST NOT be held across HTTP I/O —
+	// see getServerMetadata for the snapshot/publish discipline that keeps
+	// network round trips out of the critical section (#871).
 	metadataMu  sync.Mutex
 	resourceURL string // RFC 8707 resource indicator; set from protected resource metadata
 	// resourceScopes is scopes_supported from the protected resource
@@ -509,12 +514,25 @@ func (h *OAuthHandler) SetProtectedResourceMetadataURL(u string) {
 	h.metadataMu.Lock()
 	defer h.metadataMu.Unlock()
 	h.config.ProtectedResourceMetadataURL = u
+	h.forgetDiscoveryLocked()
+}
+
+// setAdvertisedPRMURL records the metadata URL the MCP server advertised,
+// already validated against the base URL, and discovers again from it.
+func (h *OAuthHandler) setAdvertisedPRMURL(u string) {
+	h.metadataMu.Lock()
+	defer h.metadataMu.Unlock()
+	h.advertisedPRMURL = u
+	h.forgetDiscoveryLocked()
+}
+
+// forgetDiscoveryLocked discards what discovery found, so the next call
+// discovers again. A fresh sync.Once is installed, rather than the old one
+// mutated, so a Do in flight on the old one cannot publish a stale result
+// (getServerMetadata checks the pointer). metadataMu is held by the caller.
+func (h *OAuthHandler) forgetDiscoveryLocked() {
 	h.serverMetadata = nil
 	h.metadataFetchErr = nil
-	// Install a fresh sync.Once so the next getServerMetadata call
-	// triggers re-discovery. Replacing the pointer (rather than mutating
-	// the pointed-to value) keeps this safe against concurrent Do calls
-	// that captured the previous instance.
 	h.metadataOnce = &sync.Once{}
 	h.resourceURL = ""
 	h.resourceScopes = nil
@@ -553,7 +571,7 @@ func (h *OAuthHandler) HandleUnauthorizedResponse(resp *http.Response) {
 			if err := h.validateAdvertisedPRMURL(candidate); err != nil {
 				continue
 			}
-			h.SetProtectedResourceMetadataURL(candidate)
+			h.setAdvertisedPRMURL(candidate)
 			return
 		}
 	}
@@ -664,7 +682,8 @@ func (h *OAuthHandler) GetClientSecret() string {
 // SetBaseURL sets the URL of the MCP server, which discovery starts from and
 // which the resource parameter names. The transports set it when they are
 // built; a handler used on its own needs it before authorization starts. A
-// change discards what discovery found, so the next call discovers again.
+// change discards what discovery found, and the metadata URL the previous
+// server advertised, so the next call discovers again for the new server.
 func (h *OAuthHandler) SetBaseURL(baseURL string) {
 	h.metadataMu.Lock()
 	defer h.metadataMu.Unlock()
@@ -672,11 +691,8 @@ func (h *OAuthHandler) SetBaseURL(baseURL string) {
 		return
 	}
 	h.baseURL = baseURL
-	h.serverMetadata = nil
-	h.metadataFetchErr = nil
-	h.metadataOnce = &sync.Once{}
-	h.resourceURL = ""
-	h.resourceScopes = nil
+	h.advertisedPRMURL = ""
+	h.forgetDiscoveryLocked()
 }
 
 // GetExpectedState returns the expected state value (for testing purposes)
@@ -859,7 +875,12 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	// Snapshot config and base URL under the lock; release before any HTTP I/O.
 	h.metadataMu.Lock()
 	authServerMetadataURL := h.config.AuthServerMetadataURL
-	protectedResourceMetadataURL := h.config.ProtectedResourceMetadataURL
+	// The metadata URL the server advertised in its challenge, validated
+	// against the base URL, comes first; else the one the caller configured.
+	protectedResourceMetadataURL := h.advertisedPRMURL
+	if protectedResourceMetadataURL == "" {
+		protectedResourceMetadataURL = h.config.ProtectedResourceMetadataURL
+	}
 	validateIssuer := !h.config.SkipIssuerMetadataValidation
 	// RFC 8707: the resource parameter names the MCP server on every
 	// authorization and token request, whether or not the authorization
@@ -887,7 +908,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	}
 
 	// Determine the protected resource metadata URL with priority:
-	// 1. Explicit config (ProtectedResourceMetadataURL from RFC9728 WWW-Authenticate header)
+	// 1. Explicit: advertised in the challenge (RFC 9728 §5.1) or configured
 	// 2. Constructed from base URL
 	var protectedResourceURL string
 	explicitMetadataURL := protectedResourceMetadataURL != ""
