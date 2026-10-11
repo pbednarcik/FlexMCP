@@ -772,13 +772,23 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	baseURL, baseURLErr := h.extractBaseURL()
 	h.metadataMu.Unlock()
 
+	// RFC 8707: the resource parameter names the MCP server on every
+	// authorization and token request, whether or not the authorization
+	// server supports it. Protected resource metadata may name the resource
+	// below; until it does, and on every path where there is none, the MCP
+	// server's own URL is the resource.
+	resourceURL := ""
+	if baseURLErr == nil {
+		resourceURL = baseURL
+	}
+
 	// If AuthServerMetadataURL is explicitly provided, use it directly
 	if authServerMetadataURL != "" {
 		metadata, err := h.fetchMetadataFromURL(ctx, authServerMetadataURL)
 		if err != nil {
 			return metadataDiscoveryResult{}, err
 		}
-		return metadataDiscoveryResult{metadata: metadata}, nil
+		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
 	}
 
 	// Always extract base URL for fallback scenarios
@@ -831,7 +841,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 			// can fall through to the next candidate URL, mirroring the prior
 			// behavior where metadataFetchErr was cleared on the first success.
 			if metadata, _ := h.fetchMetadataFromURL(ctx, u); metadata != nil {
-				return metadataDiscoveryResult{metadata: metadata}, nil
+				return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
 			}
 		}
 		// If that also fails, fall back to default endpoints
@@ -839,7 +849,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		if err != nil {
 			return metadataDiscoveryResult{}, fmt.Errorf("failed to get default endpoints: %w", err)
 		}
-		return metadataDiscoveryResult{metadata: metadata}, nil
+		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
 	}
 
 	// Parse the protected resource metadata
@@ -889,13 +899,13 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		)
 	}
 
-	// RFC 8707: Capture the resource identifier for use in authorization requests.
-	// If not provided in metadata, fall back to base URL per RFC 8707 Section 2:
-	// "The client SHOULD use the base URI of the API as the resource parameter value
-	// unless specific knowledge of the resource dictates otherwise."
-	resourceURL := protectedResource.Resource
-	if resourceURL == "" {
-		resourceURL = baseURL
+	// RFC 8707: the resource identifier the metadata declares names the
+	// resource from here on; without one, the base URL stays, per RFC 8707
+	// Section 2: "The client SHOULD use the base URI of the API as the
+	// resource parameter value unless specific knowledge of the resource
+	// dictates otherwise."
+	if protectedResource.Resource != "" {
+		resourceURL = protectedResource.Resource
 	}
 
 	// If no authorization servers are specified, fall back to default endpoints

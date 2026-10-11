@@ -415,6 +415,8 @@ PKCE is always on, as the MCP authorization rules require of a client: `GetAutho
 
 Hand the callback's query to `ProcessAuthorizationCallback`: it checks the state, validates the `iss` parameter against the issuer the user was sent to (RFC 9207), rejects a response without `iss` from an authorization server that advertises it, returns the server's error response as an `OAuthError`, and then exchanges the code. `ProcessAuthorizationResponse` is the same flow for a response that carries no `iss`. When the callback is handled by another handler instance, carry the issuer over with `GetExpectedIssuer` and `SetExpectedIssuer`, as you carry the state with `SetExpectedState`.
 
+Every authorization and token request carries the RFC 8707 `resource` parameter naming the MCP server: the identifier its protected resource metadata declares, or else the server's URL, whether or not the authorization server supports the parameter.
+
 ### StreamableHTTP Connection Pooling
 
 ```go
