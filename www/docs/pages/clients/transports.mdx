@@ -490,6 +490,8 @@ func createStreamableHTTPClientWithSession() {
 
 Once the server has answered 404 for the session, every request fails with `transport.ErrSessionTerminated` until `Initialize` succeeds again. With continuous listening, the GET stream moves to the new session.
 
+This is the behaviour of the initialize-handshake era only. Protocol version 2026-07-28 has no sessions, so there a 404 is a method the server does not implement: the client reads its JSON-RPC body and the request fails with `mcp.ErrMethodNotFound`, and nothing needs reinitializing.
+
 ## SSE Client
 
 SSE (Server-Sent Events) clients provide real-time communication with servers.

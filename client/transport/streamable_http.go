@@ -876,8 +876,11 @@ func (c *StreamableHTTP) sendHTTP(
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	// universal handling for session terminated
-	if resp.StatusCode == http.StatusNotFound {
+	// Before protocol version 2026-07-28 a 404 means the server no longer
+	// knows the session. On 2026-07-28 there are no sessions: a 404 is a
+	// method the server does not implement, and its JSON-RPC body is the
+	// answer, which the caller reads like any other error status.
+	if resp.StatusCode == http.StatusNotFound && !c.isModern() {
 		resp.Body.Close()
 		// A 404 for the GET stream may only mean that the server doesn't
 		// offer it, so listenForever decides.

@@ -571,8 +571,9 @@ func TestStreamableHTTP_DiscoverOnALegacyConnectionAfterTheSessionEnded(t *testi
 	assert.NotContains(t, server.entries(), "server/discover ", "server/discover went out without a session ID")
 }
 
-// On 2026-07-28 no session ID is sent, so a 404 says nothing about the
-// session ID the transport may still hold, and requests go on.
+// On 2026-07-28 there are no sessions, so a 404 is not a session the server
+// forgot: it is a method the server does not implement, and its JSON-RPC
+// body (-32601) is the answer. Nothing ends, and requests go on.
 func TestStreamableHTTP_NotFoundOnTheModernProtocol(t *testing.T) {
 	var calls atomic.Int32
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -580,12 +581,16 @@ func TestStreamableHTTP_NotFoundOnTheModernProtocol(t *testing.T) {
 			ID json.RawMessage `json:"id"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&message)
-		if calls.Add(1) == 1 {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}`, message.ID)
+		switch calls.Add(1) {
+		case 1:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}`, message.ID)
+		case 2:
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[]}}`, message.ID)
+		}
 	}))
 	defer httpServer.Close()
 	trans, err := NewStreamableHTTP(httpServer.URL, WithSession("s1"))
@@ -593,6 +598,9 @@ func TestStreamableHTTP_NotFoundOnTheModernProtocol(t *testing.T) {
 	defer trans.Close()
 	trans.SetProtocolVersion(mcp.ProtocolVersion20260728)
 
-	assert.ErrorIs(t, listToolsOn(trans), ErrSessionTerminated)
+	assert.ErrorIs(t, listToolsOn(trans), mcp.ErrMethodNotFound, "the body is the answer")
+	err = listToolsOn(trans)
+	require.Error(t, err, "a 404 without a body is still an error")
+	assert.NotErrorIs(t, err, ErrSessionTerminated)
 	assert.NoError(t, listToolsOn(trans))
 }
