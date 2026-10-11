@@ -86,9 +86,6 @@ const (
 	// https://modelcontextprotocol.io/docs/concepts/elicitation
 	MethodElicitationCreate MCPMethod = "elicitation/create"
 
-	// MethodNotificationElicitationComplete notifies when a URL mode elicitation completes.
-	MethodNotificationElicitationComplete MCPMethod = "notifications/elicitation/complete"
-
 	// MethodListRoots requests roots list from the client during interactions.
 	// https://modelcontextprotocol.io/specification/2025-06-18/client/roots
 	MethodListRoots MCPMethod = "roots/list"
@@ -129,6 +126,8 @@ const (
 	// https://modelcontextprotocol.io/specification/2025-03-26/server/resources#list-changed-notification
 	MethodNotificationResourcesListChanged = "notifications/resources/list_changed"
 
+	// MethodNotificationResourceUpdated notifies a client that a resource it
+	// listed in the resourceSubscriptions of subscriptions/listen has changed.
 	MethodNotificationResourceUpdated = "notifications/resources/updated"
 
 	// MethodNotificationPromptsListChanged notifies when the list of available prompt templates changes.
@@ -862,8 +861,9 @@ type UnsubscribeParams struct {
 }
 
 // ResourceUpdatedNotification is a notification from the server to the client,
-// informing it that a resource has changed and may need to be read again. This
-// should only be sent if the client previously sent a resources/subscribe request.
+// informing it that a resource has changed and may need to be read again. It is
+// only sent for a URI the client listed in the resourceSubscriptions of its
+// subscriptions/listen request.
 type ResourceUpdatedNotification struct {
 	Notification
 	Params ResourceUpdatedNotificationParams `json:"params"`
@@ -1667,14 +1667,6 @@ type Root struct {
 	Name string `json:"name,omitempty"`
 }
 
-// RootsListChangedNotification is a notification from the client to the
-// server, informing it that the list of roots has changed.
-// This notification should be sent whenever the client adds, removes, or modifies any root.
-// The server should then request an updated list of roots using the ListRootsRequest.
-type RootsListChangedNotification struct {
-	Notification
-}
-
 /* Tasks */
 
 // TasksCapability represents the task capabilities that a client or server may support.
@@ -1945,17 +1937,4 @@ type SamplingCapability struct {
 	// (sampling with tools). Servers MUST NOT send those fields unless this
 	// sub-capability is declared.
 	Tools *struct{} `json:"tools,omitempty"`
-}
-
-// NewElicitationCompleteNotification creates a new elicitation complete notification.
-func NewElicitationCompleteNotification(elicitationID string) JSONRPCNotification {
-	return JSONRPCNotification{
-		JSONRPC: JSONRPC_VERSION,
-		Method:  string(MethodNotificationElicitationComplete),
-		Params: NotificationParams{
-			AdditionalFields: map[string]any{
-				"elicitationId": elicitationID,
-			},
-		},
-	}
 }

@@ -287,24 +287,6 @@ mcpServer.AddTool(
 )
 ```
 
-### Completion Notification
-
-For URL mode, once the user completes the out-of-band flow (e.g., submits a form in their browser and the server receives a callback), notify the client that the elicitation is complete:
-
-```go
-// Send after the server receives the callback from the browser
-err := mcpServer.SendElicitationComplete(ctx, session, elicitationID)
-if err != nil {
-    log.Printf("Failed to send completion notification: %v", err)
-}
-```
-
-You can also construct the notification directly:
-
-```go
-notification := mcp.NewElicitationCompleteNotification("elicitation-id-123")
-```
-
 ### URLElicitationRequiredError
 
 When a tool requires authorization that hasn't been set up, you can return a `URLElicitationRequiredError` to signal that the client should initiate a URL elicitation flow:

@@ -26,7 +26,6 @@ var (
 	_ ClientNotification = (*CancelledNotification)(nil)
 	_ ClientNotification = (*ProgressNotification)(nil)
 	_ ClientNotification = (*InitializedNotification)(nil)
-	_ ClientNotification = (*RootsListChangedNotification)(nil)
 )
 
 // ClientResult types
