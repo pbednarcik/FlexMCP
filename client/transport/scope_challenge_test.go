@@ -217,6 +217,24 @@ func TestStreamableHTTP_PrefersTheBearerChallengeOverDPoP(t *testing.T) {
 	assert.Equal(t, []string{"a"}, parseBearerChallenge([]string{`DPoP scope="a"`}).scopes, "a DPoP challenge alone is still read")
 }
 
+// After the scheme comes a token68 or auth-params, and only an auth-param
+// carries '=' (RFC 9110 §11.2): a bare token right after the scheme is that
+// challenge's token68, padded or not, even one spelled like a scheme name.
+func TestParseChallengesKeepsAToken68WithItsScheme(t *testing.T) {
+	for _, header := range []string{
+		`Negotiate abc, Bearer scope="x"`,
+		`Negotiate abc==, Bearer scope="x"`,
+		`Negotiate Bearer, Bearer scope="x"`,
+	} {
+		challenges := parseChallenges([]string{header})
+		require.Len(t, challenges, 2, header)
+		assert.Equal(t, "Negotiate", challenges[0].scheme, header)
+		assert.Empty(t, challenges[0].params, header)
+		assert.Equal(t, "Bearer", challenges[1].scheme, header)
+		assert.Equal(t, map[string]string{"scope": "x"}, challenges[1].params, header)
+	}
+}
+
 func TestParseChallenges(t *testing.T) {
 	challenges := parseChallenges([]string{
 		`Basic realm="legacy, old", Bearer Scope="a b", error=invalid_token, realm="say \"hi\""`,

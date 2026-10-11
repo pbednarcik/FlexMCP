@@ -15,17 +15,25 @@ type challenge struct {
 
 // parseChallenges splits WWW-Authenticate header values into challenges, in
 // order. A header may carry several, comma-separated, each a scheme token
-// followed by name=value parameters (values tokens or quoted-strings, with
-// backslash escapes); a token not followed by '=' starts the next challenge.
-// A parameter whose value is malformed, as a quoted-string with no closing
-// quote, is dropped rather than read in part, and a token68 credential is
-// skipped.
+// followed by a token68 credential or by name=value parameters (values
+// tokens or quoted-strings, with backslash escapes). Only a parameter
+// carries '=' (RFC 9110 §11.2), so a bare token right after the scheme is
+// that challenge's token68, padded or not, and a bare token anywhere else
+// starts the next challenge. A token68 is skipped, as no challenge the
+// client acts on carries one; a parameter whose value is malformed, as a
+// quoted-string with no closing quote, is dropped rather than read in part.
 func parseChallenges(headers []string) []challenge {
 	var challenges []challenge
 	for _, header := range headers {
 		i := 0
+		// afterScheme: the last item read was a scheme name, with no ','
+		// since, so a bare token here is its token68.
+		afterScheme := false
 		for i < len(header) {
 			if !isAuthTokenChar(header[i]) {
+				if header[i] == ',' {
+					afterScheme = false
+				}
 				i++
 				continue
 			}
@@ -39,10 +47,16 @@ func parseChallenges(headers []string) []challenge {
 				j++
 			}
 			if j >= len(header) || header[j] != '=' {
-				challenges = append(challenges, challenge{scheme: name, params: make(map[string]string)})
+				if afterScheme {
+					afterScheme = false // the challenge's token68, skipped
+				} else {
+					challenges = append(challenges, challenge{scheme: name, params: make(map[string]string)})
+					afterScheme = true
+				}
 				i = j
 				continue
 			}
+			afterScheme = false
 			k := j + 1
 			for k < len(header) && (header[k] == ' ' || header[k] == '\t') {
 				k++
