@@ -30,6 +30,10 @@ type StdioServer struct {
 	errLogger   *log.Logger
 	contextFunc StdioContextFunc
 
+	// session is the one client's session: stdio serves a single client for
+	// the life of the server, and each server has its own.
+	session *stdioSession
+
 	// Thread-safe tool call processing
 	toolCallQueue  chan *toolCallWork
 	workerWg       sync.WaitGroup
@@ -155,7 +159,7 @@ func WithQueueSize(size int) StdioOption {
 	}
 }
 
-// stdioSession is a static client session, since stdio has only one client.
+// stdioSession is the session of a stdio server's one client.
 type stdioSession struct {
 	clientInfoStore // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
 
@@ -184,22 +188,16 @@ var (
 	_ SessionWithClientInfo = (*stdioSession)(nil)
 )
 
-var stdioSessionInstance = stdioSession{
-	notifications: make(chan mcp.JSONRPCNotification, 100),
-}
-
 // NewStdioServer creates a new stdio server wrapper around an MCPServer.
-// It initializes the server with a default error logger that discards all output.
+// Errors are logged to stderr until SetErrorLogger or WithErrorLogger says
+// otherwise; stdout carries nothing but protocol messages.
 func NewStdioServer(server *MCPServer) *StdioServer {
 	return &StdioServer{
-		server: server,
-		errLogger: log.New(
-			os.Stderr,
-			"",
-			log.LstdFlags,
-		), // Default to discarding logs
-		workerPoolSize: 5,   // Default worker pool size
-		queueSize:      100, // Default queue size
+		server:         server,
+		errLogger:      log.New(os.Stderr, "", log.LstdFlags),
+		session:        &stdioSession{notifications: make(chan mcp.JSONRPCNotification, 100)},
+		workerPoolSize: 5,
+		queueSize:      100,
 	}
 }
 
@@ -222,7 +220,7 @@ func (s *StdioServer) SetContextFunc(fn StdioContextFunc) {
 func (s *StdioServer) handleNotifications(ctx context.Context, stdout io.Writer) {
 	for {
 		select {
-		case notification := <-stdioSessionInstance.notifications:
+		case notification := <-s.session.notifications:
 			if err := s.writeResponse(notification, stdout); err != nil {
 				s.errLogger.Printf("Error writing notification: %v", err)
 			}
@@ -232,33 +230,53 @@ func (s *StdioServer) handleNotifications(ctx context.Context, stdout io.Writer)
 	}
 }
 
-// processInputStream continuously reads and processes messages from the input stream.
-// It handles EOF gracefully as a normal termination condition.
-// The function returns when either:
-// - The context is cancelled (returns context.Err())
-// - EOF is encountered (returns nil)
-// - An error occurs while reading or processing messages (returns the error)
+// inputLine is one line of stdin, or the error that ended the reading.
+type inputLine struct {
+	text string
+	err  error
+}
+
+// processInputStream reads stdin line by line and processes each message.
+// It returns nil at EOF, the normal end of a stdio server (the client closes
+// stdin to shut it down), the context's error when the context ends first,
+// or the error that reading or processing hit.
+//
+// One goroutine reads for the life of the loop, a bounded number of lines
+// ahead of processing. A blocking read cannot be interrupted, so when the
+// context ends first that goroutine stays in its read until stdin closes;
+// the loop itself returns at once.
 func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Reader, stdout io.Writer) error {
+	lines := make(chan inputLine, 64)
+	go func() {
+		for {
+			text, err := reader.ReadString('\n')
+			select {
+			case lines <- inputLine{text: text, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		line, err := s.readNextLine(ctx, reader)
-		if err != nil {
-			if err == io.EOF {
-				return nil
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case line := <-lines:
+			if line.err != nil {
+				if line.err == io.EOF {
+					return nil
+				}
+				s.errLogger.Printf("Error reading input: %v", line.err)
+				return line.err
 			}
-			s.errLogger.Printf("Error reading input: %v", err)
-			return err
-		}
-
-		if err := s.processMessage(ctx, line, stdout); err != nil {
-			if err == io.EOF {
-				return nil
+			if err := s.processMessage(ctx, line.text, stdout); err != nil {
+				s.errLogger.Printf("Error handling message: %v", err)
+				return err
 			}
-			s.errLogger.Printf("Error handling message: %v", err)
-			return err
 		}
 	}
 }
@@ -304,32 +322,6 @@ func (s *StdioServer) answer(id any, response mcp.JSONRPCMessage, writer io.Writ
 	}
 }
 
-// readNextLine reads a single line from the input reader in a context-aware manner.
-// It uses channels to make the read operation cancellable via context.
-// Returns the read line and any error encountered. If the context is cancelled,
-// returns an empty string and the context's error. EOF is returned when the input
-// stream is closed.
-func (s *StdioServer) readNextLine(ctx context.Context, reader *bufio.Reader) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-
-	resultCh := make(chan result, 1)
-
-	go func() {
-		line, err := reader.ReadString('\n')
-		resultCh <- result{line: line, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return "", nil
-	case res := <-resultCh:
-		return res.line, res.err
-	}
-}
-
 // Listen starts listening for JSON-RPC messages on the provided input and writes responses to the provided output.
 // It runs until the context is cancelled or an error occurs.
 // Returns an error if there are issues with reading input or writing output.
@@ -341,12 +333,12 @@ func (s *StdioServer) Listen(
 	// Initialize the tool call queue
 	s.toolCallQueue = make(chan *toolCallWork, s.queueSize)
 
-	// Set a static client context since stdio only has one client
-	if err := s.server.RegisterSession(ctx, &stdioSessionInstance); err != nil {
+	// The one client's session, for the life of this Listen.
+	if err := s.server.RegisterSession(ctx, s.session); err != nil {
 		return fmt.Errorf("register session: %w", err)
 	}
-	defer s.server.UnregisterSession(ctx, stdioSessionInstance.SessionID())
-	ctx = s.server.WithContext(ctx, &stdioSessionInstance)
+	defer s.server.UnregisterSession(ctx, s.session.SessionID())
+	ctx = s.server.WithContext(ctx, s.session)
 
 	// Add in any custom context.
 	if s.contextFunc != nil {

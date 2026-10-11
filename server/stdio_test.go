@@ -708,3 +708,77 @@ func TestStdioSendsNothingForACancelledRequest(t *testing.T) {
 		}
 	}
 }
+
+// stdioPipes starts a stdio server on pipes for the life of the test and
+// returns a sender for stdin lines and a channel of the JSON messages written
+// to stdout.
+func stdioPipes(t *testing.T, mcpServer *MCPServer) (send func(line string), out <-chan map[string]any) {
+	t.Helper()
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	stdioServer := NewStdioServer(mcpServer)
+	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go func() { _ = stdioServer.Listen(ctx, stdinReader, stdoutWriter) }()
+	messages := make(chan map[string]any, 64)
+	go func() {
+		scanner := bufio.NewScanner(stdoutReader)
+		for scanner.Scan() {
+			var msg map[string]any
+			if json.Unmarshal(scanner.Bytes(), &msg) == nil {
+				messages <- msg
+			}
+		}
+	}()
+	return func(line string) {
+		go func() { _, _ = stdinWriter.Write([]byte(line + "\n")) }()
+	}, messages
+}
+
+// awaitMessage returns the next message matching want, skipping others.
+func awaitMessage(t *testing.T, out <-chan map[string]any, want func(map[string]any) bool, describe string) map[string]any {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-out:
+			if want(msg) {
+				return msg
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", describe)
+			return nil
+		}
+	}
+}
+
+// TestStdioServersInOneProcessAreIndependent pins that each stdio server owns
+// its session: a notification one MCPServer sends reaches the stdout of the
+// stdio server serving it, and never another's.
+func TestStdioServersInOneProcessAreIndependent(t *testing.T) {
+	noisy := NewMCPServer("noisy", "1.0.0", WithToolCapabilities(true))
+	quiet := NewMCPServer("quiet", "1.0.0", WithToolCapabilities(true))
+	sendNoisy, outNoisy := stdioPipes(t, noisy)
+	_, outQuiet := stdioPipes(t, quiet)
+
+	// A request marks the session initialized, which is when broadcasts reach it.
+	sendNoisy(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}`)
+	awaitMessage(t, outNoisy, func(m map[string]any) bool { return m["id"] == float64(1) }, "the tools/list response")
+
+	const changes = 20
+	for i := range changes {
+		noisy.AddTool(mcp.NewTool(fmt.Sprintf("tool-%d", i)), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("ok"), nil
+		})
+	}
+	isListChanged := func(m map[string]any) bool { return m["method"] == string(mcp.MethodNotificationToolsListChanged) }
+	for i := range changes {
+		awaitMessage(t, outNoisy, isListChanged, fmt.Sprintf("tools/list_changed %d on the noisy server's stdout", i+1))
+	}
+	select {
+	case msg := <-outQuiet:
+		t.Fatalf("the quiet server's stdout carried another server's message: %v", msg)
+	default:
+	}
+}
