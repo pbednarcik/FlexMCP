@@ -167,3 +167,53 @@ func TestOAuthHandler_RequestsScopesSupportedWhenNothingElseSaysWhich(t *testing
 		})
 	}
 }
+
+// A header may carry several challenges on one line (RFC 9110 §11.6.1). The
+// Bearer challenge is read wherever it stands, and scope, error and
+// resource_metadata all come from that one challenge.
+func TestStreamableHTTP_ReadsTheBearerChallengeAmongOthers(t *testing.T) {
+	server := challengingServer(t, http.StatusForbidden, `Basic realm="legacy", Bearer error="insufficient_scope", scope="files:write", resource_metadata="http://example.com/.well-known/oauth-protected-resource"`)
+	trans, err := NewStreamableHTTP(server.URL)
+	require.NoError(t, err)
+
+	for _, err := range collect(sendOn(t, trans)) {
+		var authErr *AuthorizationRequiredError
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, "insufficient_scope", authErr.ErrorCode)
+		assert.Equal(t, []string{"files:write"}, authErr.Scopes)
+		assert.Equal(t, "http://example.com/.well-known/oauth-protected-resource", authErr.ResourceMetadataURL)
+	}
+}
+
+// With two Bearer challenges, the first is the one acted on, whole: a later
+// challenge's parameters do not replace its own.
+func TestStreamableHTTP_TakesTheFirstBearerChallengeWhole(t *testing.T) {
+	server := challengingServer(t, http.StatusUnauthorized, `Bearer realm="a", scope="x", resource_metadata="http://a.example/prm", Bearer realm="b", scope="y", resource_metadata="http://b.example/prm"`)
+	trans, err := NewStreamableHTTP(server.URL)
+	require.NoError(t, err)
+
+	request, _ := sendOn(t, trans)
+	var authErr *AuthorizationRequiredError
+	require.ErrorAs(t, request, &authErr)
+	assert.Equal(t, []string{"x"}, authErr.Scopes)
+	assert.Equal(t, "http://a.example/prm", authErr.ResourceMetadataURL)
+}
+
+func TestParseChallenges(t *testing.T) {
+	challenges := parseChallenges([]string{
+		`Basic realm="legacy, old", Bearer Scope="a b", error=invalid_token, realm="say \"hi\""`,
+		`Digest abc==, DPoP algs="ES256"`,
+		`Bearer resource_metadata="https://truncated`,
+	})
+	require.Len(t, challenges, 5)
+	assert.Equal(t, "Basic", challenges[0].scheme)
+	assert.Equal(t, map[string]string{"realm": "legacy, old"}, challenges[0].params)
+	assert.Equal(t, "Bearer", challenges[1].scheme)
+	assert.Equal(t, map[string]string{"scope": "a b", "error": "invalid_token", "realm": `say "hi"`}, challenges[1].params)
+	assert.Equal(t, "Digest", challenges[2].scheme)
+	assert.Empty(t, challenges[2].params, "a token68 credential is no parameter")
+	assert.Equal(t, "DPoP", challenges[3].scheme)
+	assert.Equal(t, map[string]string{"algs": "ES256"}, challenges[3].params)
+	assert.Empty(t, challenges[4].params, "a truncated quoted-string is dropped, not read in part")
+	assert.Empty(t, parseChallenges([]string{"", "   "}))
+}

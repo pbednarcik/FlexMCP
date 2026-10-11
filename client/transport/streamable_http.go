@@ -434,100 +434,19 @@ var ErrOAuthAuthorizationRequired = errors.New("no valid token available, author
 // ErrAuthorizationRequired is a sentinel error for authorization required (401)
 var ErrAuthorizationRequired = errors.New("authorization required")
 
-// parseAuthParams parses the auth-params from a WWW-Authenticate header value
-// per RFC 7235. It skips the auth-scheme (first token) and returns a map of
-// key=value pairs, keys in lower case since parameter names compare
-// case-insensitively (RFC 9110 §11.2). Values may be tokens or
-// quoted-strings (with backslash escaping per RFC 7230 §3.2.6).
+// parseAuthParams returns the parameters of the first challenge in a
+// WWW-Authenticate header value, names in lower case (RFC 9110 §11.2).
 func parseAuthParams(header string) map[string]string {
-	params := make(map[string]string)
-
-	// Skip leading whitespace
-	header = strings.TrimSpace(header)
-	if header == "" {
-		return params
+	challenges := parseChallenges([]string{header})
+	if len(challenges) == 0 {
+		return make(map[string]string)
 	}
-
-	// Skip the auth-scheme (first token before space)
-	_, rest, found := strings.Cut(header, " ")
-	if !found {
-		return params // auth-scheme only, no params
-	}
-	rest = strings.TrimSpace(rest)
-
-	for rest != "" {
-		rest = strings.TrimSpace(rest)
-		if rest == "" {
-			break
-		}
-
-		// Parse key
-		eqIdx := strings.IndexByte(rest, '=')
-		if eqIdx == -1 {
-			break
-		}
-		key := strings.ToLower(strings.TrimSpace(rest[:eqIdx]))
-		rest = strings.TrimLeft(rest[eqIdx+1:], " \t")
-
-		// Parse value: quoted-string or token
-		var value string
-		if len(rest) > 0 && rest[0] == '"' {
-			value, rest = parseQuotedString(rest)
-		} else {
-			// Token value: ends at comma, space, or end of string
-			end := strings.IndexAny(rest, ", \t")
-			if end == -1 {
-				value = rest
-				rest = ""
-			} else {
-				value = rest[:end]
-				rest = rest[end:]
-			}
-		}
-
-		params[key] = value
-
-		// Skip comma separator
-		rest = strings.TrimSpace(rest)
-		if len(rest) > 0 && rest[0] == ',' {
-			rest = rest[1:]
-		}
-	}
-
-	return params
+	return challenges[0].params
 }
 
-// parseQuotedString parses a quoted-string value per RFC 7230 §3.2.6.
-// Input must start with a double-quote. Returns the unescaped value and
-// the remaining unparsed input after the closing quote.
-func parseQuotedString(s string) (value, rest string) {
-	if len(s) == 0 || s[0] != '"' {
-		return "", s
-	}
-	s = s[1:] // skip opening quote
-
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '\\':
-			if i+1 < len(s) {
-				b.WriteByte(s[i+1])
-				i++ // skip escaped char
-			}
-		case '"':
-			return b.String(), s[i+1:]
-		default:
-			b.WriteByte(s[i])
-		}
-	}
-	// No closing quote found; return what we have
-	return b.String(), ""
-}
-
-// extractResourceMetadataURL extracts the resource_metadata parameter from WWW-Authenticate headers
-// per RFC9728 Section 5.1. Scans all provided header values since a response may contain multiple
-// WWW-Authenticate headers (RFC 9110). Returns empty string if not found.
-// Example: Bearer resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource"
+// extractResourceMetadataURL returns the resource_metadata parameter of the
+// first challenge, in any of the WWW-Authenticate header values, that has
+// one (RFC 9728 §5.1), or "".
 func extractResourceMetadataURL(wwwAuthHeaders []string) string {
 	for _, header := range wwwAuthHeaders {
 		for _, u := range extractResourceMetadataURLs(header) {
@@ -539,49 +458,16 @@ func extractResourceMetadataURL(wwwAuthHeaders []string) string {
 	return ""
 }
 
-// extractResourceMetadataURLs returns every resource_metadata parameter
-// value from a single WWW-Authenticate header value per RFC 9728 §5.1,
-// in the order they appear. Returns an empty slice when the header is
-// empty or no such parameters are present. Parameter names are matched
-// case-insensitively per RFC 9110 §11.2; both quoted-string and token
-// value forms are accepted. Multiple occurrences are possible when a
-// single header value contains several Bearer challenges each carrying
-// their own resource_metadata — an attacker-controlled first candidate
-// must not mask a legitimate later one.
+// extractResourceMetadataURLs returns every resource_metadata parameter in
+// a single WWW-Authenticate header value, one per challenge that carries
+// one, in order (RFC 9728 §5.1). A header can carry several challenges each
+// with its own, and an attacker-controlled first candidate must not mask a
+// legitimate later one, so the caller validates each in turn.
 func extractResourceMetadataURLs(header string) []string {
-	const target = "resource_metadata"
 	var out []string
-	i := 0
-	for i < len(header) {
-		// Advance to the next token start.
-		for i < len(header) && !isAuthTokenChar(header[i]) {
-			i++
-		}
-		nameStart := i
-		for i < len(header) && isAuthTokenChar(header[i]) {
-			i++
-		}
-		name := header[nameStart:i]
-		// Skip optional whitespace between the name and '='.
-		for i < len(header) && (header[i] == ' ' || header[i] == '\t') {
-			i++
-		}
-		if i >= len(header) || header[i] != '=' {
-			// Name was a scheme token (e.g. "Bearer"), not a parameter.
-			continue
-		}
-		// Skip '=' and optional whitespace.
-		i++
-		for i < len(header) && (header[i] == ' ' || header[i] == '\t') {
-			i++
-		}
-		value, next, ok := parseAuthParamValue(header, i)
-		i = next
-		if !ok {
-			continue
-		}
-		if value != "" && strings.EqualFold(name, target) {
-			out = append(out, value)
+	for _, c := range parseChallenges([]string{header}) {
+		if u := c.params["resource_metadata"]; u != "" {
+			out = append(out, u)
 		}
 	}
 	return out
