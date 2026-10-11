@@ -186,6 +186,7 @@ func (s *MCPServer) handleSubscriptionsListen(
 	if streams, ok := session.(SessionWithSubscriptionStreams); ok {
 		streams.OpenSubscriptionStream(id, allowed)
 		defer streams.CloseSubscriptionStream(id)
+		s.closeStreamOnCancel(ctx, id, streams)
 	}
 
 	// Acknowledge the subscription so the client learns which of its requested
@@ -218,6 +219,32 @@ func (s *MCPServer) handleSubscriptionsListen(
 	meta := result.EnsureResultMeta()
 	meta.SetSubscriptionID(id)
 	return result, nil
+}
+
+// closeStreamOnCancel arranges for a cancel by notification to close the
+// stream before the notification is answered, by wrapping the request's
+// in-flight cancel. Nothing more is sent for a cancelled request
+// (Transports.md row 6); left to the listen goroutine's deferred close, a
+// broadcast could still go out tagged with the stream's id between the
+// cancel and the goroutine waking, as a Windows CI run showed. The deferred
+// close covers every other way the stream ends.
+func (s *MCPServer) closeStreamOnCancel(ctx context.Context, id any, streams SessionWithSubscriptionStreams) {
+	key, ok := inflightKey(ctx, id)
+	if !ok {
+		return
+	}
+	stored, ok := s.inflightCancels.Load(key)
+	if !ok {
+		return
+	}
+	cancel, ok := stored.(context.CancelFunc)
+	if !ok {
+		return
+	}
+	s.inflightCancels.Store(key, context.CancelFunc(func() {
+		streams.CloseSubscriptionStream(id)
+		cancel()
+	}))
 }
 
 // registerListenSession makes a session serving a subscriptions/listen stream
