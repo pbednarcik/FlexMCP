@@ -199,6 +199,24 @@ func TestStreamableHTTP_TakesTheFirstBearerChallengeWhole(t *testing.T) {
 	assert.Equal(t, "http://a.example/prm", authErr.ResourceMetadataURL)
 }
 
+// A resource server that also supports DPoP sends both challenges (RFC 9449
+// §7.2). This client presents Bearer tokens, so the Bearer challenge is the
+// one acted on wherever it stands; a DPoP challenge counts only where there
+// is no Bearer one.
+func TestStreamableHTTP_PrefersTheBearerChallengeOverDPoP(t *testing.T) {
+	server := challengingServer(t, http.StatusForbidden, `DPoP algs="ES256", Bearer error="insufficient_scope", scope="files:write"`)
+	trans, err := NewStreamableHTTP(server.URL)
+	require.NoError(t, err)
+
+	for _, err := range collect(sendOn(t, trans)) {
+		var authErr *AuthorizationRequiredError
+		require.ErrorAs(t, err, &authErr, "the Bearer challenge's insufficient_scope is the one that counts")
+		assert.Equal(t, "insufficient_scope", authErr.ErrorCode)
+		assert.Equal(t, []string{"files:write"}, authErr.Scopes)
+	}
+	assert.Equal(t, []string{"a"}, parseBearerChallenge([]string{`DPoP scope="a"`}).scopes, "a DPoP challenge alone is still read")
+}
+
 func TestParseChallenges(t *testing.T) {
 	challenges := parseChallenges([]string{
 		`Basic realm="legacy, old", Bearer Scope="a b", error=invalid_token, realm="say \"hi\""`,

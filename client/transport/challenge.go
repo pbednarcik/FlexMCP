@@ -77,26 +77,39 @@ type bearerChallenge struct {
 	errorDescription string
 }
 
-// isBearerScheme reports whether a challenge's scheme is one the client acts
-// on: Bearer, or DPoP, which carries the same parameters (RFC 9449).
-func isBearerScheme(scheme string) bool {
-	return strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "DPoP")
-}
-
-// parseBearerChallenge reads the first Bearer challenge among the
-// WWW-Authenticate header values, wherever on its line it stands, and takes
-// every parameter from that one challenge.
-func parseBearerChallenge(headers []string) bearerChallenge {
+// bearerChallenges returns the challenges the client can act on, in the
+// order to try them: the Bearer ones as they stood, wherever on their lines,
+// then the DPoP ones, which carry the same parameters (RFC 9449). A resource
+// server supporting both sends both (RFC 9449 §7.2); this client presents
+// Bearer tokens, so the Bearer challenge is the one that counts when there
+// is one.
+func bearerChallenges(headers []string) []bearerChallenge {
+	var bearer, dpop []bearerChallenge
 	for _, c := range parseChallenges(headers) {
-		if !isBearerScheme(c.scheme) {
+		var into *[]bearerChallenge
+		switch {
+		case strings.EqualFold(c.scheme, "Bearer"):
+			into = &bearer
+		case strings.EqualFold(c.scheme, "DPoP"):
+			into = &dpop
+		default:
 			continue
 		}
-		return bearerChallenge{
+		*into = append(*into, bearerChallenge{
 			resourceMetadata: c.params["resource_metadata"],
 			scopes:           strings.Fields(c.params["scope"]),
 			errorCode:        c.params["error"],
 			errorDescription: c.params["error_description"],
-		}
+		})
+	}
+	return append(bearer, dpop...)
+}
+
+// parseBearerChallenge reads the first challenge the client acts on (see
+// bearerChallenges) and takes every parameter from that one challenge.
+func parseBearerChallenge(headers []string) bearerChallenge {
+	if challenges := bearerChallenges(headers); len(challenges) > 0 {
+		return challenges[0]
 	}
 	return bearerChallenge{}
 }
