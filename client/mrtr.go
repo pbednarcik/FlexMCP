@@ -248,7 +248,7 @@ func (c *Client) callToolOnce(
 	if err != nil {
 		return nil, err
 	}
-	return result, checkResultType(result.ResultType)
+	return result, c.checkResultType(result.ResultType)
 }
 
 // getPromptOnce issues a single prompts/get request.
@@ -269,7 +269,7 @@ func (c *Client) getPromptOnce(
 	if err != nil {
 		return nil, err
 	}
-	return result, checkResultType(result.ResultType)
+	return result, c.checkResultType(result.ResultType)
 }
 
 // readResourceOnce issues a single resources/read request.
@@ -290,7 +290,7 @@ func (c *Client) readResourceOnce(
 	if err != nil {
 		return nil, err
 	}
-	return result, checkResultType(result.ResultType)
+	return result, c.checkResultType(result.ResultType)
 }
 
 // callToolNeedsInput reports whether a tools/call result asks for more input.

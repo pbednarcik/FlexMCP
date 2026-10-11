@@ -29,13 +29,15 @@ func (t ResultType) IsComplete() bool {
 	return t == "" || t == ResultTypeComplete
 }
 
-// Known reports whether the result type is one a client accepts: the core
-// values, an absent one, and the Tasks extension's. Any other value is
-// invalid.
-func (t ResultType) Known() bool {
+// Accepted reports whether a client accepts the result type: the core values
+// and an absent one always, the Tasks extension's only when tasks says the
+// connection declared that capability. Any other value is invalid.
+func (t ResultType) Accepted(tasks bool) bool {
 	switch t {
-	case "", ResultTypeComplete, ResultTypeInputRequired, ResultTypeTask:
+	case "", ResultTypeComplete, ResultTypeInputRequired:
 		return true
+	case ResultTypeTask:
+		return tasks
 	}
 	return false
 }

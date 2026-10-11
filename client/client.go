@@ -782,21 +782,22 @@ func (c *Client) Complete(
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
-	if err := checkResultType(result.ResultType); err != nil {
+	if err := c.checkResultType(result.ResultType); err != nil {
 		return nil, err
 	}
 
 	return &result, nil
 }
 
-// checkResultType refuses a resultType the client does not know: the values
-// a client accepts are the core ones and those of the extensions it knows,
-// and any other value is invalid rather than complete.
-func checkResultType(resultType mcp.ResultType) error {
-	if resultType.Known() {
+// checkResultType refuses a resultType the client does not accept: the
+// core values, and those of the extensions this connection declared (the
+// Tasks extension's "task" with the tasks capability); any other value is
+// invalid rather than complete.
+func (c *Client) checkResultType(resultType mcp.ResultType) error {
+	if resultType.Accepted(c.clientCapabilities.Tasks != nil) {
 		return nil
 	}
-	return fmt.Errorf("unknown resultType %q in the result", resultType)
+	return fmt.Errorf("unaccepted resultType %q in the result", resultType)
 }
 
 // RootListChanges sends a roots list-changed notification to the server.
@@ -1026,7 +1027,7 @@ func listByPage[T any](
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	if metadata, ok := any(&result).(mcp.ResultMetadata); ok {
-		if err := checkResultType(metadata.GetResultType()); err != nil {
+		if err := client.checkResultType(metadata.GetResultType()); err != nil {
 			return nil, err
 		}
 	}

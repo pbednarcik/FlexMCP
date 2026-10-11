@@ -287,7 +287,7 @@ func (c *Client) Discover(ctx context.Context, request mcp.DiscoverRequest) (*mc
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal discover result: %w", err)
 	}
-	if err := checkResultType(result.ResultType); err != nil {
+	if err := c.checkResultType(result.ResultType); err != nil {
 		return nil, err
 	}
 	return &result, nil

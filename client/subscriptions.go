@@ -84,7 +84,7 @@ func (c *Client) Listen(ctx context.Context, filter mcp.SubscriptionFilter) erro
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return fmt.Errorf("failed to unmarshal subscriptions/listen result: %w", err)
 	}
-	return checkResultType(result.ResultType)
+	return c.checkResultType(result.ResultType)
 }
 
 // ListenAsync opens a subscriptions/listen stream in the background and

@@ -67,7 +67,7 @@ func TestUnknownResultTypesAreRefused(t *testing.T) {
 
 			err := tt.call(c)
 			require.Error(t, err)
-			assert.ErrorContains(t, err, `resultType "bogus"`)
+			assert.ErrorContains(t, err, `unaccepted resultType "bogus"`)
 		})
 	}
 }
@@ -213,4 +213,28 @@ func TestCallToolRefreshesTheToolAfterAParamHeaderMismatch(t *testing.T) {
 	assert.Equal(t, "eu", server.calls[0].Get("Mcp-Param-Region"))
 	assert.Equal(t, "eu", server.calls[1].Get("Mcp-Param-Zone"))
 	assert.Empty(t, server.calls[1].Get("Mcp-Param-Region"), "the stale header is gone")
+}
+
+// The "task" result type belongs to the Tasks extension: a client accepts
+// it only on a connection where it declared that capability.
+func TestTaskResultTypeNeedsTheTasksCapability(t *testing.T) {
+	for name, options := range map[string][]ClientOption{
+		"undeclared": nil,
+		"declared":   {WithClientCapabilities(mcp.ClientCapabilities{Tasks: &mcp.TasksCapability{}})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tr := &scriptedTransport{respond: modernScript(func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+				return resultResponse(request, `{"resultType":"task","tools":[]}`), nil
+			})}
+			c := connectScripted(t, tr, options...)
+
+			_, err := c.ListTools(t.Context(), mcp.ListToolsRequest{})
+			if options == nil {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, `unaccepted resultType "task"`)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
