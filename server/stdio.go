@@ -37,6 +37,69 @@ type StdioServer struct {
 	workerPoolSize int
 	queueSize      int
 	writeMu        sync.Mutex // Protects concurrent writes
+
+	// cancelled remembers which in-flight requests the client cancelled by
+	// notification, so that nothing more is sent for them.
+	cancelled cancelledRequests
+}
+
+// cancelledRequests tracks the requests in flight on a stdio server and which
+// of them the client cancelled with notifications/cancelled. After a cancel
+// the server sends nothing more for that request, not even the error its
+// handler returns on the cancelled context: the client has stopped waiting.
+// Keyed by the JSON-RPC id as decoded from the wire, a number or a string.
+type cancelledRequests struct {
+	mu       sync.Mutex
+	inflight map[any]bool
+}
+
+// comparableID reports whether id can key the map: a JSON-RPC id is a number
+// or a string, and anything else is refused before it gets here, but a map
+// key that is not comparable would panic.
+func comparableID(id any) bool {
+	switch id.(type) {
+	case float64, string:
+		return true
+	}
+	return false
+}
+
+// start records id as in flight.
+func (c *cancelledRequests) start(id any) {
+	if !comparableID(id) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inflight == nil {
+		c.inflight = make(map[any]bool)
+	}
+	c.inflight[id] = false
+}
+
+// cancel marks an in-flight id as cancelled; an id that is not in flight is
+// ignored, as an invalid cancellation should be.
+func (c *cancelledRequests) cancel(id any) {
+	if !comparableID(id) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.inflight[id]; ok {
+		c.inflight[id] = true
+	}
+}
+
+// finish forgets id and reports whether it was cancelled while in flight.
+func (c *cancelledRequests) finish(id any) bool {
+	if !comparableID(id) {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cancelled := c.inflight[id]
+	delete(c.inflight, id)
+	return cancelled
 }
 
 // toolCallWork represents a queued tool call request
@@ -222,14 +285,22 @@ func (s *StdioServer) toolCallWorker(ctx context.Context) {
 				}()
 				return s.server.HandleMessage(work.ctx, work.message)
 			}()
-			if response != nil {
-				if err := s.writeResponse(response, work.writer); err != nil {
-					s.errLogger.Printf("Error writing tool response: %v", err)
-				}
-			}
+			s.answer(work.id, response, work.writer)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// answer writes a request's response, unless the client cancelled the
+// request while it ran, in which case nothing is sent for it.
+func (s *StdioServer) answer(id any, response mcp.JSONRPCMessage, writer io.Writer) {
+	cancelled := s.cancelled.finish(id)
+	if response == nil || cancelled {
+		return
+	}
+	if err := s.writeResponse(response, writer); err != nil {
+		s.errLogger.Printf("Error writing response: %v", err)
 	}
 }
 
@@ -335,8 +406,14 @@ func (s *StdioServer) processMessage(
 	var baseMessage struct {
 		Method string `json:"method"`
 		ID     any    `json:"id,omitempty"`
+		Params struct {
+			RequestID any `json:"requestId"`
+		} `json:"params"`
 	}
 	parsed := json.Unmarshal(rawMessage, &baseMessage) == nil
+	if parsed && baseMessage.ID != nil {
+		s.cancelled.start(baseMessage.ID)
+	}
 	if parsed && baseMessage.Method == string(mcp.MethodToolsCall) {
 		// Queue tool calls for processing by workers
 		select {
@@ -352,10 +429,7 @@ func (s *StdioServer) processMessage(
 		default:
 			// Queue is full, process synchronously as fallback
 			s.errLogger.Printf("Tool call queue full, processing synchronously")
-			response := s.handleMessage(ctx, baseMessage.ID, rawMessage)
-			if response != nil {
-				return s.writeResponse(response, writer)
-			}
+			s.answer(baseMessage.ID, s.handleMessage(ctx, baseMessage.ID, rawMessage), writer)
 			return nil
 		}
 	}
@@ -367,6 +441,12 @@ func (s *StdioServer) processMessage(
 			s.handleRequest(ctx, baseMessage.ID, rawMessage, writer)
 		})
 		return nil
+	}
+
+	// A cancellation is noted before the core acts on it, so the cancelled
+	// request's response is dropped whenever its handler returns.
+	if parsed && baseMessage.Method == string(mcp.MethodNotificationCancelled) {
+		s.cancelled.cancel(baseMessage.Params.RequestID)
 	}
 
 	// Notifications carry no response and must not queue behind a request.
@@ -400,12 +480,7 @@ func (s *StdioServer) handleMessage(ctx context.Context, id any, rawMessage json
 // handleRequest serves one JSON-RPC request and writes its response. id is the
 // request's JSON-RPC id, so a recovered panic stays correlatable by the client.
 func (s *StdioServer) handleRequest(ctx context.Context, id any, rawMessage json.RawMessage, writer io.Writer) {
-	response := s.handleMessage(ctx, id, rawMessage)
-	if response != nil {
-		if err := s.writeResponse(response, writer); err != nil {
-			s.errLogger.Printf("Error writing response: %v", err)
-		}
-	}
+	s.answer(id, s.handleMessage(ctx, id, rawMessage), writer)
 }
 
 // writeResponse marshals and writes a JSON-RPC response message followed by a newline.

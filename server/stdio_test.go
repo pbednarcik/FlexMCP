@@ -639,3 +639,72 @@ func TestStdioJoinsRequestHandlersOnEOF(t *testing.T) {
 		t.Fatal("Listen did not return once the request handler finished")
 	}
 }
+
+// TestStdioSendsNothingForACancelledRequest pins Transports.md row 6: after a
+// notifications/cancelled for an in-flight request, the stdio server sends
+// nothing more for that request, not even the error its handler returns on
+// the cancelled context.
+func TestStdioSendsNothingForACancelledRequest(t *testing.T) {
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+
+	started := make(chan struct{})
+	returned := make(chan struct{})
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(false))
+	mcpServer.AddTool(mcp.NewTool("block"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		close(started)
+		<-ctx.Done()
+		close(returned)
+		return nil, ctx.Err()
+	})
+	mcpServer.AddTool(mcp.NewTool("ping"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("pong"), nil
+	})
+
+	stdioServer := NewStdioServer(mcpServer)
+	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _ = stdioServer.Listen(ctx, stdinReader, stdoutWriter) }()
+
+	responses := make(chan map[string]any, 8)
+	go func() {
+		scanner := bufio.NewScanner(stdoutReader)
+		for scanner.Scan() {
+			var msg map[string]any
+			if json.Unmarshal(scanner.Bytes(), &msg) == nil {
+				responses <- msg
+			}
+		}
+	}()
+	send := func(line string) {
+		go func() { _, _ = stdinWriter.Write([]byte(line + "\n")) }()
+	}
+
+	send(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"block"}}`)
+	<-started
+	send(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}`)
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancel did not end the handler")
+	}
+
+	// A later request is answered; nothing for request 7 arrives before it.
+	send(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"ping"}}`)
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-responses:
+			switch msg["id"] {
+			case float64(7):
+				t.Fatalf("the cancelled request was answered: %v", msg)
+			case float64(8):
+				require.Nil(t, msg["error"], "request 8: %v", msg)
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for request 8")
+		}
+	}
+}
