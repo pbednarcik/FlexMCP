@@ -202,7 +202,8 @@ func TestMCPServer_HandleListTasks(t *testing.T) {
 		WithTaskCapabilities(true, true, true),
 	)
 
-	ctx := t.Context()
+	// Tasks are listed per session, so the caller needs one with an ID.
+	ctx := server.WithContext(t.Context(), fakeSess{sessionID: "lister"})
 
 	// Create multiple tasks
 	ttl := int64(60000)
@@ -625,7 +626,8 @@ func TestMCPServer_TaskListPagination(t *testing.T) {
 		WithPaginationLimit(2), // Limit to 2 tasks per page
 	)
 
-	ctx := t.Context()
+	// Tasks are listed per session, so the caller needs one with an ID.
+	ctx := server.WithContext(t.Context(), fakeSess{sessionID: "lister"})
 
 	// Create multiple tasks with predictable IDs
 	ttl := int64(60000)

@@ -15,11 +15,17 @@ import (
 )
 
 func TestClient_ListTasksFollowsPagination(t *testing.T) {
+	// Tasks are listed per session, so they are created on the client's own
+	// session, captured when the in-process transport registers it.
+	var session server.ClientSession
+	hooks := &server.Hooks{}
+	hooks.AddOnRegisterSession(func(_ context.Context, s server.ClientSession) { session = s })
 	mcpServer := server.NewMCPServer(
 		"test-server",
 		"1.0.0",
 		server.WithTaskCapabilities(true, true, true),
 		server.WithPaginationLimit(2),
+		server.WithHooks(hooks),
 	)
 	mcpServer.AddTool(
 		mcp.NewTool("noop", mcp.WithTaskSupport(mcp.TaskSupportRequired)),
@@ -28,9 +34,21 @@ func TestClient_ListTasksFollowsPagination(t *testing.T) {
 		},
 	)
 
+	c, err := NewInProcessClient(mcpServer)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	require.NoError(t, c.Start(t.Context()))
+
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.ProtocolVersion20251125
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "test-client", Version: "1.0.0"}
+	_, err = c.Initialize(t.Context(), initReq)
+	require.NoError(t, err)
+	require.NotNil(t, session, "the in-process transport registered no session")
+
 	var wantIDs []string
 	for i := range 4 {
-		response := mcpServer.HandleMessage(t.Context(), []byte(`{
+		response := mcpServer.HandleMessage(mcpServer.WithContext(t.Context(), session), []byte(`{
 			"jsonrpc": "2.0",
 			"id": 1,
 			"method": "tools/call",
@@ -45,17 +63,6 @@ func TestClient_ListTasksFollowsPagination(t *testing.T) {
 		require.Truef(t, ok, "task %d: expected *CreateTaskResult, got %T", i, success.Result)
 		wantIDs = append(wantIDs, created.Task.TaskId)
 	}
-
-	c, err := NewInProcessClient(mcpServer)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
-	require.NoError(t, c.Start(t.Context()))
-
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.ProtocolVersion20251125
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "test-client", Version: "1.0.0"}
-	_, err = c.Initialize(t.Context(), initReq)
-	require.NoError(t, err)
 
 	page, err := c.ListTasksByPage(t.Context(), mcp.ListTasksRequest{})
 	require.NoError(t, err)

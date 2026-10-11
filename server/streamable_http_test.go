@@ -216,6 +216,63 @@ func TestStreamableHTTP_LegacyIsStateless(t *testing.T) {
 	})
 }
 
+// A legacy HTTP client has no identity the server can tell from another's,
+// so it is not offered tasks/list and lists nothing (Tasks.md row 35); its
+// tasks stay reachable by their ID, the bearer token of a server without
+// sessions (row 39).
+func TestStreamableHTTP_TasksAreNotListableWithoutAnIdentity(t *testing.T) {
+	mcpServer := NewMCPServer("test-mcp-server", "1.0", WithTaskCapabilities(true, true, true))
+	mcpServer.AddTool(mcp.NewTool("async_op", mcp.WithTaskSupport(mcp.TaskSupportRequired)), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("secret-of-A"), nil
+	})
+	server := NewTestStreamableHTTPServer(mcpServer)
+
+	call := func(t *testing.T, body map[string]any) map[string]any {
+		t.Helper()
+		resp, err := postJSON(server.URL, body)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var envelope struct {
+			Result map[string]any `json:"result"`
+			Error  map[string]any `json:"error"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&envelope))
+		require.Nil(t, envelope.Error, "%v", envelope.Error)
+		return envelope.Result
+	}
+
+	t.Run("initialize does not offer tasks/list", func(t *testing.T) {
+		result := call(t, map[string]any{"jsonrpc": "2.0", "id": 1, "method": mcp.MethodInitialize, "params": map[string]any{
+			"protocolVersion": mcp.LATEST_LEGACY_PROTOCOL_VERSION,
+			"clientInfo":      map[string]any{"name": "legacy", "version": "1.0.0"},
+			"capabilities":    map[string]any{},
+		}})
+		capabilities, _ := result["capabilities"].(map[string]any)
+		tasks, ok := capabilities["tasks"].(map[string]any)
+		require.True(t, ok, "tasks capability missing: %v", capabilities)
+		assert.NotContains(t, tasks, "list")
+		assert.Contains(t, tasks, "cancel")
+	})
+
+	// Client A creates a task; client B is any later request, since nothing
+	// tells the two apart.
+	created := call(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": mcp.MethodToolsCall, "params": map[string]any{"name": "async_op", "task": map[string]any{}}})
+	task, _ := created["task"].(map[string]any)
+	taskID, _ := task["taskId"].(string)
+	require.NotEmpty(t, taskID, "no task was created: %v", created)
+
+	t.Run("another client lists nothing", func(t *testing.T) {
+		result := call(t, map[string]any{"jsonrpc": "2.0", "id": 3, "method": mcp.MethodTasksList})
+		assert.Empty(t, result["tasks"])
+	})
+
+	t.Run("the task stays reachable by its ID", func(t *testing.T) {
+		result := call(t, map[string]any{"jsonrpc": "2.0", "id": 4, "method": mcp.MethodTasksGet, "params": map[string]any{"taskId": taskID}})
+		assert.Equal(t, taskID, result["taskId"])
+	})
+}
+
 func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
 	server := NewTestStreamableHTTPServer(mcpServer)

@@ -1275,6 +1275,11 @@ func (s *MCPServer) handleInitialize(
 	if capabilities.Resources != nil {
 		capabilities.Resources.Subscribe = false
 	}
+	// A session with no ID cannot be told from another, so it is not offered
+	// tasks/list (Tasks.md row 35); see listTasks.
+	if session := ClientSessionFromContext(ctx); session != nil && session.SessionID() == "" && capabilities.Tasks != nil {
+		capabilities.Tasks.List = nil
+	}
 
 	result := mcp.InitializeResult{
 		ProtocolVersion: s.protocolVersion(request.Params.ProtocolVersion),
@@ -2655,17 +2660,23 @@ func (s *MCPServer) getTaskEntry(ctx context.Context, taskID string) (*taskEntry
 	return entry, nil
 }
 
-// listTasks returns copies of all tasks for the current session.
+// listTasks returns copies of the tasks of the caller's session. A caller whose
+// session has no ID cannot be told from any other, so it lists nothing: a
+// server that cannot identify requestors does not list tasks (Tasks.md row
+// 35); its tasks stay reachable by their ID, which is the bearer token of a
+// server without sessions (row 39).
 func (s *MCPServer) listTasks(ctx context.Context) []mcp.Task {
 	sessionID := getSessionID(ctx)
+	if sessionID == "" {
+		return nil
+	}
 
 	s.tasksMu.RLock()
 	defer s.tasksMu.RUnlock()
 
 	var tasks []mcp.Task
 	for _, entry := range s.tasks {
-		// Filter by session if applicable
-		if sessionID == "" || entry.sessionID == "" || entry.sessionID == sessionID {
+		if entry.sessionID == sessionID {
 			tasks = append(tasks, entry.task)
 		}
 	}
