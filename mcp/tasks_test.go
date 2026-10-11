@@ -133,7 +133,8 @@ func TestParseListTasksResultRoundTrip(t *testing.T) {
 	failed := NewTask("b", WithTaskStatus(TaskStatusFailed), WithTaskStatusMessage("boom"))
 
 	result := NewListTasksResult([]Task{working, failed})
-	result.NextCursor = "page-2"
+	next := Cursor("page-2")
+	result.NextCursor = &next
 	result.Meta = WithModelImmediateResponse("listing")
 
 	encoded, err := json.Marshal(result)
@@ -143,7 +144,8 @@ func TestParseListTasksResultRoundTrip(t *testing.T) {
 	parsed, err := ParseListTasksResult(&raw)
 	require.NoError(t, err)
 	assert.Equal(t, []Task{working, failed}, parsed.Tasks)
-	assert.Equal(t, Cursor("page-2"), parsed.NextCursor)
+	require.NotNil(t, parsed.NextCursor)
+	assert.Equal(t, Cursor("page-2"), *parsed.NextCursor)
 	require.NotNil(t, parsed.Meta)
 	assert.Equal(t, "listing", parsed.Meta.AdditionalFields[ModelImmediateResponseMetaKey])
 }
@@ -181,7 +183,7 @@ func TestParseTaskResultsTolerateFieldsOfTheWrongType(t *testing.T) {
 	parsed, err := ParseListTasksResult(&raw)
 	require.NoError(t, err)
 	assert.Nil(t, parsed.Meta)
-	assert.Equal(t, Cursor(""), parsed.NextCursor)
+	assert.Nil(t, parsed.NextCursor)
 	assert.Equal(t, []Task{{Status: TaskStatusWorking}, {TaskId: "ok"}}, parsed.Tasks)
 }
 

@@ -1397,14 +1397,14 @@ func (s *MCPServer) handleSetLevel(
 func listByPagination[T mcp.Named](
 	_ context.Context,
 	s *MCPServer,
-	cursor mcp.Cursor,
+	cursor *mcp.Cursor,
 	allElements []T,
-) ([]T, mcp.Cursor, error) {
+) ([]T, *mcp.Cursor, error) {
 	startPos := 0
-	if cursor != "" {
-		c, err := base64.StdEncoding.DecodeString(string(cursor))
+	if cursor != nil {
+		c, err := base64.StdEncoding.DecodeString(string(*cursor))
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		cString := string(c)
 		startPos = sort.Search(len(allElements), func(i int) bool {
@@ -1425,13 +1425,13 @@ func listByPagination[T mcp.Named](
 		elementsToReturn = []T{}
 	}
 	// set the next cursor
-	nextCursor := func() mcp.Cursor {
+	nextCursor := func() *mcp.Cursor {
 		if s.paginationLimit != nil && *s.paginationLimit > 0 && len(elementsToReturn) >= *s.paginationLimit {
 			nc := elementsToReturn[len(elementsToReturn)-1].GetName()
-			toString := base64.StdEncoding.EncodeToString([]byte(nc))
-			return mcp.Cursor(toString)
+			next := mcp.Cursor(base64.StdEncoding.EncodeToString([]byte(nc)))
+			return &next
 		}
-		return ""
+		return nil
 	}()
 	return elementsToReturn, nextCursor, nil
 }

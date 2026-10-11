@@ -712,7 +712,7 @@ func TestMCPServer_HandlePagination(t *testing.T) {
 				listResult, ok := resp.Result.(mcp.ListResourcesResult)
 				assert.True(t, ok)
 				assert.NotNil(t, listResult.Resources)
-				assert.Equal(t, mcp.Cursor(""), listResult.NextCursor)
+				assert.Nil(t, listResult.NextCursor)
 			},
 		},
 	}
@@ -2545,8 +2545,9 @@ func BenchmarkMCPServer_Pagination(b *testing.B) {
 	list := getTools(10000)
 	ctx := b.Context()
 	server := createTestServer()
+	cursor := mcp.Cursor("dG9vbDY1NA==")
 	for b.Loop() {
-		_, _, _ = listByPagination(ctx, server, "dG9vbDY1NA==", list)
+		_, _, _ = listByPagination(ctx, server, &cursor, list)
 	}
 }
 

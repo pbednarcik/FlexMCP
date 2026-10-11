@@ -131,7 +131,7 @@ func TestNewListResourcesResult(t *testing.T) {
 	result := NewListResourcesResult(resources, cursor)
 
 	assert.Equal(t, resources, result.Resources)
-	assert.Equal(t, cursor, result.NextCursor)
+	assert.Equal(t, &cursor, result.NextCursor)
 }
 
 func TestNewListResourceTemplatesResult(t *testing.T) {
@@ -144,7 +144,7 @@ func TestNewListResourceTemplatesResult(t *testing.T) {
 	result := NewListResourceTemplatesResult(templates, cursor)
 
 	assert.Equal(t, templates, result.ResourceTemplates)
-	assert.Equal(t, cursor, result.NextCursor)
+	assert.Equal(t, &cursor, result.NextCursor)
 }
 
 func TestNewReadResourceResult(t *testing.T) {
@@ -168,7 +168,7 @@ func TestNewListPromptsResult(t *testing.T) {
 	result := NewListPromptsResult(prompts, cursor)
 
 	assert.Equal(t, prompts, result.Prompts)
-	assert.Equal(t, cursor, result.NextCursor)
+	assert.Equal(t, &cursor, result.NextCursor)
 }
 
 func TestNewGetPromptResult(t *testing.T) {
@@ -193,7 +193,7 @@ func TestNewListToolsResult(t *testing.T) {
 	result := NewListToolsResult(tools, cursor)
 
 	assert.Equal(t, tools, result.Tools)
-	assert.Equal(t, cursor, result.NextCursor)
+	assert.Equal(t, &cursor, result.NextCursor)
 }
 
 func TestNewInitializeResult(t *testing.T) {

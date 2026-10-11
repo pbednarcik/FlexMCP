@@ -578,6 +578,12 @@ func TestCompleteParamsMarshalJSON(t *testing.T) {
 	}
 }
 
+// cursorOf is a cursor a test puts in a request.
+func cursorOf(s string) *Cursor {
+	c := Cursor(s)
+	return &c
+}
+
 func TestPaginatedParamsMetaMarshalling(t *testing.T) {
 	// Marshalling the full request (rather than just req.Params) is what
 	// exercises the embedding/shadowing in PaginatedRequest -> Request.
@@ -585,7 +591,7 @@ func TestPaginatedParamsMetaMarshalling(t *testing.T) {
 	// be silently dropped at the outer-struct level.
 	t.Run("ListToolsRequest with _meta serializes the meta field on params", func(t *testing.T) {
 		req := ListToolsRequest{}
-		req.Params.Cursor = "page-2"
+		req.Params.Cursor = cursorOf("page-2")
 		req.Params.Meta = &Meta{
 			AdditionalFields: map[string]any{"orgId": "org-1", "appId": "app-7"},
 		}
@@ -606,7 +612,7 @@ func TestPaginatedParamsMetaMarshalling(t *testing.T) {
 
 	t.Run("ListToolsRequest without _meta omits the meta field on params", func(t *testing.T) {
 		req := ListToolsRequest{}
-		req.Params.Cursor = "page-2"
+		req.Params.Cursor = cursorOf("page-2")
 
 		data, err := json.Marshal(req)
 		require.NoError(t, err)
@@ -642,7 +648,7 @@ func TestPaginatedParamsMetaMarshalling(t *testing.T) {
 
 	t.Run("PaginatedParams round-trips _meta via JSON", func(t *testing.T) {
 		original := PaginatedParams{
-			Cursor: "abc",
+			Cursor: cursorOf("abc"),
 			Meta: &Meta{
 				ProgressToken:    "tok-1",
 				AdditionalFields: map[string]any{"k": "v"},

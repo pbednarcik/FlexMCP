@@ -674,7 +674,8 @@ func TestMCPServer_TaskListPagination(t *testing.T) {
 
 		resp := response.(mcp.JSONRPCResponse)
 		firstPage := resp.Result.(mcp.ListTasksResult)
-		cursor := firstPage.NextCursor
+		require.NotNil(t, firstPage.NextCursor)
+		cursor := *firstPage.NextCursor
 
 		// List second page with cursor
 		requestJSON := `{
@@ -699,7 +700,7 @@ func TestMCPServer_TaskListPagination(t *testing.T) {
 		assert.Equal(t, "task-gamma", result.Tasks[1].TaskId)
 
 		// Should have nextCursor even though this is the last page (client will fetch empty third page)
-		assert.NotEmpty(t, result.NextCursor)
+		require.NotNil(t, result.NextCursor)
 
 		// Fetch third page to confirm it's empty
 		requestJSON3 := `{
@@ -707,7 +708,7 @@ func TestMCPServer_TaskListPagination(t *testing.T) {
 			"id": 3,
 			"method": "tasks/list",
 			"params": {
-				"cursor": "` + string(result.NextCursor) + `"
+				"cursor": "` + string(*result.NextCursor) + `"
 			}
 		}`
 

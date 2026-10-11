@@ -313,7 +313,7 @@ func TestMCPServer_PaginationEdgeCases(t *testing.T) {
 
 		// Should return all items with cursor pointing to last item
 		assert.Len(t, result.Prompts, limit)
-		assert.NotEmpty(t, result.NextCursor, "Cursor should be set when exactly at limit")
+		require.NotNil(t, result.NextCursor, "Cursor should be set when exactly at limit")
 
 		// Request next page - should be empty
 		response = server.HandleMessage(t.Context(), fmt.Appendf(nil, `{
@@ -323,7 +323,7 @@ func TestMCPServer_PaginationEdgeCases(t *testing.T) {
 			"params": {
 				"cursor": "%s"
 			}
-		}`, result.NextCursor))
+		}`, *result.NextCursor))
 
 		resp, ok = response.(mcp.JSONRPCResponse)
 		require.True(t, ok)
@@ -843,8 +843,8 @@ func TestMCPServer_PaginationCursorStability(t *testing.T) {
 	require.True(t, ok)
 
 	assert.Len(t, result.Tools, 5)
-	cursor := result.NextCursor
-	require.NotEmpty(t, cursor)
+	require.NotNil(t, result.NextCursor)
+	cursor := *result.NextCursor
 
 	// Modify list (add and remove tools)
 	server.AddTool(mcp.NewTool("tool-new-1"), nil)

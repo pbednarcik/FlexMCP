@@ -453,24 +453,35 @@ func NewToolResultErrorf(format string, a ...any) *CallToolResult {
 	}
 }
 
-// NewListResourcesResult creates a new ListResourcesResult
+// optionalCursor is the cursor a list result carries: none for the last
+// page, which the helpers below take as an empty nextCursor.
+func optionalCursor(c Cursor) *Cursor {
+	if c == "" {
+		return nil
+	}
+	return &c
+}
+
+// NewListResourcesResult creates a new ListResourcesResult; an empty
+// nextCursor marks the last page.
 func NewListResourcesResult(
 	resources []Resource,
 	nextCursor Cursor,
 ) *ListResourcesResult {
 	return &ListResourcesResult{
-		NextCursor: nextCursor,
+		NextCursor: optionalCursor(nextCursor),
 		Resources:  resources,
 	}
 }
 
-// NewListResourceTemplatesResult creates a new ListResourceTemplatesResult
+// NewListResourceTemplatesResult creates a new ListResourceTemplatesResult;
+// an empty nextCursor marks the last page.
 func NewListResourceTemplatesResult(
 	templates []ResourceTemplate,
 	nextCursor Cursor,
 ) *ListResourceTemplatesResult {
 	return &ListResourceTemplatesResult{
-		NextCursor:        nextCursor,
+		NextCursor:        optionalCursor(nextCursor),
 		ResourceTemplates: templates,
 	}
 }
@@ -486,13 +497,14 @@ func NewReadResourceResult(text string) *ReadResourceResult {
 	}
 }
 
-// NewListPromptsResult creates a new ListPromptsResult
+// NewListPromptsResult creates a new ListPromptsResult; an empty nextCursor
+// marks the last page.
 func NewListPromptsResult(
 	prompts []Prompt,
 	nextCursor Cursor,
 ) *ListPromptsResult {
 	return &ListPromptsResult{
-		NextCursor: nextCursor,
+		NextCursor: optionalCursor(nextCursor),
 		Prompts:    prompts,
 	}
 }
@@ -508,10 +520,11 @@ func NewGetPromptResult(
 	}
 }
 
-// NewListToolsResult creates a new ListToolsResult
+// NewListToolsResult creates a new ListToolsResult; an empty nextCursor
+// marks the last page.
 func NewListToolsResult(tools []Tool, nextCursor Cursor) *ListToolsResult {
 	return &ListToolsResult{
-		NextCursor: nextCursor,
+		NextCursor: optionalCursor(nextCursor),
 		Tools:      tools,
 	}
 }
@@ -1227,7 +1240,8 @@ func ParseListTasksResult(rawMessage *json.RawMessage) (*ListTasksResult, error)
 	nextCursor, ok := jsonContent["nextCursor"]
 	if ok {
 		if cursorStr, ok := nextCursor.(string); ok {
-			listTasksResult.NextCursor = Cursor(cursorStr)
+			cursor := Cursor(cursorStr)
+			listTasksResult.NextCursor = &cursor
 		}
 	}
 

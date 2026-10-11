@@ -94,17 +94,17 @@ func TestClient_ListTasksRejectsRepeatedCursor(t *testing.T) {
 		{
 			name: "same cursor returned again",
 			pages: []mcp.ListTasksResult{
-				{Tasks: []mcp.Task{{TaskId: "t1"}}, NextCursor: "page-2"},
-				{Tasks: []mcp.Task{{TaskId: "t2"}}, NextCursor: "page-2"},
+				{Tasks: []mcp.Task{{TaskId: "t1"}}, NextCursor: cursor("page-2")},
+				{Tasks: []mcp.Task{{TaskId: "t2"}}, NextCursor: cursor("page-2")},
 			},
 			wantCalls: 2,
 		},
 		{
 			name: "cursor cycles back to an earlier page",
 			pages: []mcp.ListTasksResult{
-				{Tasks: []mcp.Task{{TaskId: "t1"}}, NextCursor: "page-2"},
-				{Tasks: []mcp.Task{{TaskId: "t2"}}, NextCursor: "page-3"},
-				{Tasks: []mcp.Task{{TaskId: "t3"}}, NextCursor: "page-2"},
+				{Tasks: []mcp.Task{{TaskId: "t1"}}, NextCursor: cursor("page-2")},
+				{Tasks: []mcp.Task{{TaskId: "t2"}}, NextCursor: cursor("page-3")},
+				{Tasks: []mcp.Task{{TaskId: "t3"}}, NextCursor: cursor("page-2")},
 			},
 			wantCalls: 3,
 		},

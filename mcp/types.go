@@ -751,7 +751,9 @@ type PaginatedRequest struct {
 type PaginatedParams struct {
 	// An opaque token representing the current pagination position.
 	// If provided, the server should return results starting after this cursor.
-	Cursor Cursor `json:"cursor,omitempty"`
+	// Absent and empty are two values: nil sends no cursor, an empty cursor
+	// is sent as one.
+	Cursor *Cursor `json:"cursor,omitempty"`
 	// Meta carries protocol-level metadata. PaginatedRequest embeds Request
 	// and shadows its Params with this type, so Meta must be declared here
 	// to be marshaled on paginated requests (tools/list, resources/list,
@@ -763,8 +765,9 @@ type PaginatedResult struct {
 	CacheableResult
 	// An opaque token representing the pagination position after the last
 	// returned result.
-	// If present, there may be more results available.
-	NextCursor Cursor `json:"nextCursor,omitempty"`
+	// If present, there may be more results available: nil is the last page,
+	// and an empty cursor is a cursor the next request carries.
+	NextCursor *Cursor `json:"nextCursor,omitempty"`
 }
 
 /* Resources */

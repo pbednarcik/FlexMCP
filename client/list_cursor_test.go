@@ -13,12 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// scriptedPageTransport returns list pages in order, ignoring the requested cursor.
+// scriptedPageTransport returns list pages in order, ignoring the requested
+// cursor; the params of every request are kept as they were sent.
 type scriptedPageTransport struct {
 	mu     sync.Mutex
 	method string
 	pages  []json.RawMessage
 	calls  int
+	sent   []json.RawMessage
 }
 
 func (t *scriptedPageTransport) Start(context.Context) error { return nil }
@@ -43,6 +45,11 @@ func (t *scriptedPageTransport) SendRequest(
 	}
 	page := t.pages[t.calls]
 	t.calls++
+	params, err := json.Marshal(request.Params)
+	if err != nil {
+		return nil, err
+	}
+	t.sent = append(t.sent, params)
 	return &transport.JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      request.ID,
@@ -54,6 +61,93 @@ func (t *scriptedPageTransport) callCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.calls
+}
+
+// params returns the params of the nth request (0-based) as they were sent.
+func (t *scriptedPageTransport) params(n int) json.RawMessage {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.sent[n]
+}
+
+// cursor is a cursor a test puts in a request or a result.
+func cursor(s string) *mcp.Cursor {
+	c := mcp.Cursor(s)
+	return &c
+}
+
+// An empty-string nextCursor is a cursor, not the end: the walk asks for the
+// next page with that empty cursor, and only a missing nextCursor ends it.
+func TestClient_ListFollowsAnEmptyCursor(t *testing.T) {
+	t.Parallel()
+
+	toolPages := []json.RawMessage{
+		json.RawMessage(`{"tools":[{"name":"a"}],"nextCursor":""}`),
+		json.RawMessage(`{"tools":[{"name":"b"}]}`),
+	}
+	taskPages := []json.RawMessage{
+		json.RawMessage(`{"tasks":[{"taskId":"t1"}],"nextCursor":""}`),
+		json.RawMessage(`{"tasks":[{"taskId":"t2"}]}`),
+	}
+	tests := []struct {
+		name   string
+		method string
+		pages  []json.RawMessage
+		count  func(*testing.T, context.Context, *Client) (int, error)
+	}{
+		{
+			name: "tools", method: "tools/list", pages: toolPages,
+			count: func(t *testing.T, ctx context.Context, c *Client) (int, error) {
+				result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+				if err != nil {
+					return 0, err
+				}
+				assert.Nil(t, result.NextCursor, "a missing nextCursor is the end")
+				return len(result.Tools), nil
+			},
+		},
+		{
+			name: "tools iterator", method: "tools/list", pages: toolPages,
+			count: func(_ *testing.T, ctx context.Context, c *Client) (int, error) {
+				n := 0
+				for _, err := range c.IterTools(ctx, mcp.ListToolsRequest{}) {
+					if err != nil {
+						return 0, err
+					}
+					n++
+				}
+				return n, nil
+			},
+		},
+		{
+			name: "tasks", method: "tasks/list", pages: taskPages,
+			count: func(_ *testing.T, ctx context.Context, c *Client) (int, error) {
+				result, err := c.ListTasks(ctx, mcp.ListTasksRequest{})
+				if err != nil {
+					return 0, err
+				}
+				return len(result.Tasks), nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tr := &scriptedPageTransport{method: tt.method, pages: append([]json.RawMessage(nil), tt.pages...)}
+			c := NewClient(tr, WithSession())
+
+			got, err := tt.count(t, t.Context(), c)
+			require.NoError(t, err)
+			assert.Equal(t, 2, got, "both pages were walked")
+			require.Equal(t, 2, tr.callCount())
+			var params map[string]any
+			require.NoError(t, json.Unmarshal(tr.params(1), &params))
+			cursor, sent := params["cursor"]
+			assert.True(t, sent, "the empty cursor is sent, not dropped: %s", tr.params(1))
+			assert.Equal(t, "", cursor)
+		})
+	}
 }
 
 func TestClient_ListFollowsAdvancingCursor(t *testing.T) {

@@ -541,18 +541,28 @@ func noteListCursor(seen map[mcp.Cursor]struct{}, next mcp.Cursor) error {
 	return nil
 }
 
+// seenCursors starts the set of cursors a walk has requested: the caller's
+// own, when it gave one.
+func seenCursors(start *mcp.Cursor) map[mcp.Cursor]struct{} {
+	seen := map[mcp.Cursor]struct{}{}
+	if start != nil {
+		seen[*start] = struct{}{}
+	}
+	return seen
+}
+
 // ListResources lists all resources by following paginated responses.
 func (c *Client) ListResources(
 	ctx context.Context,
 	request mcp.ListResourcesRequest,
 ) (*mcp.ListResourcesResult, error) {
-	seen := map[mcp.Cursor]struct{}{request.Params.Cursor: {}}
+	seen := seenCursors(request.Params.Cursor)
 	result, err := c.ListResourcesByPage(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	for result.NextCursor != "" {
-		if err := noteListCursor(seen, result.NextCursor); err != nil {
+	for result.NextCursor != nil {
+		if err := noteListCursor(seen, *result.NextCursor); err != nil {
 			return nil, err
 		}
 		select {
@@ -588,13 +598,13 @@ func (c *Client) ListResourceTemplates(
 	ctx context.Context,
 	request mcp.ListResourceTemplatesRequest,
 ) (*mcp.ListResourceTemplatesResult, error) {
-	seen := map[mcp.Cursor]struct{}{request.Params.Cursor: {}}
+	seen := seenCursors(request.Params.Cursor)
 	result, err := c.ListResourceTemplatesByPage(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	for result.NextCursor != "" {
-		if err := noteListCursor(seen, result.NextCursor); err != nil {
+	for result.NextCursor != nil {
+		if err := noteListCursor(seen, *result.NextCursor); err != nil {
 			return nil, err
 		}
 		select {
@@ -645,13 +655,13 @@ func (c *Client) ListPrompts(
 	ctx context.Context,
 	request mcp.ListPromptsRequest,
 ) (*mcp.ListPromptsResult, error) {
-	seen := map[mcp.Cursor]struct{}{request.Params.Cursor: {}}
+	seen := seenCursors(request.Params.Cursor)
 	result, err := c.ListPromptsByPage(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	for result.NextCursor != "" {
-		if err := noteListCursor(seen, result.NextCursor); err != nil {
+	for result.NextCursor != nil {
+		if err := noteListCursor(seen, *result.NextCursor); err != nil {
 			return nil, err
 		}
 		select {
@@ -706,13 +716,13 @@ func (c *Client) ListTools(
 	ctx context.Context,
 	request mcp.ListToolsRequest,
 ) (*mcp.ListToolsResult, error) {
-	seen := map[mcp.Cursor]struct{}{request.Params.Cursor: {}}
+	seen := seenCursors(request.Params.Cursor)
 	result, err := c.ListToolsByPage(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	for result.NextCursor != "" {
-		if err := noteListCursor(seen, result.NextCursor); err != nil {
+	for result.NextCursor != nil {
+		if err := noteListCursor(seen, *result.NextCursor); err != nil {
 			return nil, err
 		}
 		select {
@@ -1101,20 +1111,21 @@ func (c *Client) ListTasks(
 	ctx context.Context,
 	request mcp.ListTasksRequest,
 ) (*mcp.ListTasksResult, error) {
-	seen := map[mcp.Cursor]struct{}{request.Params.Cursor: {}}
+	seen := seenCursors(request.Params.Cursor)
 	result, err := c.ListTasksByPage(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	for result.NextCursor != "" {
-		if _, dup := seen[result.NextCursor]; dup {
-			return nil, fmt.Errorf("%w: %q", ErrRepeatedTaskListCursor, result.NextCursor)
+	for result.NextCursor != nil {
+		next := *result.NextCursor
+		if _, dup := seen[next]; dup {
+			return nil, fmt.Errorf("%w: %q", ErrRepeatedTaskListCursor, next)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
-			seen[result.NextCursor] = struct{}{}
+			seen[next] = struct{}{}
 			request.Params.Cursor = result.NextCursor
 			page, err := c.ListTasksByPage(ctx, request)
 			if err != nil {
