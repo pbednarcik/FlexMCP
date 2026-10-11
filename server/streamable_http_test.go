@@ -171,6 +171,21 @@ func TestStreamableHTTP_LegacyIsStateless(t *testing.T) {
 		assert.Equal(t, http.MethodPost, resp.Header.Get("Allow"))
 	})
 
+	t.Run("a Last-Event-ID is ignored", func(t *testing.T) {
+		// Nothing is resumable, and a legacy client that sends the header is
+		// served as if it had not (Transports.md row 42).
+		body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+		require.NoError(t, err)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(mcp.HeaderLastEventID, "5")
+		resp, err := server.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
 	t.Run("no session is registered", func(t *testing.T) {
 		assert.Zero(t, registered.Load(), "the register-session hook fired for an HTTP client")
 		err := mcpServer.SendNotificationToSpecificClient("mcp-session-not-minted-here", "test/notification", nil)
@@ -638,7 +653,15 @@ func TestStreamableHTTP_GETAndDELETEAnswerOnePathInBothEras(t *testing.T) {
 				for _, version := range []string{"2025-01-01", "2027-01-01"} {
 					resp, body := send(t, method, version)
 					assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "version %q", version)
-					assert.Contains(t, body, "Unsupported protocol version: "+version)
+					// The body is the JSON-RPC error a POST would get, so a client
+					// reads the supported versions off any verb (Transports.md row 28).
+					var message map[string]any
+					require.NoError(t, json.Unmarshal([]byte(body), &message), "version %q: %s", version, body)
+					errDetails, _ := message["error"].(map[string]any)
+					assert.Equal(t, float64(mcp.UNSUPPORTED_PROTOCOL_VERSION), errDetails["code"], "version %q", version)
+					data, _ := errDetails["data"].(map[string]any)
+					assert.Equal(t, version, data["requested"])
+					assert.NotEmpty(t, data["supported"])
 				}
 			})
 		})
@@ -953,16 +976,31 @@ func TestStreamableHTTP_ProtocolVersionHeader(t *testing.T) {
 
 	listTools := map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
 
+	// unsupportedVersionBody checks the JSON-RPC error every verb answers an
+	// unknown version with (Transports.md row 28), and the id it carries.
+	unsupportedVersionBody := func(t *testing.T, payload string, wantID any) {
+		t.Helper()
+		var message map[string]any
+		require.NoError(t, json.Unmarshal([]byte(payload), &message), payload)
+		errDetails, _ := message["error"].(map[string]any)
+		assert.Equal(t, float64(mcp.UNSUPPORTED_PROTOCOL_VERSION), errDetails["code"])
+		data, _ := errDetails["data"].(map[string]any)
+		assert.Equal(t, "2025-01-01", data["requested"])
+		assert.NotEmpty(t, data["supported"])
+		assert.Equal(t, wantID, message["id"])
+	}
+
 	t.Run("unsupported version is rejected", func(t *testing.T) {
 		for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
 			t.Run(method, func(t *testing.T) {
 				var body any
+				var wantID any
 				if method == http.MethodPost {
-					body = listTools
+					body, wantID = listTools, float64(2)
 				}
 				status, payload := send(t, method, body, "2025-01-01")
 				assert.Equal(t, http.StatusBadRequest, status)
-				assert.Contains(t, payload, "Unsupported protocol version: 2025-01-01")
+				unsupportedVersionBody(t, payload, wantID)
 			})
 		}
 	})
@@ -976,7 +1014,7 @@ func TestStreamableHTTP_ProtocolVersionHeader(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				status, payload := send(t, http.MethodPost, body, "2025-01-01")
 				assert.Equal(t, http.StatusBadRequest, status)
-				assert.Contains(t, payload, "Unsupported protocol version: 2025-01-01")
+				unsupportedVersionBody(t, payload, float64(1))
 			})
 		}
 	})
@@ -1084,18 +1122,21 @@ func TestStreamableHTTP_AddToolDuringToolCall(t *testing.T) {
 	}
 }
 
-func TestStreamableHTTP_HeadReturns200(t *testing.T) {
+// HEAD is answered as GET is: the endpoint serves POST only, so a HEAD is 405
+// with Allow: POST rather than a 200 that GET would contradict.
+func TestStreamableHTTP_HeadIsNotServed(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
-	sseServer := NewStreamableHTTPServer(mcpServer)
-	testServer := httptest.NewServer(sseServer)
+	testServer := httptest.NewServer(NewStreamableHTTPServer(mcpServer))
 	defer testServer.Close()
 
-	req, _ := http.NewRequest(http.MethodHead, testServer.URL, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodHead, testServer.URL, nil)
+	require.NoError(t, err)
 	resp, err := testServer.Client().Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	assert.Equal(t, http.MethodPost, resp.Header.Get("Allow"))
 }
 
 func TestStreamableHTTP_DrainNotifications(t *testing.T) {

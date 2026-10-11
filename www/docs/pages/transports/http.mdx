@@ -481,7 +481,7 @@ Because nothing the server sends later can reach a client on an earlier version,
 
 ### No standalone stream, no resumption
 
-The server opens no standalone `GET` stream and does not resume broken streams: a `GET` answers `405 Method Not Allowed` with `Allow: POST`, and a `Last-Event-ID` header is refused on a 2026-07-28 request and ignored on an earlier one. A client that needs server notifications opens a `subscriptions/listen` request (protocol version 2026-07-28); a request's own notifications ride its `POST` response, which upgrades to SSE when the first one is sent.
+The server opens no standalone `GET` stream and does not resume broken streams: `GET`, `HEAD` and `DELETE` answer `405 Method Not Allowed` with `Allow: POST`, and a `Last-Event-ID` header is refused on a 2026-07-28 request and ignored on an earlier one. Whatever the verb, a `Mcp-Protocol-Version` the server does not serve is answered first, with `400` and the JSON-RPC `-32022` error whose `data.supported` names the versions it does. A client that needs server notifications opens a `subscriptions/listen` request (protocol version 2026-07-28); a request's own notifications ride its `POST` response, which upgrades to SSE when the first one is sent, with `X-Accel-Buffering: no` so proxies pass events through.
 
 ### Stateful vs Stateless
 

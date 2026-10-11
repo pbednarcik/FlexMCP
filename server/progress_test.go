@@ -63,6 +63,7 @@ func TestModernToolCallStreamsProgressBeforeTheResult(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"), "a call that emitted notifications answers as a stream")
+		require.Equal(t, "no", resp.Header.Get("X-Accel-Buffering"), "a stream asks proxies not to buffer it (Transports.md row 23)")
 		events := sseData(t, resp)
 		require.Len(t, events, 3, "call %d: two progress notifications, then the result: %v", i, events)
 

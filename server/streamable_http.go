@@ -304,7 +304,7 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case http.MethodDelete:
 		s.handleDelete(hw, hr)
 	case http.MethodHead:
-		w.WriteHeader(http.StatusOK)
+		s.handleHead(hw, hr)
 	default:
 		http.NotFound(w, r)
 	}
@@ -399,6 +399,11 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	isInitializeRequest := jsonMessage.Method == mcp.MethodInitialize
 
+	var requestID any
+	if len(jsonMessage.ID) > 0 {
+		_ = json.Unmarshal(jsonMessage.ID, &requestID)
+	}
+
 	// Decide which protocol era this message belongs to. Both eras run through
 	// the same stateless path below; the era only chooses the version check
 	// here, the modern header validation, and the HTTP status of an error.
@@ -406,7 +411,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// The header is only required after initialize, which negotiates the
 	// version itself. Responses posted by the client are checked as well.
-	if !era.modern && !isInitializeRequest && rejectUnsupportedProtocolVersion(w, era.headerVersion) {
+	if !era.modern && !isInitializeRequest && s.rejectUnsupportedProtocolVersion(w, era.headerVersion, requestID) {
 		return
 	}
 
@@ -428,11 +433,6 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		// meaning in this transport for POST requests carrying responses.
 		w.WriteHeader(http.StatusAccepted)
 		return
-	}
-
-	var requestID any
-	if len(jsonMessage.ID) > 0 {
-		_ = json.Unmarshal(jsonMessage.ID, &requestID)
 	}
 
 	// Every request runs on its own ephemeral session: the server keeps none
@@ -617,21 +617,28 @@ drainLoop:
 // handleGet answers 405 in both eras: protocol version 2026-07-28 removed the
 // standalone GET stream, and a legacy client is not served one either.
 func (s *StreamableHTTPServer) handleGet(w HTTPResponseWriter, r *HTTPRequest) {
-	methodNotAllowed(w, r, "GET is not supported: this server opens no standalone stream")
+	s.methodNotAllowed(w, r, "GET is not supported: this server opens no standalone stream")
 }
 
 // handleDelete answers 405 in both eras: protocol version 2026-07-28 removed
 // protocol-level sessions, and the server keeps none for a legacy client
 // either, so there is nothing for a DELETE to terminate.
 func (s *StreamableHTTPServer) handleDelete(w HTTPResponseWriter, r *HTTPRequest) {
-	methodNotAllowed(w, r, "DELETE is not supported: this server keeps no sessions")
+	s.methodNotAllowed(w, r, "DELETE is not supported: this server keeps no sessions")
+}
+
+// handleHead answers 405 as GET does: the endpoint serves POST only, and a
+// HEAD that answered 200 would promise a GET the endpoint refuses.
+func (s *StreamableHTTPServer) handleHead(w HTTPResponseWriter, r *HTTPRequest) {
+	s.methodNotAllowed(w, r, "HEAD is not supported: this endpoint serves POST only")
 }
 
 // methodNotAllowed answers a verb the endpoint does not serve in either era,
-// through the one path every verb shares: a protocol version this SDK does not
-// implement is reported first, then 405 with Allow: POST and reason as the body.
-func methodNotAllowed(w HTTPResponseWriter, r *HTTPRequest, reason string) {
-	if rejectUnsupportedProtocolVersion(w, r.header().Get(mcp.HeaderProtocolVersion)) {
+// through the one path every verb shares: a protocol version this transport
+// does not serve is reported first, with the JSON-RPC body a POST would get,
+// then 405 with Allow: POST and reason as the body.
+func (s *StreamableHTTPServer) methodNotAllowed(w HTTPResponseWriter, r *HTTPRequest, reason string) {
+	if s.rejectUnsupportedProtocolVersion(w, r.header().Get(mcp.HeaderProtocolVersion), nil) {
 		return
 	}
 	// RFC 9110 section 15.5.6 requires an Allow header on 405 responses.
@@ -651,12 +658,14 @@ func writeSSEEvent(w io.Writer, data any) error {
 	return nil
 }
 
-// startSSEResponse commits the response as an SSE stream: the three headers
-// every stream carries, then the 200 that sends them.
+// startSSEResponse commits the response as an SSE stream: the headers every
+// stream carries, including the one that asks proxies not to buffer events
+// (Transports.md row 23), then the 200 that sends them.
 func startSSEResponse(w HTTPResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 }
 

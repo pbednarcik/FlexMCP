@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -166,11 +165,6 @@ func writeHTTPError(w HTTPResponseWriter, msg string, code int) {
 	_, _ = io.WriteString(w, msg+"\n")
 }
 
-// writeHTTPErrorf is a printf-style helper for writeHTTPError.
-func writeHTTPErrorf(w HTTPResponseWriter, code int, format string, args ...any) {
-	writeHTTPError(w, fmt.Sprintf(format, args...), code)
-}
-
 // Handle dispatches a single MCP request through the streamable HTTP state
 // machine using transport-agnostic primitives.
 //
@@ -193,9 +187,10 @@ func writeHTTPErrorf(w HTTPResponseWriter, code int, format string, args ...any)
 //   - WithHTTPContextFunc is honored for backwards compatibility; it receives
 //     a synthetic *http.Request derived from r so existing options keep working.
 //     Callers may also pre-populate r.Context with any values they need.
-//   - When w.CanStream() returns false, GET (SSE listening) is rejected with
-//     405 Method Not Allowed and POST responses that would otherwise upgrade
-//     to text/event-stream stay as a single buffered application/json reply.
+//   - GET, HEAD and DELETE answer 405 Method Not Allowed in either era, as
+//     through ServeHTTP. When w.CanStream() returns false, POST responses
+//     that would otherwise upgrade to text/event-stream stay as a single
+//     buffered application/json reply.
 func (s *StreamableHTTPServer) Handle(w HTTPResponseWriter, r *HTTPRequest) {
 	if r == nil {
 		writeHTTPError(w, "nil request", http.StatusBadRequest)
@@ -209,7 +204,7 @@ func (s *StreamableHTTPServer) Handle(w HTTPResponseWriter, r *HTTPRequest) {
 	case http.MethodDelete:
 		s.handleDelete(w, r)
 	case http.MethodHead:
-		w.WriteHeader(http.StatusOK)
+		s.handleHead(w, r)
 	default:
 		writeHTTPError(w, "404 page not found", http.StatusNotFound)
 	}

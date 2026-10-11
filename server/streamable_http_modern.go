@@ -196,16 +196,23 @@ func (s *StreamableHTTPServer) writeJSONRPCMessage(w HTTPResponseWriter, message
 	}
 }
 
-// rejectUnsupportedProtocolVersion answers 400 Bad Request when a request's
-// Mcp-Protocol-Version header names a version this SDK does not implement,
-// whichever era it sorts into, and reports whether it did. A missing header is
-// accepted, as clients on 2025-03-26 do not send it. A modern POST is checked
-// by [StreamableHTTPServer.validateModernRequest] instead, which answers with
-// the JSON-RPC body that era prescribes.
-func rejectUnsupportedProtocolVersion(w HTTPResponseWriter, version string) bool {
-	if version == "" || mcp.IsValidProtocolVersion(version) {
+// rejectUnsupportedProtocolVersion answers 400 Bad Request with an
+// UnsupportedProtocolVersionError body naming the versions this transport
+// serves when a request's Mcp-Protocol-Version header names one it does not,
+// whichever era it sorts into and whatever the verb, and reports whether it
+// did (Transports.md row 28). id is the request's id when the body had one.
+// A missing header is accepted, as clients on 2025-03-26 do not send it. A
+// modern POST is checked by [StreamableHTTPServer.validateModernRequest]
+// instead, which also checks the body's version.
+func (s *StreamableHTTPServer) rejectUnsupportedProtocolVersion(w HTTPResponseWriter, version string, id any) bool {
+	if version == "" || s.SupportsProtocolVersion(version) {
 		return false
 	}
-	writeHTTPErrorf(w, http.StatusBadRequest, "Unsupported protocol version: %s", version)
+	response := mcp.UnsupportedProtocolVersionError{
+		Version:   version,
+		Supported: s.supportedProtocolVersions(),
+	}.JSONRPCError()
+	response.ID = mcp.NewRequestId(id)
+	s.writeJSONRPCMessage(w, response, http.StatusBadRequest)
 	return true
 }

@@ -204,7 +204,7 @@ func TestStreamableHTTPServer_Handle_UnknownMethod(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.status)
 }
 
-func TestStreamableHTTPServer_Handle_HeadReturns200(t *testing.T) {
+func TestStreamableHTTPServer_Handle_HeadIsNotServed(t *testing.T) {
 	mcpServer := NewMCPServer("test-mcp-server", "1.0")
 	srv := NewStreamableHTTPServer(mcpServer)
 
@@ -218,9 +218,8 @@ func TestStreamableHTTPServer_Handle_HeadReturns200(t *testing.T) {
 
 	srv.Handle(w, r)
 
-	assert.Equal(t, http.StatusOK, w.status)
-	assert.True(t, w.wrote)
-	assert.Empty(t, w.body)
+	assert.Equal(t, http.StatusMethodNotAllowed, w.status)
+	assert.Equal(t, http.MethodPost, w.Header().Get("Allow"))
 }
 
 func TestStreamableHTTPServer_Handle_FlushableWriterMatchesServeHTTP(t *testing.T) {
