@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -308,4 +311,62 @@ func TestStreamableHTTPServer_Handle_ContextCarriedThrough(t *testing.T) {
 	require.Equal(t, http.StatusOK, w2.status)
 
 	assert.Equal(t, "from-fasthttp", seen)
+}
+
+// WithHTTPContextFunc sees the request, and the context it returns reaches
+// the handler, on both entries: net/http's ServeHTTP, and Handle, where the
+// function receives a request synthesized from the HTTPRequest.
+func TestStreamableHTTPServer_HTTPContextFuncReachesTheHandler(t *testing.T) {
+	type probeKey struct{}
+	mcpServer := NewMCPServer("test-mcp-server", "1.0")
+	mcpServer.AddTool(mcp.NewTool("probe"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		probe, _ := ctx.Value(probeKey{}).(string)
+		return mcp.NewToolResultText(probe), nil
+	})
+	srv := NewStreamableHTTPServer(mcpServer, WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+		return context.WithValue(ctx, probeKey{}, r.Method+" "+r.URL.Path+" "+r.Header.Get("X-Probe"))
+	}))
+	call := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"probe"}}`)
+
+	// probeText digs the tool's text out of a tools/call response body.
+	probeText := func(t *testing.T, body []byte) string {
+		t.Helper()
+		var resp struct {
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(body, &resp), "%s", body)
+		require.Len(t, resp.Result.Content, 1, "%s", body)
+		return resp.Result.Content[0].Text
+	}
+
+	t.Run("through ServeHTTP", func(t *testing.T) {
+		ts := httptest.NewServer(srv)
+		t.Cleanup(ts.Close)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ts.URL+"/mcp", bytes.NewReader(call))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Probe", "net")
+		resp, err := ts.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "POST /mcp net", probeText(t, body))
+	})
+
+	t.Run("through Handle", func(t *testing.T) {
+		w := newBufferingHTTPResponseWriter()
+		srv.Handle(w, &HTTPRequest{
+			Method:  http.MethodPost,
+			URL:     &url.URL{Path: "/mcp"},
+			Header:  http.Header{"Content-Type": []string{"application/json"}, "X-Probe": []string{"handle"}},
+			Body:    call,
+			Context: t.Context(),
+		})
+		assert.Equal(t, "POST /mcp handle", probeText(t, w.body))
+	})
 }
