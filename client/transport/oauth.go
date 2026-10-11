@@ -47,6 +47,11 @@ var (
 	// advertises authorization_response_iss_parameter_supported sends an
 	// authorization response without iss.
 	ErrIssuerMissing = errors.New("authorization response has no iss, which the authorization server advertises")
+	// ErrClientRegisteredElsewhere is returned when the client ID came from
+	// dynamic registration with one authorization server and discovery now
+	// leads to another: credentials belong to the issuer that gave them, so
+	// the client has to register again.
+	ErrClientRegisteredElsewhere = errors.New("the client is registered with another authorization server; register again")
 )
 
 // OAuthConfig holds the OAuth configuration for the client
@@ -251,8 +256,10 @@ type OAuthHandler struct {
 
 	// registeredAuthMethod is the token_endpoint_auth_method the
 	// authorization server registered for the client during dynamic client
-	// registration, if any.
+	// registration, if any; registeredIssuer is that server's issuer, which
+	// the credentials belong to.
 	registeredAuthMethod string
+	registeredIssuer     string
 
 	mu            sync.RWMutex // Protects expectedState, expectedIssuer, issuerRequired, challengedScopes
 	expectedState string       // Expected state value for CSRF protection
@@ -1313,6 +1320,7 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	regRequest := map[string]any{
 		"client_name":                clientName,
 		"redirect_uris":              []string{h.config.RedirectURI},
+		"application_type":           applicationType(h.config.RedirectURI),
 		"token_endpoint_auth_method": "none", // For public clients
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
@@ -1380,7 +1388,32 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	// RFC 7591 §3.2.1: the response carries the method the server actually
 	// registered, which may differ from the one requested.
 	h.registeredAuthMethod = regResponse.TokenEndpointAuthMethod
+	h.mu.Lock()
+	h.registeredIssuer = metadata.Issuer
+	h.mu.Unlock()
 
+	return nil
+}
+
+// applicationType is the OAuth application_type a client registers with
+// (RFC 7591 §2): web for a client that takes its redirect over HTTPS, native
+// for one that takes it on localhost or a custom scheme.
+func applicationType(redirectURI string) string {
+	if parsed, err := url.Parse(redirectURI); err == nil && strings.EqualFold(parsed.Scheme, "https") {
+		return "web"
+	}
+	return "native"
+}
+
+// checkRegisteredIssuer refuses to use credentials from dynamic registration
+// with an authorization server other than the one that issued them.
+func (h *OAuthHandler) checkRegisteredIssuer(metadata *AuthServerMetadata) error {
+	h.mu.RLock()
+	registered := h.registeredIssuer
+	h.mu.RUnlock()
+	if registered != "" && metadata.Issuer != registered {
+		return fmt.Errorf("%w: registered with %q, discovered %q", ErrClientRegisteredElsewhere, registered, metadata.Issuer)
+	}
 	return nil
 }
 
@@ -1587,6 +1620,9 @@ func (h *OAuthHandler) tokenEndpointAuthMethod(metadata *AuthServerMetadata) str
 // newTokenRequest builds a token endpoint request carrying data and the
 // client's credentials.
 func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServerMetadata, data url.Values) (*http.Request, error) {
+	if err := h.checkRegisteredIssuer(metadata); err != nil {
+		return nil, err
+	}
 	method := h.tokenEndpointAuthMethod(metadata)
 	basic := method == clientSecretBasic
 	if !basic {
@@ -1625,6 +1661,9 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get server metadata: %w", err)
+	}
+	if err := h.checkRegisteredIssuer(metadata); err != nil {
+		return "", err
 	}
 
 	if !h.config.PKCEDisabled {

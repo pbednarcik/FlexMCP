@@ -122,6 +122,24 @@ func (e HeaderMismatchError) Is(target error) bool {
 	return ok
 }
 
+// HeaderMismatchData is the data member of a [HEADER_MISMATCH] error: the
+// header the server could not accept, so the client can act on which one.
+type HeaderMismatchData struct {
+	Header string `json:"header,omitempty"`
+}
+
+// JSONRPCError renders the error as a JSON-RPC error response body.
+func (e HeaderMismatchError) JSONRPCError() JSONRPCError {
+	return JSONRPCError{
+		JSONRPC: JSONRPC_VERSION,
+		Error: JSONRPCErrorDetails{
+			Code:    HEADER_MISMATCH,
+			Message: e.Error(),
+			Data:    HeaderMismatchData{Header: e.Header},
+		},
+	}
+}
+
 // MissingRequiredClientCapabilityError is returned when a request omits a
 // client capability the server needs to serve it (SEP-2575): the server
 // never relies on a capability the request did not declare, and answers
@@ -246,7 +264,19 @@ func (e *JSONRPCErrorDetails) AsError() error {
 	case RESOURCE_NOT_FOUND:
 		err = ErrResourceNotFound
 	case HEADER_MISMATCH:
-		return HeaderMismatchError{Reason: e.Message}
+		var data HeaderMismatchData
+		if e.Data != nil {
+			if dataBytes, marshalErr := json.Marshal(e.Data); marshalErr == nil {
+				_ = json.Unmarshal(dataBytes, &data)
+			}
+		}
+		if data.Header == "" {
+			return HeaderMismatchError{Reason: e.Message}
+		}
+		// The message was rendered by Error(); take the reason back out of it.
+		reason := strings.TrimPrefix(e.Message, "header mismatch: ")
+		reason = strings.TrimPrefix(reason, data.Header+": ")
+		return HeaderMismatchError{Header: data.Header, Reason: reason}
 	case MISSING_REQUIRED_CLIENT_CAPABILITY:
 		var data MissingRequiredClientCapabilityData
 		if e.Data != nil {

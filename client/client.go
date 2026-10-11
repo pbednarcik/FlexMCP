@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -168,6 +169,7 @@ func NewClient(transport transport.Interface, options ...ClientOption) *Client {
 		transport:  transport,
 		tracer:     tracing.NoopTracer(),
 		propagator: tracing.NoopPropagator(),
+		clientInfo: defaultClientInfo(),
 	}
 
 	for _, opt := range options {
@@ -377,7 +379,9 @@ func (c *Client) Initialize(
 	ctx context.Context,
 	request mcp.InitializeRequest,
 ) (*mcp.InitializeResult, error) {
-	c.clientInfo = request.Params.ClientInfo
+	if request.Params.ClientInfo.Name != "" {
+		c.clientInfo = request.Params.ClientInfo
+	}
 	c.clientCapabilities = mergeClientCapabilities(c.clientCapabilities, request.Params.Capabilities)
 
 	preferred := request.Params.ProtocolVersion
@@ -778,14 +782,38 @@ func (c *Client) Complete(
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
+	if err := checkResultType(result.ResultType); err != nil {
+		return nil, err
+	}
 
 	return &result, nil
 }
 
+// checkResultType refuses a resultType the client does not know: the values
+// a client accepts are the core ones and those of the extensions it knows,
+// and any other value is invalid rather than complete.
+func checkResultType(resultType mcp.ResultType) error {
+	if resultType.Known() {
+		return nil
+	}
+	return fmt.Errorf("unknown resultType %q in the result", resultType)
+}
+
 // RootListChanges sends a roots list-changed notification to the server.
+//
+// Protocol version 2026-07-28 removed the notification along with the
+// roots.listChanged capability: a server asks for the roots it needs through
+// a multi round-trip request. On a modern connection this method sends
+// nothing and returns nil.
+//
+// Deprecated: the Roots feature is deprecated as of protocol version
+// 2026-07-28 (SEP-2577). Pass paths as tool arguments or resource URIs.
 func (c *Client) RootListChanges(
 	ctx context.Context,
 ) error {
+	if c.isModern() {
+		return nil
+	}
 	// Send root list changes notification
 	notification := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
@@ -874,16 +902,22 @@ func (c *Client) handleSamplingRequestTransport(ctx context.Context, request tra
 	return response, nil
 }
 
-// withRootsArray returns result with a non-nil Roots, so that a client with
-// no roots answers with "roots": [] rather than null, which the schema
-// doesn't allow.
-func withRootsArray(result *mcp.ListRootsResult) *mcp.ListRootsResult {
+// checkRoots returns result with a non-nil Roots, so that a client with no
+// roots answers with "roots": [] rather than null, which the schema doesn't
+// allow, and refuses a root that is not a file:// URI, the only kind the
+// protocol defines.
+func checkRoots(result *mcp.ListRootsResult) (*mcp.ListRootsResult, error) {
+	for _, root := range result.Roots {
+		if !strings.HasPrefix(root.URI, "file://") {
+			return nil, fmt.Errorf("root %q is not a file:// URI", root.URI)
+		}
+	}
 	if result.Roots != nil {
-		return result
+		return result, nil
 	}
 	withRoots := *result
 	withRoots.Roots = []mcp.Root{}
-	return &withRoots
+	return &withRoots, nil
 }
 
 // handleListRootsRequestTransport handles list roots requests at the transport level.
@@ -905,7 +939,10 @@ func (c *Client) handleListRootsRequestTransport(ctx context.Context, request tr
 	if result == nil {
 		return nil, fmt.Errorf("roots handler returned no result")
 	}
-	result = withRootsArray(result)
+	result, err = checkRoots(result)
+	if err != nil {
+		return nil, err
+	}
 
 	// Marshal the result
 	resultBytes, err := json.Marshal(result)
@@ -987,6 +1024,11 @@ func listByPage[T any](
 	var result T
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	if metadata, ok := any(&result).(mcp.ResultMetadata); ok {
+		if err := checkResultType(metadata.GetResultType()); err != nil {
+			return nil, err
+		}
 	}
 	return &result, nil
 }

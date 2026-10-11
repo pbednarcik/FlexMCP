@@ -165,7 +165,9 @@ func errorResponseForProtocolError(id any, err error) mcp.JSONRPCMessage {
 	}
 
 	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok {
-		return createErrorResponse(id, mcp.HEADER_MISMATCH, mismatch.Error())
+		response := mismatch.JSONRPCError()
+		response.ID = mcp.NewRequestId(id)
+		return response
 	}
 
 	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {

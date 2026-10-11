@@ -292,22 +292,30 @@ func (c *StreamableHTTP) SetProtocolVersion(version string) {
 	c.protocolVersion.Store(version)
 }
 
-// markInitializedOnDiscover opens the initialization gate once a
-// server/discover request has actually succeeded.
-//
-// A successful discover marks the connection ready in the same way initialize
-// does for legacy servers: it is the first request of a modern connection
-// (SEP-2575). A server predating the method answers HTTP 200 with a JSON-RPC
-// error, which is a failed probe: the gate must stay shut so the caller can
-// fall back to the initialize handshake before anything treats the transport
-// as ready.
-func (c *StreamableHTTP) markInitializedOnDiscover(request JSONRPCRequest, response *JSONRPCResponse) {
-	if request.Method != string(mcp.MethodServerDiscover) || response.Error != nil {
+// markConnected records what a successful initialize or server/discover
+// response establishes: the initialization gate, and the session a GET
+// stream follows (session, the ID the response's headers left in place). A
+// response carrying a JSON-RPC error establishes nothing: a server predating
+// server/discover answers the probe with one, and the gate must stay shut
+// so the caller can fall back to the initialize handshake; a refused
+// initialize leaves the transport as it was, and gives back the session ID
+// its headers carried (sessionID), which SendRequest took before the body.
+func (c *StreamableHTTP) markConnected(request JSONRPCRequest, response *JSONRPCResponse, sessionID, session string) {
+	switch request.Method {
+	case string(mcp.MethodInitialize), string(mcp.MethodServerDiscover):
+	default:
+		return
+	}
+	if response.Error != nil {
+		if sessionID != "" {
+			c.sessionID.CompareAndSwap(sessionID, "")
+		}
 		return
 	}
 	c.initializedOnce.Do(func() {
 		close(c.initialized)
 	})
+	c.markSessionStarted(request, response, session)
 }
 
 // currentSession returns the session ID to send with a request, and whether
@@ -692,11 +700,6 @@ func (c *StreamableHTTP) SendRequest(
 	resp, err := c.sendHTTP(ctx, http.MethodPost, bytes.NewReader(requestBody), "application/json, text/event-stream", request.Header, c.startsConnection(request))
 	if err != nil {
 		cancel()
-		if errors.Is(err, ErrSessionTerminated) && request.Method == string(mcp.MethodInitialize) {
-			// Per the MCP spec's backwards compatibility section: a 404 on an
-			// initialize POST means the server likely only supports legacy SSE.
-			return nil, ErrLegacySSEServer
-		}
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
@@ -717,34 +720,33 @@ func (c *StreamableHTTP) SendRequest(
 			return nil, authorizationError(resp, c.oauthHandler)
 		}
 
-		// Per the MCP spec's backwards compatibility section: if an initialize
-		// POST receives an HTTP 4xx (e.g. 405 Method Not Allowed, 404 Not Found),
+		// A JSON-RPC error in the body is the answer, whatever the status.
+		var errResponse JSONRPCResponse
+		body, _ := io.ReadAll(resp.Body)
+		if err := json.Unmarshal(body, &errResponse); err == nil && errResponse.Error != nil {
+			return &errResponse, nil
+		}
+		// Per the MCP spec's backwards compatibility section: a 4xx to an
+		// initialize POST (404, 405) whose body is not a JSON-RPC error means
 		// the server likely only supports the legacy HTTP+SSE transport.
 		if request.Method == string(mcp.MethodInitialize) && resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			return nil, ErrLegacySSEServer
 		}
-
-		// handle error response
-		var errResponse JSONRPCResponse
-		body, _ := io.ReadAll(resp.Body)
-		if err := json.Unmarshal(body, &errResponse); err == nil {
-			return &errResponse, nil
-		}
 		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, body)
 	}
 
+	// The session ID of an initialize response is in its headers, so it is
+	// taken before the body, which a server may stream and hold: a GET
+	// stream reconnecting meanwhile follows it. A refused initialize gives
+	// it back (markConnected).
+	sessionID := ""
 	if request.Method == string(mcp.MethodInitialize) {
-		// saved the received session ID in the response
-		// empty session ID is allowed
-		if sessionID := resp.Header.Get(HeaderKeySessionID); sessionID != "" {
+		if sessionID = resp.Header.Get(HeaderKeySessionID); sessionID != "" {
 			c.sessionID.Store(sessionID)
 		}
-
-		c.initializedOnce.Do(func() {
-			close(c.initialized)
-		})
 	}
-	// The session ID this response leaves in place, for markSessionStarted.
+	// The session ID this response leaves in place, for markSessionStarted:
+	// read now, since the session may end while the body is still coming.
 	session, _ := c.sessionID.Load().(string)
 
 	// Handle different response types
@@ -762,9 +764,7 @@ func (c *StreamableHTTP) SendRequest(
 			return nil, fmt.Errorf("response should contain RPC id: %v", response)
 		}
 
-		c.markInitializedOnDiscover(request, &response)
-		c.markSessionStarted(request, &response, session)
-
+		c.markConnected(request, &response, sessionID, session)
 		return &response, nil
 
 	case "text/event-stream":
@@ -774,8 +774,7 @@ func (c *StreamableHTTP) SendRequest(
 			return nil, err
 		}
 		if sseResponse != nil {
-			c.markInitializedOnDiscover(request, sseResponse)
-			c.markSessionStarted(request, sseResponse, session)
+			c.markConnected(request, sseResponse, sessionID, session)
 		}
 		return sseResponse, nil
 
@@ -871,12 +870,17 @@ func (c *StreamableHTTP) sendHTTP(
 	// method the server does not implement, and its JSON-RPC body is the
 	// answer, which the caller reads like any other error status.
 	if resp.StatusCode == http.StatusNotFound && !c.isModern() {
-		resp.Body.Close()
 		// A 404 for the GET stream may only mean that the server doesn't
 		// offer it, so listenForever decides.
 		if method != http.MethodGet {
 			c.endSession(sentSession)
 		}
+		// A 404 to initialize is answered by its body, which the caller
+		// reads: a JSON-RPC error, or the sign of a legacy HTTP+SSE server.
+		if startsSession {
+			return resp, nil
+		}
+		resp.Body.Close()
 		return nil, ErrSessionTerminated
 	}
 

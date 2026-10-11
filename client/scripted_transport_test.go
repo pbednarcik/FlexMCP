@@ -19,10 +19,11 @@ import (
 // scriptedTransport answers each request with whatever respond returns and
 // records the methods it was asked, in order.
 type scriptedTransport struct {
-	mu        sync.Mutex
-	methods   []string
-	respond   func(ctx context.Context, call int, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error)
-	notifyErr error
+	mu            sync.Mutex
+	methods       []string
+	notifications []string
+	respond       func(ctx context.Context, call int, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error)
+	notifyErr     error
 }
 
 func (t *scriptedTransport) Start(context.Context) error { return nil }
@@ -35,8 +36,17 @@ func (t *scriptedTransport) SendRequest(ctx context.Context, request transport.J
 	return t.respond(ctx, call, request)
 }
 
-func (t *scriptedTransport) SendNotification(context.Context, mcp.JSONRPCNotification) error {
+func (t *scriptedTransport) SendNotification(_ context.Context, notification mcp.JSONRPCNotification) error {
+	t.mu.Lock()
+	t.notifications = append(t.notifications, notification.Method)
+	t.mu.Unlock()
 	return t.notifyErr
+}
+
+func (t *scriptedTransport) sentNotifications() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.notifications)
 }
 
 func (t *scriptedTransport) SetNotificationHandler(func(mcp.JSONRPCNotification)) {}

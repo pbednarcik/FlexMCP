@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -31,6 +33,37 @@ const defaultDiscoverProbeTimeout = 5 * time.Second
 // isModern reports whether the client is speaking the stateless protocol core.
 func (c *Client) isModern() bool {
 	return mcp.IsModernProtocol(c.protocolVersion)
+}
+
+// modulePath is this SDK's module, as its build information names it.
+const modulePath = "github.com/mark3labs/mcp-go"
+
+var (
+	defaultInfoOnce sync.Once
+	defaultInfo     mcp.Implementation
+)
+
+// defaultClientInfo is the clientInfo a client sends when its caller named
+// none: this SDK, at the version the binary was built against, or
+// "(devel)" when built from its own tree.
+func defaultClientInfo() mcp.Implementation {
+	defaultInfoOnce.Do(func() {
+		defaultInfo = mcp.Implementation{Name: "mcp-go", Version: "(devel)"}
+		info, ok := debug.ReadBuildInfo()
+		if !ok {
+			return
+		}
+		for _, dep := range info.Deps {
+			if dep.Path == modulePath && dep.Version != "" {
+				defaultInfo.Version = dep.Version
+				return
+			}
+		}
+		if info.Main.Path == modulePath && info.Main.Version != "" {
+			defaultInfo.Version = info.Main.Version
+		}
+	})
+	return defaultInfo
 }
 
 // legacyRequiringTransport is implemented by transports that have been
@@ -61,9 +94,11 @@ func (c *Client) effectiveCapabilities() mcp.ClientCapabilities {
 		capabilities.Sampling = &mcp.SamplingCapability{}
 	}
 	if c.rootsHandler != nil && capabilities.Roots == nil {
+		// The listChanged sub-capability left with its notification in
+		// protocol version 2026-07-28; it is declared on the handshake era only.
 		capabilities.Roots = &struct {
 			ListChanged bool `json:"listChanged,omitempty"`
-		}{ListChanged: true}
+		}{ListChanged: !c.isModern()}
 	}
 	if c.elicitationHandler != nil && capabilities.Elicitation == nil {
 		capabilities.Elicitation = &mcp.ElicitationCapability{}
@@ -251,6 +286,9 @@ func (c *Client) Discover(ctx context.Context, request mcp.DiscoverRequest) (*mc
 	var result mcp.DiscoverResult
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal discover result: %w", err)
+	}
+	if err := checkResultType(result.ResultType); err != nil {
+		return nil, err
 	}
 	return &result, nil
 }

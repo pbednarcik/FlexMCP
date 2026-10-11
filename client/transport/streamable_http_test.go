@@ -1545,14 +1545,16 @@ func TestContinuousListeningGoroutineExitsOnContextCancel(t *testing.T) {
 		err = trans.Start(startCtx)
 		require.NoError(t, err)
 
-		// Attempt Initialize — it will fail because the server returns 400.
+		// Attempt Initialize — it fails: the server's 400 carries a JSON-RPC
+		// error, which is the answer.
 		initReq := JSONRPCRequest{
 			JSONRPC: "2.0",
 			ID:      mcp.NewRequestId(int64(1)),
 			Method:  "initialize",
 		}
-		_, err = trans.SendRequest(startCtx, initReq)
-		require.Error(t, err)
+		response, err := trans.SendRequest(startCtx, initReq)
+		require.NoError(t, err)
+		require.NotNil(t, response.Error)
 
 		// Cancel the context. This should be sufficient to release the goroutine
 		// spawned in Start(), without requiring an explicit Close() call.
@@ -1560,8 +1562,11 @@ func TestContinuousListeningGoroutineExitsOnContextCancel(t *testing.T) {
 	}
 
 	// Poll until goroutines settle, to avoid a flaky single-snapshot check.
+	// The error body is read, so the connection goes back to the keep-alive
+	// pool with its goroutines; those are the pool's, not the listener's.
 	allowed := 1
 	require.Eventually(t, func() bool {
+		http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 		runtime.Gosched()
 		return runtime.NumGoroutine()-before <= allowed
 	}, 5*time.Second, 50*time.Millisecond, "goroutines leaked beyond allowed=%d (ran %d cycles)", allowed, cycles)

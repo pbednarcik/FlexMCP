@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -206,7 +207,11 @@ func (c *Client) fulfillInputRequest(
 		if result == nil {
 			return mcp.InputResponse{}, fmt.Errorf("roots handler returned no result")
 		}
-		return mcp.NewRootsInputResponse(*withRootsArray(result)), nil
+		result, err = checkRoots(result)
+		if err != nil {
+			return mcp.InputResponse{}, err
+		}
+		return mcp.NewRootsInputResponse(*result), nil
 
 	default:
 		return mcp.InputResponse{}, fmt.Errorf("unsupported input request method %q", request.Method)
@@ -214,6 +219,11 @@ func (c *Client) fulfillInputRequest(
 }
 
 // callToolOnce issues a single tools/call request.
+//
+// A header mismatch about an Mcp-Param-* header means the tool's definition
+// may have changed since it was listed: the cached definition is dropped,
+// the tools are listed again, and the call is retried once with headers
+// mirrored from the new definition.
 func (c *Client) callToolOnce(
 	ctx context.Context,
 	request mcp.CallToolRequest,
@@ -224,10 +234,21 @@ func (c *Client) callToolOnce(
 	params.MultiRoundTripParams = roundTrip
 
 	response, err := c.sendRequest(ctx, string(mcp.MethodToolsCall), params, header)
+	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok && strings.HasPrefix(mismatch.Header, mcp.HeaderParamPrefix) {
+		c.forgetTool(params.Name)
+		if _, listErr := c.ListTools(ctx, mcp.ListToolsRequest{}); listErr != nil {
+			return nil, fmt.Errorf("%w (listing the tools again failed: %w)", err, listErr)
+		}
+		response, err = c.sendRequest(ctx, string(mcp.MethodToolsCall), params, header)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return mcp.ParseCallToolResult(response)
+	result, err := mcp.ParseCallToolResult(response)
+	if err != nil {
+		return nil, err
+	}
+	return result, checkResultType(result.ResultType)
 }
 
 // getPromptOnce issues a single prompts/get request.
@@ -244,7 +265,11 @@ func (c *Client) getPromptOnce(
 	if err != nil {
 		return nil, err
 	}
-	return mcp.ParseGetPromptResult(response)
+	result, err := mcp.ParseGetPromptResult(response)
+	if err != nil {
+		return nil, err
+	}
+	return result, checkResultType(result.ResultType)
 }
 
 // readResourceOnce issues a single resources/read request.
@@ -261,7 +286,11 @@ func (c *Client) readResourceOnce(
 	if err != nil {
 		return nil, err
 	}
-	return mcp.ParseReadResourceResult(response)
+	result, err := mcp.ParseReadResourceResult(response)
+	if err != nil {
+		return nil, err
+	}
+	return result, checkResultType(result.ResultType)
 }
 
 // callToolNeedsInput reports whether a tools/call result asks for more input.

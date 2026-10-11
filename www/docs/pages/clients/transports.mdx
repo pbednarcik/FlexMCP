@@ -384,30 +384,30 @@ func createCustomStreamableHTTPClient() {
 ### StreamableHTTP Authentication
 
 ```go
-func createAuthenticatedStreamableHTTPClient() {
-    // Create StreamableHTTP client with OAuth
-    c := client.NewStreamableHttpClient("http://localhost:8080/mcp",
-        transport.WithHTTPOAuth(transport.OAuthConfig{
-            ClientID:     "your-client-id",
-            ClientSecret: "your-client-secret",
-            TokenURL:     "https://auth.example.com/token",
-            Scopes:       []string{"mcp:read", "mcp:write"},
-        }),
-    )
+func createAuthenticatedStreamableHTTPClient() error {
+    // Create StreamableHTTP client with OAuth; the authorization server is
+    // discovered from the MCP server's protected resource metadata.
+    c, err := client.NewOAuthStreamableHttpClient("https://mcp.example.com/mcp", client.OAuthConfig{
+        ClientID:    "your-client-id",
+        RedirectURI: "http://localhost:8085/callback",
+        Scopes:      []string{"mcp:read", "mcp:write"},
+        TokenStore:  client.NewMemoryTokenStore(),
+    })
+    if err != nil {
+        return err
+    }
     defer c.Close()
 
     ctx := context.Background()
-
-    if err := c.Initialize(ctx); err != nil {
-        log.Fatal(err)
+    if err := c.Start(ctx); err != nil {
+        return err
     }
-
-    // Use client...
-}
-
-func isAuthError(err error) bool {
-    return errors.Is(err, ErrUnauthorized) ||
-           errors.Is(err, ErrForbidden)
+    _, err = c.Initialize(ctx, mcp.InitializeRequest{})
+    if client.IsOAuthAuthorizationRequiredError(err) {
+        // No token yet, or the one stored no longer suffices: drive the
+        // authorization flow with client.GetOAuthHandler(err), then retry.
+    }
+    return err
 }
 ```
 

@@ -312,6 +312,8 @@ func TestModernProtocol_HeaderValidation(t *testing.T) {
 		resp := newRequest(t, func(r *http.Request) { r.Header.Set(mcp.HeaderName, "farewell") })
 		errDetails := decodeJSONRPC(t, resp)["error"].(map[string]any)
 		assert.Equal(t, float64(mcp.HEADER_MISMATCH), errDetails["code"])
+		data, _ := errDetails["data"].(map[string]any)
+		assert.Equal(t, mcp.HeaderName, data["header"], "the error names the header, so the client can act on it")
 	})
 
 	t.Run("missing protocol version header", func(t *testing.T) {

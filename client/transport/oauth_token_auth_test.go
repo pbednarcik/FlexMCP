@@ -26,6 +26,7 @@ type tokenAuthServer struct {
 	mu             sync.Mutex
 	authorizations []string
 	forms          []url.Values
+	registrations  []map[string]any
 }
 
 func (s *tokenAuthServer) start(t *testing.T) *httptest.Server {
@@ -45,6 +46,11 @@ func (s *tokenAuthServer) start(t *testing.T) *httptest.Server {
 				AuthorizationResponseIssParameterSupported: s.issSupported,
 			})
 		case "/register":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			s.mu.Lock()
+			s.registrations = append(s.registrations, body)
+			s.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(s.registration)
 		case "/token":

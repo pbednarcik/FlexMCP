@@ -75,6 +75,9 @@ func TestWithClientCapabilitiesMergeWithTheRequest(t *testing.T) {
 		"the server sees the merged set")
 }
 
+// A roots handler declares the roots capability. The listChanged
+// sub-capability went with notifications/roots/list_changed in protocol
+// version 2026-07-28, so it is declared on the handshake era only.
 func TestWithRootsHandlerDeclaresTheRootsCapability(t *testing.T) {
 	for _, version := range []string{mcp.LATEST_LEGACY_PROTOCOL_VERSION, mcp.ProtocolVersion20260728} {
 		t.Run(version, func(t *testing.T) {
@@ -87,7 +90,7 @@ func TestWithRootsHandlerDeclaresTheRootsCapability(t *testing.T) {
 
 			got := capture.get(t).(server.SessionWithClientInfo).GetClientCapabilities()
 			require.NotNil(t, got.Roots)
-			assert.True(t, got.Roots.ListChanged)
+			assert.Equal(t, !mcp.IsModernProtocol(version), got.Roots.ListChanged)
 		})
 	}
 }

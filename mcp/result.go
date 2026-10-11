@@ -16,6 +16,10 @@ const (
 	// [InputRequiredResult.InputRequests] and retries the original request with
 	// the answers attached. See the multi round-trip request pattern.
 	ResultTypeInputRequired ResultType = "input_required"
+
+	// ResultTypeTask is the value the Tasks extension adds: the request was
+	// accepted as a task whose result comes later.
+	ResultTypeTask ResultType = "task"
 )
 
 // IsComplete reports whether the result type denotes a final result. An empty
@@ -23,6 +27,17 @@ const (
 // implementing protocol versions earlier than 2026-07-28.
 func (t ResultType) IsComplete() bool {
 	return t == "" || t == ResultTypeComplete
+}
+
+// Known reports whether the result type is one a client accepts: the core
+// values, an absent one, and the Tasks extension's. Any other value is
+// invalid.
+func (t ResultType) Known() bool {
+	switch t {
+	case "", ResultTypeComplete, ResultTypeInputRequired, ResultTypeTask:
+		return true
+	}
+	return false
 }
 
 // CacheScope indicates the intended scope of a cached response, analogous to

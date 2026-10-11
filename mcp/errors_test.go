@@ -244,11 +244,19 @@ func TestHeaderMismatchErrorRoundTripsThroughJSONRPC(t *testing.T) {
 	assert.True(t, IsHeaderMismatch(wrapped))
 	assert.False(t, IsHeaderMismatch(errors.New("other")))
 
-	// The wire carries only the message; the client still gets the typed error.
-	details := JSONRPCErrorDetails{Code: HEADER_MISMATCH, Message: err.Error()}
-	fromWire := details.AsError()
+	// The wire carries the header's name in data, so the client can act on
+	// which header was wrong; a body without data still yields the typed error.
+	wire := err.JSONRPCError().Error
+	fromWire := wire.AsError()
 	var mismatch HeaderMismatchError
 	require.True(t, errors.As(fromWire, &mismatch))
+	assert.Equal(t, "MCP-Protocol-Version", mismatch.Header)
+	assert.Equal(t, err.Reason, mismatch.Reason)
+
+	details := JSONRPCErrorDetails{Code: HEADER_MISMATCH, Message: err.Error()}
+	bare := details.AsError()
+	require.True(t, errors.As(bare, &mismatch))
+	assert.Empty(t, mismatch.Header)
 	assert.Equal(t, err.Error(), mismatch.Reason)
 }
 
