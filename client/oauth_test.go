@@ -9,7 +9,62 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestNewOAuthSSEClientAuthorizesEveryRequest(t *testing.T) {
+	srv := newLegacySSEServer(t)
+	tokenStore := NewMemoryTokenStore()
+	require.NoError(t, tokenStore.SaveToken(t.Context(), &Token{
+		AccessToken: "sse-token",
+		TokenType:   "Bearer",
+		ExpiresIn:   3600,
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}))
+	c, err := NewOAuthSSEClient(srv.URL+"/sse", OAuthConfig{
+		ClientID:    "test-client",
+		RedirectURI: "http://localhost:8085/callback",
+		Scopes:      []string{"mcp.read"},
+		TokenStore:  tokenStore,
+		PKCEEnabled: true,
+	})
+	require.NoError(t, err)
+	defer c.Close()
+
+	require.NoError(t, c.Start(t.Context()))
+	_, err = c.Initialize(t.Context(), mcp.InitializeRequest{})
+	require.NoError(t, err)
+
+	sse, ok := c.GetTransport().(*transport.SSE)
+	require.True(t, ok, "expected an SSE transport, got %T", c.GetTransport())
+	assert.True(t, sse.IsOAuthEnabled())
+	headers := srv.postHeaders()
+	require.NotEmpty(t, headers)
+	for _, h := range headers {
+		assert.Equal(t, "Bearer sse-token", h.Get("Authorization"))
+	}
+}
+
+func TestHTTPClientConstructorsRejectAnInvalidURL(t *testing.T) {
+	config := OAuthConfig{ClientID: "test-client"}
+	tests := []struct {
+		name      string
+		construct func(url string) (*Client, error)
+	}{
+		{name: "streamable HTTP", construct: func(url string) (*Client, error) { return NewStreamableHttpClient(url) }},
+		{name: "streamable HTTP with OAuth", construct: func(url string) (*Client, error) { return NewOAuthStreamableHttpClient(url, config) }},
+		{name: "SSE with OAuth", construct: func(url string) (*Client, error) { return NewOAuthSSEClient(url, config) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := tt.construct("://not a url")
+			require.Error(t, err)
+			assert.Nil(t, c)
+		})
+	}
+}
 
 func TestNewOAuthStreamableHttpClient(t *testing.T) {
 	ctx := t.Context()

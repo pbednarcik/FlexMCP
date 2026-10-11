@@ -85,7 +85,7 @@ type pipePeer struct {
 	messages chan map[string]any
 }
 
-func newPipePeer(t *testing.T) *pipePeer {
+func newPipePeer(t *testing.T, options ...ClientOption) *pipePeer {
 	t.Helper()
 	clientRead, serverWrite := io.Pipe()
 	serverRead, clientWrite := io.Pipe()
@@ -94,7 +94,8 @@ func newPipePeer(t *testing.T) *pipePeer {
 		_ = serverRead.Close()
 	})
 	p := &pipePeer{t: t, write: serverWrite, messages: make(chan map[string]any, 10)}
-	p.client = NewClient(transport.NewIO(clientRead, clientWrite, io.NopCloser(strings.NewReader(""))), WithLegacyProtocolOnly())
+	options = append([]ClientOption{WithLegacyProtocolOnly()}, options...)
+	p.client = NewClient(transport.NewIO(clientRead, clientWrite, io.NopCloser(strings.NewReader(""))), options...)
 	t.Cleanup(func() { _ = p.client.Close() })
 	require.NoError(t, p.client.Start(t.Context()))
 	go func() {
