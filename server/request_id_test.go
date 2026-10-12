@@ -144,3 +144,47 @@ func TestStreamableHTTP_RefusalEchoesALargeIntegerIDExactly(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "%s", body)
 	assert.Contains(t, string(body), `"id":`+idTwoTo53Plus)
 }
+
+// An id no number type can hold, such as 1e400, is not a valid request id: the
+// request is refused as invalid with a null id, never run and answered as some
+// other id (JSON-RPC 2.0, section 5).
+func TestAnUnrepresentableIDIsRefused(t *testing.T) {
+	const ran = `"result"`
+	for _, id := range []string{"1e400", "-1e400"} {
+		message := `{"jsonrpc":"2.0","id":` + id + `,"method":"ping"}`
+		t.Run("handle message "+id, func(t *testing.T) {
+			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+			require.NoError(t, err)
+			assert.NotContains(t, string(response), ran)
+			assert.Contains(t, string(response), `"id":null`)
+			assert.Contains(t, string(response), `"code":-32600`)
+		})
+		t.Run("stdio "+id, func(t *testing.T) {
+			stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+			stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+			var output bytes.Buffer
+			require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+			assert.NotContains(t, output.String(), ran)
+			assert.Contains(t, output.String(), `"id":null`)
+			assert.Contains(t, output.String(), `"code":-32600`)
+		})
+		t.Run("streamable http "+id, func(t *testing.T) {
+			server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+			t.Cleanup(server.Close)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, strings.NewReader(message))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "%s", body)
+			assert.NotContains(t, string(body), ran)
+			assert.Contains(t, string(body), `"id":null`)
+			assert.Contains(t, string(body), `"code":-32600`)
+		})
+	}
+}

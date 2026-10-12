@@ -2336,7 +2336,8 @@ func (s *MCPServer) handleNotification(
 			} `json:"params"`
 		}
 		if json.Unmarshal(message, &cancelled) == nil && len(cancelled.Params.RequestID) > 0 {
-			if key, ok := inflightKey(ctx, requestIDValue(cancelled.Params.RequestID)); ok {
+			id, valid := requestIDValue(cancelled.Params.RequestID)
+			if key, ok := inflightKey(ctx, id); valid && ok {
 				if cancel, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
 					if cancelFunc, ok := cancel.(context.CancelFunc); ok {
 						cancelFunc()
@@ -2374,15 +2375,21 @@ func inflightKey(ctx context.Context, requestID any) (key string, ok bool) {
 // requestIDValue decodes a JSON-RPC id from the wire as mcp.RequestId does,
 // an integer exactly as an int64, so an id past 2^53 is echoed and matched as
 // sent. Any other value decodes as encoding/json would, and an absent or null
-// id is nil.
-func requestIDValue(raw json.RawMessage) any {
-	var id mcp.RequestId
-	if json.Unmarshal(raw, &id) == nil {
-		return id.Value()
+// id is nil. ok is false for an id no Go value holds, such as 1e400: the
+// request is invalid, never answered as some other id.
+func requestIDValue(raw json.RawMessage) (id any, ok bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var requestID mcp.RequestId
+	if json.Unmarshal(raw, &requestID) == nil {
+		return requestID.Value(), true
 	}
 	var value any
-	_ = json.Unmarshal(raw, &value)
-	return value
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, false
+	}
+	return value, true
 }
 
 func createResponse(id any, result any) mcp.JSONRPCMessage {

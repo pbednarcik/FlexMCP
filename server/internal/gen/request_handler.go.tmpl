@@ -36,7 +36,11 @@ func (s *MCPServer) HandleMessage(
 			"Failed to parse message",
 		)
 	}
-	baseMessage.ID = requestIDValue(baseMessage.RawID)
+	var validID bool
+	baseMessage.ID, validID = requestIDValue(baseMessage.RawID)
+	if !validID {
+		return createErrorResponse(nil, mcp.INVALID_REQUEST, "Invalid request id")
+	}
 
 	// Check for valid JSONRPC version
 	if baseMessage.JSONRPC != mcp.JSONRPC_VERSION {

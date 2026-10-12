@@ -428,7 +428,11 @@ func (s *StdioServer) processMessage(
 		} `json:"params"`
 	}
 	parsed := json.Unmarshal(rawMessage, &baseMessage) == nil
-	baseMessage.ID = requestIDValue(baseMessage.RawID)
+	var validID bool
+	baseMessage.ID, validID = requestIDValue(baseMessage.RawID)
+	if parsed && !validID {
+		return s.writeResponse(createErrorResponse(nil, mcp.INVALID_REQUEST, "Invalid request id"), writer)
+	}
 	if parsed && baseMessage.ID != nil {
 		s.cancelled.start(baseMessage.ID)
 	}
@@ -471,7 +475,8 @@ func (s *StdioServer) processMessage(
 	// A cancellation is noted before the core acts on it, so the cancelled
 	// request's response is dropped whenever its handler returns.
 	if parsed && baseMessage.Method == string(mcp.MethodNotificationCancelled) {
-		s.cancelled.cancel(requestIDValue(baseMessage.Params.RequestID))
+		id, _ := requestIDValue(baseMessage.Params.RequestID)
+		s.cancelled.cancel(id)
 	}
 
 	// Notifications carry no response and must not queue behind a request.
