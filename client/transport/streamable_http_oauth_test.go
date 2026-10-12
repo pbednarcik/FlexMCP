@@ -306,7 +306,9 @@ func TestStreamableHTTP_OAuthMetadataDiscovery(t *testing.T) {
 	}
 }
 
-func TestParseAuthParams(t *testing.T) {
+// The parameters of the first challenge in a WWW-Authenticate value, names in
+// lower case (RFC 9110 §11.2).
+func TestParseChallengesFirstChallengeParams(t *testing.T) {
 	testCases := []struct {
 		name     string
 		header   string
@@ -381,7 +383,10 @@ func TestParseAuthParams(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := parseAuthParams(tc.header)
+			var result map[string]string
+			if challenges := parseChallenges([]string{tc.header}); len(challenges) > 0 {
+				result = challenges[0].params
+			}
 			if len(result) != len(tc.expected) {
 				t.Errorf("Expected %d params, got %d: %v", len(tc.expected), len(result), result)
 				return

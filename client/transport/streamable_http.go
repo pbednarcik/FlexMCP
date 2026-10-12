@@ -434,16 +434,6 @@ var ErrOAuthAuthorizationRequired = errors.New("no valid token available, author
 // ErrAuthorizationRequired is a sentinel error for authorization required (401)
 var ErrAuthorizationRequired = errors.New("authorization required")
 
-// parseAuthParams returns the parameters of the first challenge in a
-// WWW-Authenticate header value, names in lower case (RFC 9110 §11.2).
-func parseAuthParams(header string) map[string]string {
-	challenges := parseChallenges([]string{header})
-	if len(challenges) == 0 {
-		return make(map[string]string)
-	}
-	return challenges[0].params
-}
-
 // parseAuthParamValue reads a single WWW-Authenticate parameter value
 // starting at offset i: a quoted-string (with backslash escapes) when the
 // first byte is '"', otherwise a bare token. It returns the decoded
