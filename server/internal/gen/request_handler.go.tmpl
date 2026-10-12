@@ -32,8 +32,10 @@ func (s *MCPServer) HandleMessage(
 	if err := json.Unmarshal(message, &baseMessage); err != nil {
 		// JSON that is not a request object is an invalid request; only
 		// text that is not JSON is a parse error (JSON-RPC 2.0, 5.1).
+		// The error repeats the id when it could still be read.
 		if json.Valid(message) {
-			return createErrorResponse(nil, mcp.INVALID_REQUEST, "Invalid request")
+			id, _ := requestIDValue(baseMessage.RawID)
+			return createErrorResponse(id, mcp.INVALID_REQUEST, "Invalid request")
 		}
 		return createErrorResponse(
 			nil,

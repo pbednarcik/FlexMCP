@@ -394,7 +394,8 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	}
 	if err := json.Unmarshal(rawData, &jsonMessage); err != nil {
 		if json.Valid(rawData) {
-			s.writeJSONRPCError(w, nil, mcp.INVALID_REQUEST, "request body is not a JSON-RPC message")
+			id, _ := requestIDValue(jsonMessage.ID)
+			s.writeJSONRPCError(w, id, mcp.INVALID_REQUEST, "request body is not a JSON-RPC message")
 			return
 		}
 		s.writeJSONRPCError(w, nil, mcp.PARSE_ERROR, "request body is not valid json")
