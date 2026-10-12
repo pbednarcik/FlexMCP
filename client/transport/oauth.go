@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1096,11 +1097,21 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		if explicitMetadataURL {
 			return metadataDiscoveryResult{}, fmt.Errorf("protected resource metadata discovery failed for explicit URL %q: status %d", protectedResourceURL, resp.StatusCode)
 		}
+		// A server failure is no answer: the metadata may well be there.
+		if isServerFailure(resp.StatusCode) {
+			return metadataDiscoveryResult{}, fmt.Errorf("protected resource metadata request to %q failed: status %d", protectedResourceURL, resp.StatusCode)
+		}
+		var fetchErr error
 		for _, u := range authorizationServerMetadataURLs(baseURL) {
-			// Intermediate fetch errors are intentionally discarded so the caller
-			// can fall through to the next candidate URL, mirroring the prior
-			// behavior where metadataFetchErr was cleared on the first success.
-			metadata, _ := h.fetchMetadataFromURL(ctx, u)
+			// Any failed fetch moves on to the next candidate URL, but metadata
+			// that may be there keeps the default endpoints from standing in.
+			metadata, err := h.fetchMetadataFromURL(ctx, u)
+			if err != nil {
+				if errors.Is(err, errMetadataUnavailable) {
+					fetchErr = cmp.Or(fetchErr, err)
+				}
+				continue
+			}
 			if metadata == nil {
 				continue
 			}
@@ -1116,6 +1127,9 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 				)
 			}
 			return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
+		}
+		if fetchErr != nil {
+			return metadataDiscoveryResult{}, fetchErr
 		}
 		// If that also fails, fall back to default endpoints
 		metadata, err := h.getDefaultEndpoints(baseURL)
@@ -1201,10 +1215,17 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 
 	// Try the MCP-specified discovery URLs in order (RFC 8414 with path
 	// insertion, plus OpenID Connect Discovery variants).
+	var fetchErr error
 	for _, u := range authorizationServerMetadataURLs(authServerURL) {
-		// Intermediate fetch errors are intentionally discarded so the caller
-		// can fall through to the next candidate URL.
-		metadata, _ := h.fetchMetadataFromURL(ctx, u)
+		// Any failed fetch moves on to the next candidate URL, but metadata
+		// that may be there keeps the default endpoints from standing in.
+		metadata, err := h.fetchMetadataFromURL(ctx, u)
+		if err != nil {
+			if errors.Is(err, errMetadataUnavailable) {
+				fetchErr = cmp.Or(fetchErr, err)
+			}
+			continue
+		}
 		if metadata == nil {
 			continue
 		}
@@ -1221,6 +1242,10 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 			)
 		}
 		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL, scopesSupported: scopesSupported}, nil
+	}
+
+	if fetchErr != nil {
+		return metadataDiscoveryResult{}, fetchErr
 	}
 
 	// If both discovery methods fail, use default endpoints based on the authorization server URL
@@ -1367,10 +1392,17 @@ func resourceBindsToURL(resource, addressed string) bool {
 	return strings.HasPrefix(addressedPath, resourcePath+"/")
 }
 
+// errMetadataUnavailable marks a metadata fetch that got no answer: the
+// request failed or was cancelled, or the server failed. The metadata may
+// well be there, so it is not taken for absent.
+var errMetadataUnavailable = errors.New("metadata unavailable")
+
 // fetchMetadataFromURL fetches and parses OAuth server metadata from a URL.
-// Returns (nil, nil) when the server responds with a non-200 status so the
-// caller can fall through to the next candidate URL. Network, decode, and
-// validation failures are returned to the caller.
+// Returns (nil, nil) when the server says the metadata is not there (a
+// non-200 status other than a server failure) so the caller can fall
+// through to the next candidate URL. Network and server failures
+// (errMetadataUnavailable), decode, and validation failures are returned to
+// the caller.
 //
 // This function performs HTTP I/O and must not be called while holding
 // metadataMu (see #871).
@@ -1389,10 +1421,13 @@ func (h *OAuthHandler) fetchMetadataFromURL(ctx context.Context, metadataURL str
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send metadata request: %w", err)
+		return nil, fmt.Errorf("%w: failed to send metadata request: %w", errMetadataUnavailable, err)
 	}
 	defer resp.Body.Close()
 
+	if isServerFailure(resp.StatusCode) {
+		return nil, fmt.Errorf("%w: metadata request to %q failed: status %d", errMetadataUnavailable, metadataURL, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, nil
 	}
@@ -1408,6 +1443,12 @@ func (h *OAuthHandler) fetchMetadataFromURL(ctx context.Context, metadataURL str
 	}
 
 	return &metadata, nil
+}
+
+// isServerFailure reports whether status says the server failed to answer,
+// rather than that what was asked for is not there.
+func isServerFailure(status int) bool {
+	return status >= http.StatusInternalServerError || status == http.StatusTooManyRequests
 }
 
 // validateAuthServerMetadataURLs ensures every URL-bearing field in m uses an
