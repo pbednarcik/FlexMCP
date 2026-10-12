@@ -141,3 +141,34 @@ func TestOAuthHandler_RedirectsDoNotLeaveHTTPS(t *testing.T) {
 	})
 	require.Zero(t, reached.Load(), "a redirect sent a request to plain http")
 }
+
+// The HTTPS rule judges the URL a redirect actually follows: an application
+// redirect policy runs first, so one that rewrites the hop to http is refused.
+func TestOAuthHandler_ARedirectPolicyCannotRewriteDiscoveryToHTTP(t *testing.T) {
+	var reached atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(plain.Close)
+	var secure *httptest.Server
+	secure = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, secure.URL+"/next", http.StatusFound)
+	}))
+	t.Cleanup(secure.Close)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: secure.URL + "/metadata",
+		HTTPClient: &http.Client{CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			req.URL.Scheme = "http"
+			req.URL.Host = strings.TrimPrefix(plain.URL, "http://")
+			return nil
+		}},
+	})
+	handler.SetBaseURL("https://mcp.example/mcp")
+
+	_, err := handler.GetServerMetadata(t.Context())
+	require.ErrorIs(t, err, ErrInsecureAuthorizationServer)
+	require.Zero(t, reached.Load(), "a rewritten redirect sent discovery to plain http")
+}
