@@ -277,3 +277,47 @@ func TestCancelledNotificationTellsAStringIDFromAnInteger(t *testing.T) {
 		}
 	})
 }
+
+// -32700 is for text that is not JSON; JSON that is not a request object is an
+// invalid request, -32600 (JSON-RPC 2.0, section 5.1). Both carry a null id.
+func TestOnlyTextThatIsNotJSONIsAParseError(t *testing.T) {
+	for message, code := range map[string]string{
+		`{`:                                   "-32700",
+		`5`:                                   "-32600",
+		`"ping"`:                              "-32600",
+		`{"jsonrpc":"2.0","id":1,"method":5}`: "-32600",
+		`[{"jsonrpc":"2.0","id":1,"method":"ping"}]`: "-32600",
+	} {
+		t.Run("handle message "+message, func(t *testing.T) {
+			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+			require.NoError(t, err)
+			assert.Contains(t, string(response), `"id":null`)
+			assert.Contains(t, string(response), `"code":`+code)
+		})
+		t.Run("stdio "+message, func(t *testing.T) {
+			stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+			stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+			var output bytes.Buffer
+			require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+			assert.Contains(t, output.String(), `"id":null`)
+			assert.Contains(t, output.String(), `"code":`+code)
+		})
+		t.Run("streamable http "+message, func(t *testing.T) {
+			server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+			t.Cleanup(server.Close)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, strings.NewReader(message))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "%s", body)
+			assert.Contains(t, string(body), `"id":null`)
+			assert.Contains(t, string(body), `"code":`+code)
+		})
+	}
+}
