@@ -65,6 +65,19 @@ func TestRequestIdDecodesOnlyIntegerLiterals(t *testing.T) {
 	}
 }
 
+// An id built in process from any Go integer type is the same id as the one
+// the wire gives back, an int64 or a json.Number past it, so a request made
+// with NewRequestId(1) is matched to the response that carries 1.
+func TestRequestIdStringIsTheSameForEveryIntegerType(t *testing.T) {
+	for _, value := range []any{1, int8(1), int16(1), int32(1), int64(1), uint(1), uint8(1), uint16(1), uint32(1), uint64(1), json.Number("1")} {
+		assert.Equal(t, "int64:1", NewRequestId(value).String(), "%T", value)
+	}
+	assert.Equal(t, "number:18446744073709551615", NewRequestId(uint64(18446744073709551615)).String())
+	var decoded RequestId
+	require.NoError(t, json.Unmarshal([]byte(`18446744073709551615`), &decoded))
+	assert.Equal(t, decoded.String(), NewRequestId(uint64(18446744073709551615)).String())
+}
+
 func TestRequestIdRefusesNonScalarIDs(t *testing.T) {
 	var id RequestId
 	require.EqualError(t, json.Unmarshal([]byte(`true`), &id), "invalid request id: true")

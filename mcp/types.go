@@ -393,14 +393,37 @@ func (r RequestId) Value() any {
 	return r.value
 }
 
-// String returns a string representation of the RequestId
+// String returns a string representation of the RequestId. Every Go integer
+// type, and a json.Number holding an integer, gives the form the same id
+// takes when decoded from the wire, so ids built in process match them.
 func (r RequestId) String() string {
 	switch v := r.value.(type) {
 	case string:
 		return "string:" + v
 	case int64:
 		return "int64:" + strconv.FormatInt(v, 10)
+	case int:
+		return "int64:" + strconv.FormatInt(int64(v), 10)
+	case int32:
+		return "int64:" + strconv.FormatInt(int64(v), 10)
+	case int16:
+		return "int64:" + strconv.FormatInt(int64(v), 10)
+	case int8:
+		return "int64:" + strconv.FormatInt(int64(v), 10)
+	case uint:
+		return unsignedIDString(uint64(v))
+	case uint64:
+		return unsignedIDString(v)
+	case uint32:
+		return unsignedIDString(uint64(v))
+	case uint16:
+		return unsignedIDString(uint64(v))
+	case uint8:
+		return unsignedIDString(uint64(v))
 	case json.Number:
+		if i, err := strconv.ParseInt(string(v), 10, 64); err == nil {
+			return "int64:" + strconv.FormatInt(i, 10)
+		}
 		return "number:" + string(v)
 	case float64:
 		if i, ok := integralInt64(v); ok {
@@ -453,6 +476,15 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	return fmt.Errorf("invalid request id: %s", string(data))
+}
+
+// unsignedIDString is String's form of an unsigned integer id: an int64's
+// inside its range, the literal's past it, as decoding gives.
+func unsignedIDString(u uint64) string {
+	if u <= math.MaxInt64 {
+		return "int64:" + strconv.FormatInt(int64(u), 10)
+	}
+	return "number:" + strconv.FormatUint(u, 10)
 }
 
 // integralInt64 returns f as an int64 when it is a whole number inside the
