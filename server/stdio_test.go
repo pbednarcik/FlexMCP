@@ -978,3 +978,33 @@ func TestStdioServer_TheEndOfInputReachesACallRunOnTheReadLoop(t *testing.T) {
 	default:
 	}
 }
+
+// A tool call the client cancels while it waits in the queue is not started
+// (a receiver of a cancellation should stop processing the request): the
+// cancel finds no handler to stop yet, so the worker drops the call.
+func TestStdioServer_AToolCallCancelledWhileQueuedIsNotStarted(t *testing.T) {
+	started := 0
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+	mcpServer.AddTool(mcp.NewTool("count"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		started++
+		return mcp.NewToolResultText("ok"), nil
+	})
+	stdioServer := NewStdioServer(mcpServer)
+	id := float64(7)
+	stdioServer.cancelled.start(id)
+	stdioServer.cancelled.cancel(id)
+	var output bytes.Buffer
+	stdioServer.toolCallQueue = make(chan *toolCallWork, 1)
+	stdioServer.toolCallQueue <- &toolCallWork{
+		ctx:     t.Context(),
+		id:      id,
+		message: json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"count"}}`),
+		writer:  &output,
+	}
+	close(stdioServer.toolCallQueue)
+
+	stdioServer.workerWg.Add(1)
+	stdioServer.toolCallWorker(t.Context())
+	require.Zero(t, started, "a call cancelled while queued was started")
+	require.Zero(t, output.Len(), "a call cancelled while queued was answered: %s", output.String())
+}

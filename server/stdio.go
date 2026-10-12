@@ -99,6 +99,16 @@ func (c *cancelledRequests) cancel(id any) {
 	}
 }
 
+// isCancelled reports whether the client cancelled id while it was in flight.
+func (c *cancelledRequests) isCancelled(id any) bool {
+	if !comparableID(id) {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inflight[id]
+}
+
 // finish forgets id and reports whether it was cancelled while in flight.
 func (c *cancelledRequests) finish(id any) bool {
 	if !comparableID(id) {
@@ -309,11 +319,12 @@ func (s *StdioServer) toolCallWorker(ctx context.Context) {
 				return
 			}
 			// The end of input is the shutdown: a call still queued then is
-			// dropped, not started. Passing this check admits the call to
-			// running work, which the shutdown cancels through its context
-			// like any other; it does not make the handler's entry atomic
-			// with the shutdown.
-			if ctx.Err() != nil {
+			// dropped, not started, and so is one the client cancelled while
+			// it waited, which no handler is there yet to stop. Passing this
+			// check admits the call to running work, which the shutdown and a
+			// cancellation stop through its context like any other; it does
+			// not make the handler's entry atomic with either.
+			if ctx.Err() != nil || s.cancelled.isCancelled(work.id) {
 				s.cancelled.finish(work.id)
 				continue
 			}
