@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -929,56 +930,6 @@ func TestStdioServer_AQueuedToolCallDoesNotStartAfterTheInputEnds(t *testing.T) 
 	}
 }
 
-// The end of input shuts the server down even when the read loop is running
-// a tool call itself because the queue was full: that call is cancelled as
-// running work is, the loop reaches the end of input, and Listen returns.
-func TestStdioServer_TheEndOfInputReachesACallRunOnTheReadLoop(t *testing.T) {
-	started := make(chan string, 3)
-	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
-	for _, name := range []string{"busy", "queued", "overflow"} {
-		mcpServer.AddTool(mcp.NewTool(name), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			started <- name
-			<-ctx.Done()
-			return nil, ctx.Err()
-		})
-	}
-	stdioServer := NewStdioServer(mcpServer)
-	WithWorkerPoolSize(1)(stdioServer)
-	WithQueueSize(1)(stdioServer)
-	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
-
-	stdin, input := io.Pipe()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	listened := make(chan error, 1)
-	go func() { listened <- stdioServer.Listen(ctx, stdin, io.Discard) }()
-	call := func(id int, name string) {
-		_, err := fmt.Fprintf(input, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q}}`+"\n", id, name)
-		require.NoError(t, err)
-	}
-
-	// The only worker is busy, the queue holds one call, and the next runs
-	// on the read loop.
-	call(1, "busy")
-	require.Equal(t, "busy", <-started)
-	call(2, "queued")
-	call(3, "overflow")
-	require.Equal(t, "overflow", <-started)
-	require.NoError(t, input.Close())
-
-	select {
-	case err := <-listened:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("the end of input did not reach the call run on the read loop; Listen is still running")
-	}
-	select {
-	case name := <-started:
-		t.Fatalf("%s started after the input ended", name)
-	default:
-	}
-}
-
 // A tool call the client cancels while it waits in the queue is not started
 // (a receiver of a cancellation should stop processing the request): the
 // cancel finds no handler to stop yet, so the worker drops the call.
@@ -1007,4 +958,73 @@ func TestStdioServer_AToolCallCancelledWhileQueuedIsNotStarted(t *testing.T) {
 	stdioServer.toolCallWorker(t.Context())
 	require.Zero(t, started, "a call cancelled while queued was started")
 	require.Zero(t, output.Len(), "a call cancelled while queued was answered: %s", output.String())
+}
+
+// A tool call that finds the queue full is refused at once, not run on the
+// read loop: the loop keeps reading, so the end of input, the shutdown, is
+// seen however many lines are still waiting, and the pool and the queue
+// bound the calls in flight.
+func TestStdioServer_ACallPastAFullQueueIsRefused(t *testing.T) {
+	const overflow = 100 // more than the reader holds ahead of the loop
+	started := make(chan string, overflow+2)
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+	for _, name := range []string{"busy", "queued", "overflow"} {
+		mcpServer.AddTool(mcp.NewTool(name), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			started <- name
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+	}
+	stdioServer := NewStdioServer(mcpServer)
+	WithWorkerPoolSize(1)(stdioServer)
+	WithQueueSize(1)(stdioServer)
+	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+
+	stdin, input := io.Pipe()
+	var output bytes.Buffer
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	listened := make(chan error, 1)
+	go func() { listened <- stdioServer.Listen(ctx, stdin, &output) }()
+	call := func(id int, name string) error {
+		_, err := fmt.Fprintf(input, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q}}`+"\n", id, name)
+		return err
+	}
+
+	require.NoError(t, call(1, "busy"))
+	require.Equal(t, "busy", <-started)
+	// The rest is written on its own goroutine: a server that stops reading
+	// would block the writes, and the test must still reach its deadline.
+	go func() {
+		defer input.Close()
+		if call(2, "queued") != nil {
+			return
+		}
+		for id := range overflow {
+			if call(3+id, "overflow") != nil {
+				return
+			}
+		}
+	}()
+
+	select {
+	case err := <-listened:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the end of input was not seen; Listen is still running")
+	}
+	close(started)
+	for name := range started {
+		t.Errorf("%s started after the only worker was taken", name)
+	}
+	refused := 0
+	scanner := bufio.NewScanner(&output)
+	for scanner.Scan() {
+		var response mcp.JSONRPCError
+		if json.Unmarshal(scanner.Bytes(), &response) == nil && response.Error.Code == mcp.INTERNAL_ERROR &&
+			strings.HasPrefix(response.Error.Message, "server busy") {
+			refused++
+		}
+	}
+	require.Equal(t, overflow, refused, "every call past the full queue is refused")
 }
