@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,5 +77,63 @@ func TestSSE_AnErrorWithANullIDIsNotANotification(t *testing.T) {
 	require.NoError(t, trans.Start(t.Context()))
 	t.Cleanup(func() { _ = trans.Close() })
 
-	assert.Equal(t, "notifications/message", <-notifications, "an error with a null id reached the notification handler")
+	select {
+	case method := <-notifications:
+		assert.Equal(t, "notifications/message", method, "an error with a null id reached the notification handler")
+	case <-time.After(2 * time.Second):
+		t.Fatal("no notification arrived")
+	}
+}
+
+// The SSE transport serves no server requests, but a request is never left
+// unanswered (JSON-RPC 2.0, section 5): ping, which the receiver MUST answer
+// on the earlier revisions, gets an empty result; any other method is not
+// found; a request whose id cannot be read is invalid, answered with a null id.
+func TestSSE_AServerRequestIsAnswered(t *testing.T) {
+	posted := make(chan string, 4)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/message" {
+			body, _ := io.ReadAll(r.Body)
+			posted <- string(body)
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s/message\n\n", server.URL)
+		for _, request := range []string{
+			`{"jsonrpc":"2.0","id":7,"method":"ping"}`,
+			`{"jsonrpc":"2.0","id":8,"method":"sampling/createMessage","params":{}}`,
+			`{"jsonrpc":"2.0","id":null,"method":"ping"}`,
+			`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`,
+		} {
+			_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", request)
+		}
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	trans, err := NewSSE(server.URL + "/sse")
+	require.NoError(t, err)
+	trans.SetNotificationHandler(func(notification mcp.JSONRPCNotification) {
+		t.Errorf("a server request reached the notification handler: %+v", notification)
+	})
+	require.NoError(t, trans.Start(t.Context()))
+	t.Cleanup(func() { _ = trans.Close() })
+
+	want := []string{
+		`{"jsonrpc":"2.0","id":7,"result":{}}`,
+		`{"jsonrpc":"2.0","id":8,"error":{"code":-32601,"message":"Method not found: the SSE transport serves no server requests"}}`,
+		`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request id"}}`,
+		`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request id"}}`,
+	}
+	for _, answer := range want {
+		select {
+		case body := <-posted:
+			assert.JSONEq(t, answer, body)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no answer posted; want %s", answer)
+		}
+	}
 }

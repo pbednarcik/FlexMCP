@@ -455,33 +455,19 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			close(endpointChan)
 		})
 	case "message":
-		var message struct {
-			JSONRPCResponse
-			Method string `json:"method"`
+		var envelope struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
 		}
-		if err := json.Unmarshal([]byte(data), &message); err != nil {
+		if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 			c.logger.Error("Error unmarshaling message", "err", err)
 			return
 		}
-		baseMessage := message.JSONRPCResponse
+		var id mcp.RequestId
+		readableID := len(envelope.ID) > 0 && json.Unmarshal(envelope.ID, &id) == nil && !id.IsNil()
 
-		// A request from the server is never a response, even when it carries
-		// the id of one the client is waiting on: request ids are per sender.
-		// This transport serves no server requests.
-		if message.Method != "" && !baseMessage.ID.IsNil() {
-			c.logger.Error("Ignoring a server request: the SSE transport serves none", "method", message.Method)
-			return
-		}
-
-		// A response without an id, an error to a request whose id the server
-		// could not read, answers no request this shared stream can name.
-		if baseMessage.ID.IsNil() && message.Method == "" {
-			c.logger.Error("Dropping a response without a readable id", "error", baseMessage.Error)
-			return
-		}
-
-		// Handle notification
-		if baseMessage.ID.IsNil() {
+		switch {
+		case envelope.Method != "" && len(envelope.ID) == 0:
 			var notification mcp.JSONRPCNotification
 			if err := json.Unmarshal([]byte(data), &notification); err != nil {
 				return
@@ -491,6 +477,33 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 				c.onNotification(notification)
 			}
 			c.notifyMu.RUnlock()
+			return
+		case envelope.Method != "" && !readableID:
+			// A request id is a string or an integer and never null.
+			c.answer(NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
+			return
+		case envelope.Method == string(mcp.MethodPing):
+			// The receiver of a ping MUST answer it on the earlier revisions.
+			c.answer(NewJSONRPCResultResponse(id, json.RawMessage(`{}`)))
+			return
+		case envelope.Method != "":
+			// A request from the server is never a response, even when it
+			// carries the id of one the client is waiting on: request ids are
+			// per sender. This transport serves no other server request.
+			c.logger.Debug("Refusing a server request: the SSE transport serves none", "method", envelope.Method)
+			c.answer(NewJSONRPCErrorResponse(id, mcp.METHOD_NOT_FOUND, "Method not found: the SSE transport serves no server requests", nil))
+			return
+		case !readableID:
+			// A response without an id, an error to a request whose id the
+			// server could not read, answers no request this shared stream
+			// can name.
+			c.logger.Error("Dropping a response without a readable id", "id", string(envelope.ID))
+			return
+		}
+
+		var baseMessage JSONRPCResponse
+		if err := json.Unmarshal([]byte(data), &baseMessage); err != nil {
+			c.logger.Error("Error unmarshaling response", "err", err)
 			return
 		}
 
@@ -721,6 +734,32 @@ func (c *SSE) SetProtocolVersion(version string) {
 
 // SendNotification sends a JSON-RPC notification to the server without expecting a response.
 func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNotification) error {
+	notificationBytes, err := json.Marshal(notification)
+	if err != nil {
+		return fmt.Errorf("failed to marshal notification: %w", err)
+	}
+	return c.post(ctx, notificationBytes, "notification")
+}
+
+// answer sends the client's response to a server request. It runs on the
+// stream's reader, as the Streamable HTTP transport's answers do, bounded by
+// the time a server request may take there.
+func (c *SSE) answer(response *JSONRPCResponse) {
+	body, err := json.Marshal(response)
+	if err != nil {
+		c.logger.Error("Error marshaling response", "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.post(ctx, body, "response"); err != nil {
+		c.logger.Error("Error answering a server request", "err", err)
+	}
+}
+
+// post sends one message, a notification or a response, to the endpoint;
+// what names it in errors.
+func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 	c.mu.RLock()
 	endpoint := c.endpoint
 	c.mu.RUnlock()
@@ -729,19 +768,14 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 		return fmt.Errorf("endpoint not received")
 	}
 
-	notificationBytes, err := json.Marshal(notification)
-	if err != nil {
-		return fmt.Errorf("failed to marshal notification: %w", err)
-	}
-
 	req, err := http.NewRequestWithContext(
 		ctx,
 		"POST",
 		endpoint.String(),
-		bytes.NewReader(notificationBytes),
+		bytes.NewReader(body),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create notification request: %w", err)
+		return fmt.Errorf("failed to create %s request: %w", what, err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -787,7 +821,7 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %w", err)
+		return fmt.Errorf("failed to send %s: %w", what, err)
 	}
 	defer resp.Body.Close()
 
@@ -799,7 +833,8 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 		// Handle other error responses
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf(
-			"notification failed with status %d: %s",
+			"%s failed with status %d: %s",
+			what,
 			resp.StatusCode,
 			body,
 		)
