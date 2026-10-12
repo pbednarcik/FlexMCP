@@ -1,6 +1,9 @@
 package transport
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,4 +81,64 @@ func TestOAuthHandler_ATokenWithoutARecordIsStillUsed(t *testing.T) {
 	header, err := handler.GetAuthorizationHeader(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "Bearer app-token", header)
+}
+
+// flakyTokenStore answers its first good reads and fails every read after.
+type flakyTokenStore struct {
+	TokenStore
+	good  int
+	mu    sync.Mutex
+	reads int
+}
+
+func (s *flakyTokenStore) GetToken(ctx context.Context) (*Token, error) {
+	s.mu.Lock()
+	s.reads++
+	failing := s.reads > s.good
+	s.mu.Unlock()
+	if failing {
+		return nil, errors.New("store unavailable")
+	}
+	return s.TokenStore.GetToken(ctx)
+}
+
+// A refresh token is checked against the record it was read with: a store
+// that fails a later read does not let it go to another issuer unchecked.
+func TestOAuthHandler_ARefreshTokenIsNotSentWhenItsRecordCannotBeRead(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		good    int
+		refresh func(*OAuthHandler) error
+	}{
+		{"the shared refresh", 2, func(h *OAuthHandler) error {
+			_, err := h.GetAuthorizationHeader(t.Context())
+			return err
+		}},
+		{"RefreshToken", 0, func(h *OAuthHandler) error {
+			_, err := h.RefreshToken(t.Context(), "refresh-from-first")
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			first := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+			second := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+			secondHTTP := second.start(t)
+			resource, _ := switchingResource(t, secondHTTP.URL)
+			store := &flakyTokenStore{TokenStore: NewMemoryTokenStore(), good: tt.good}
+			require.NoError(t, store.SaveToken(t.Context(), &Token{
+				AccessToken:  "old",
+				RefreshToken: "refresh-from-first",
+				ExpiresAt:    time.Now().Add(-time.Minute),
+				Resource:     resource.URL,
+				Issuer:       first.URL,
+			}))
+			handler := NewOAuthHandler(OAuthConfig{RedirectURI: "http://localhost:8085/callback", TokenStore: store})
+			handler.SetBaseURL(resource.URL)
+
+			require.Error(t, tt.refresh(handler))
+			second.mu.Lock()
+			defer second.mu.Unlock()
+			assert.Empty(t, second.forms, "the refresh token went to another issuer")
+		})
+	}
 }

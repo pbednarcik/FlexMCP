@@ -464,11 +464,14 @@ func (h *OAuthHandler) refreshStoredToken(ctx context.Context) (*Token, error) {
 	if token.RefreshToken == "" {
 		return nil, ErrOAuthAuthorizationRequired
 	}
-	return h.refreshToken(ctx, token.RefreshToken)
+	return h.refreshToken(ctx, token)
 }
 
-// refreshToken refreshes an OAuth token
-func (h *OAuthHandler) refreshToken(ctx context.Context, refreshToken string) (*Token, error) {
+// refreshToken spends the refresh token of stored, whose record, read with
+// it, says where the refresh token may go: only to the authorization server
+// that issued it, for the server it was issued for. A refresh token without a
+// record carries none.
+func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token, error) {
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server metadata: %w", err)
@@ -479,17 +482,13 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, refreshToken string) (*
 	if resourceURL == "" {
 		return nil, ErrResourceUnknown
 	}
-	// The stored token's record says where its refresh token may go: only to
-	// the authorization server that issued it, for the server it was issued
-	// for. A refresh token the caller brings from elsewhere has no record.
-	if stored, err := h.config.TokenStore.GetToken(ctx); err == nil && stored.RefreshToken == refreshToken {
-		if stored.Issuer != "" && stored.Issuer != metadata.Issuer {
-			return nil, fmt.Errorf("%w: the refresh token is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, stored.Issuer, metadata.Issuer)
-		}
-		if !h.tokenIsForThisServer(stored) {
-			return nil, fmt.Errorf("%w: the refresh token is for %q", ErrOAuthAuthorizationRequired, stored.Resource)
-		}
+	if stored.Issuer != "" && stored.Issuer != metadata.Issuer {
+		return nil, fmt.Errorf("%w: the refresh token is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, stored.Issuer, metadata.Issuer)
 	}
+	if !h.tokenIsForThisServer(stored) {
+		return nil, fmt.Errorf("%w: the refresh token is for %q", ErrOAuthAuthorizationRequired, stored.Resource)
+	}
+	refreshToken := stored.RefreshToken
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
@@ -551,9 +550,19 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, refreshToken string) (*
 	return &tokenResp, nil
 }
 
-// RefreshToken is a public wrapper for refreshToken
+// RefreshToken refreshes a token with refreshToken. When it is the stored
+// token's, the stored record decides where it may go; one brought from
+// elsewhere has none. A token store that cannot be read refuses the refresh.
 func (h *OAuthHandler) RefreshToken(ctx context.Context, refreshToken string) (*Token, error) {
-	return h.refreshToken(ctx, refreshToken)
+	token := &Token{RefreshToken: refreshToken}
+	stored, err := h.config.TokenStore.GetToken(ctx)
+	switch {
+	case err == nil && stored.RefreshToken == refreshToken:
+		token = stored
+	case err != nil && !errors.Is(err, ErrNoToken):
+		return nil, fmt.Errorf("failed to read the token store: %w", err)
+	}
+	return h.refreshToken(ctx, token)
 }
 
 // GetClientID returns the client ID
