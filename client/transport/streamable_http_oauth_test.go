@@ -19,7 +19,7 @@ func TestStreamableHTTP_WithOAuth(t *testing.T) {
 	authHeaderReceived := ""
 
 	// Create a test server that requires OAuth
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Capture the Authorization header
 		authHeaderReceived = r.Header.Get("Authorization")
 
@@ -145,7 +145,7 @@ func TestStreamableHTTP_WithOAuth(t *testing.T) {
 
 func TestStreamableHTTP_WithOAuth_Unauthorized(t *testing.T) {
 	// Create a test server that requires OAuth
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always return unauthorized
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -245,7 +245,7 @@ func TestStreamableHTTP_OAuthMetadataDiscovery(t *testing.T) {
 	// TestStreamableHTTP_ErrorAndHandlerReadTheSameChallenge).
 	var server *httptest.Server
 	var expectedMetadataURL string
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return 401 with WWW-Authenticate header containing resource_metadata
 		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+expectedMetadataURL+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
@@ -475,7 +475,7 @@ func TestStreamableHTTP_OAuthMetadataFeedback(t *testing.T) {
 	// so the advertised PRM URL is a path under the same test server.
 	var server *httptest.Server
 	var expectedMetadataURL string
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+expectedMetadataURL+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))

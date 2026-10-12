@@ -32,7 +32,7 @@ type tokenAuthServer struct {
 func (s *tokenAuthServer) start(t *testing.T) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server":

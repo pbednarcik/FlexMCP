@@ -19,7 +19,7 @@ func issuerTestServers(t *testing.T, tenant string, listed, issuer func(asURL st
 	t.Helper()
 	var registrations atomic.Int32
 	var as *httptest.Server
-	as = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	as = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server" + tenant:
 			w.Header().Set("Content-Type", "application/json")
@@ -41,7 +41,7 @@ func issuerTestServers(t *testing.T, tenant string, listed, issuer func(asURL st
 	t.Cleanup(as.Close)
 
 	var resourceURL string
-	resource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	resource := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-protected-resource" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return

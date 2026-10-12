@@ -24,7 +24,7 @@ type refreshServer struct {
 func newRefreshServer(t *testing.T, token func(w http.ResponseWriter, refreshToken string)) *refreshServer {
 	t.Helper()
 	s := &refreshServer{}
-	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server":

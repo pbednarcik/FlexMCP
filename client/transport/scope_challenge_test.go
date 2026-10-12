@@ -17,7 +17,7 @@ import (
 // value given.
 func challengingServer(t *testing.T, status int, challenge string) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if challenge != "" {
 			w.Header().Set("WWW-Authenticate", challenge)
 		}
@@ -143,7 +143,7 @@ func TestOAuthHandler_RequestsScopesSupportedWhenNothingElseSaysWhich(t *testing
 	for name, supported := range map[string][]string{"declared": {"mcp.read", "mcp.write"}, "undeclared": nil} {
 		t.Run(name, func(t *testing.T) {
 			var server *httptest.Server
-			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
 				case "/.well-known/oauth-protected-resource":
@@ -276,7 +276,7 @@ func TestOAuthHandler_TakesOneChallengeWhole(t *testing.T) {
 // validation) is passed over for the error too.
 func TestStreamableHTTP_ErrorAndHandlerReadTheSameChallenge(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("WWW-Authenticate", `Bearer scope="a", resource_metadata="https://attacker.example/prm"`)
 		w.Header().Add("WWW-Authenticate", `Bearer scope="b", resource_metadata="`+server.URL+`/prm"`)
 		w.WriteHeader(http.StatusUnauthorized)

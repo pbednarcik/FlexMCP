@@ -56,7 +56,7 @@ func newPRMBindingServers(t *testing.T, serveMCP bool) *prmBindingServers {
 	s := &prmBindingServers{victimResource: "https://victim-mcp.example/mcp"}
 
 	var as *httptest.Server
-	as = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	as = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/.well-known/oauth-authorization-server":
 			prmWriteJSON(t, w, http.StatusOK, map[string]any{
@@ -86,7 +86,7 @@ func newPRMBindingServers(t *testing.T, serveMCP bool) *prmBindingServers {
 	}))
 	t.Cleanup(as.Close)
 
-	rs1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rs1 := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/.well-known/oauth-protected-resource/mcp":
 			prmWriteJSON(t, w, http.StatusOK, map[string]any{

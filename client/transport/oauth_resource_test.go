@@ -82,7 +82,7 @@ func TestOAuthHandler_RefusesToStartWithoutAKnownResource(t *testing.T) {
 func resourceServer(t *testing.T, authorizationServer string) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-protected-resource" && r.URL.Path != "/prm" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -221,7 +221,7 @@ func TestOAuthHandler_RefusesAResourceThatIsNotACanonicalURI(t *testing.T) {
 func TestOAuthHandler_RefusesADeclaredResourceWithAFragment(t *testing.T) {
 	as := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
 	var resource *httptest.Server
-	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	resource = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-protected-resource" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -299,7 +299,7 @@ func TestOAuthHandler_RedeemsTheCodeOnlyForTheResourceItWasObtainedFor(t *testin
 	var mu sync.Mutex
 	path := ""
 	var resource *httptest.Server
-	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	resource = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-protected-resource/mcp" {
 			w.WriteHeader(http.StatusNotFound)
 			return

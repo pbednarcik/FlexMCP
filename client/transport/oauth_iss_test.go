@@ -161,7 +161,7 @@ func TestOAuthHandler_DoesNotRedeemTheCodeWithAnotherIssuer(t *testing.T) {
 	var mu sync.Mutex
 	authorizationServer := firstHTTP.URL
 	var resource *httptest.Server
-	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	resource = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-protected-resource" {
 			w.WriteHeader(http.StatusNotFound)
 			return

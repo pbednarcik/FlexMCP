@@ -50,7 +50,7 @@ func TestOAuthHandler_DoesNotReuseRegisteredCredentialsWithAnotherIssuer(t *test
 	var mu sync.Mutex
 	authorizationServer := first.URL
 	var resource *httptest.Server
-	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	resource = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-protected-resource" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -93,7 +93,7 @@ func TestOAuthHandler_DoesNotReuseRegisteredCredentialsWithAnotherIssuer(t *test
 func switchingResource(t *testing.T, authorizationServer string) (resource *httptest.Server, point func(string)) {
 	t.Helper()
 	var mu sync.Mutex
-	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	resource = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/.well-known/oauth-protected-resource" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -216,7 +216,7 @@ func TestOAuthHandler_FallbackMetadataMustNameTheServersOwnOrigin(t *testing.T) 
 	var mu sync.Mutex
 	var secrets []string
 	var evil *httptest.Server
-	evil = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	evil = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp":
 			w.Header().Set("Content-Type", "application/json")

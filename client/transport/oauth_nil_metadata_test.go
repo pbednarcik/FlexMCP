@@ -17,7 +17,7 @@ import (
 // getServerMetadata must return a non-nil error instead of (nil, nil).
 func newOAuthHandlerWithUnavailableMetadata(t *testing.T) *OAuthHandler {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(server.Close)

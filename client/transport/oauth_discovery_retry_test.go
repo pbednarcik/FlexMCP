@@ -18,7 +18,7 @@ func flakyMetadataServer(t *testing.T, failures int32) (*httptest.Server, *atomi
 	t.Helper()
 	var requests atomic.Int32
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) <= failures {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
@@ -60,7 +60,7 @@ func TestOAuthHandler_DiscoveryRetriesAfterFailure(t *testing.T) {
 	})
 	t.Run("cancelled context, then no metadata", func(t *testing.T) {
 		var requests atomic.Int32
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			requests.Add(1)
 			w.WriteHeader(http.StatusNotFound)
 		}))
@@ -125,7 +125,7 @@ func TestOAuthHandler_AFailedMetadataFetchIsNotTakenForAbsentMetadata(t *testing
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			var as *httptest.Server
-			as = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			as = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/.well-known/oauth-authorization-server" {
 					http.NotFound(w, r)
 					return
@@ -149,7 +149,7 @@ func TestOAuthHandler_AFailedMetadataFetchIsNotTakenForAbsentMetadata(t *testing
 			}))
 			t.Cleanup(as.Close)
 			var resource *httptest.Server
-			resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			resource = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/.well-known/oauth-protected-resource" {
 					http.NotFound(w, r)
 					return

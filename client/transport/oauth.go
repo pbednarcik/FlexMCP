@@ -68,6 +68,11 @@ var (
 	// names: the code is redeemed only for the resource it was obtained for
 	// (RFC 8707 §2.1).
 	ErrResourceChanged = errors.New("the authorization was started for another resource")
+	// ErrInsecureAuthorizationServer is returned when the authorization
+	// server's metadata would be fetched over plain http, or names an issuer
+	// or endpoint that is not https: authorization server endpoints are
+	// served over HTTPS only (MCP authorization, Communication Security).
+	ErrInsecureAuthorizationServer = errors.New("authorization server endpoints must use https")
 )
 
 // OAuthConfig holds the OAuth configuration for the client
@@ -937,6 +942,9 @@ func (h *OAuthHandler) getServerMetadata(ctx context.Context) (*AuthServerMetada
 
 	once.Do(func() {
 		result, err := h.fetchServerMetadata(ctx)
+		if err == nil && result.metadata != nil {
+			err = requireHTTPSEndpoints(result.metadata)
+		}
 		h.metadataMu.Lock()
 		defer h.metadataMu.Unlock()
 		// If SetProtectedResourceMetadataURL swapped in a fresh sync.Once
@@ -1407,6 +1415,9 @@ var errMetadataUnavailable = errors.New("metadata unavailable")
 // This function performs HTTP I/O and must not be called while holding
 // metadataMu (see #871).
 func (h *OAuthHandler) fetchMetadataFromURL(ctx context.Context, metadataURL string) (*AuthServerMetadata, error) {
+	if !isHTTPS(metadataURL) {
+		return nil, fmt.Errorf("%w: metadata URL %q", ErrInsecureAuthorizationServer, metadataURL)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metadata request: %w", err)
@@ -1443,6 +1454,33 @@ func (h *OAuthHandler) fetchMetadataFromURL(ctx context.Context, metadataURL str
 	}
 
 	return &metadata, nil
+}
+
+// isHTTPS reports whether rawURL is an https URL.
+func isHTTPS(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && strings.EqualFold(u.Scheme, "https")
+}
+
+// requireHTTPSEndpoints refuses authorization server metadata whose issuer or
+// any endpoint is not https, whether discovery found it or guessed it:
+// authorization server endpoints are served over HTTPS only (MCP
+// authorization, Communication Security).
+func requireHTTPSEndpoints(m *AuthServerMetadata) error {
+	for _, f := range []struct{ name, value string }{
+		{"issuer", m.Issuer},
+		{"authorization_endpoint", m.AuthorizationEndpoint},
+		{"token_endpoint", m.TokenEndpoint},
+		{"registration_endpoint", m.RegistrationEndpoint},
+		{"jwks_uri", m.JwksURI},
+		{"revocation_endpoint", m.RevocationEndpoint},
+		{"introspection_endpoint", m.IntrospectionEndpoint},
+	} {
+		if f.value != "" && !isHTTPS(f.value) {
+			return fmt.Errorf("%w: %s is %q", ErrInsecureAuthorizationServer, f.name, f.value)
+		}
+	}
+	return nil
 }
 
 // isServerFailure reports whether status says the server failed to answer,

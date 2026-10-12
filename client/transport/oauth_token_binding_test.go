@@ -231,7 +231,7 @@ func TestStreamableHTTP_ARequestCarriesOnlyItsRecipientsToken(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			received := make(chan string, 1)
-			a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				select {
 				case received <- r.Header.Get("Authorization"):
 				default:
@@ -261,7 +261,7 @@ func TestStreamableHTTP_ARequestCarriesOnlyItsRecipientsToken(t *testing.T) {
 func TestSSE_AConnectionCarriesOnlyItsRecipientsToken(t *testing.T) {
 	const targetB = "https://b.example/sse"
 	received := make(chan string, 1)
-	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	a := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case received <- r.Header.Get("Authorization"):
 		default:

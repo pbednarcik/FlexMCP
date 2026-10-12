@@ -315,7 +315,7 @@ func TestOAuthHandler_SetExpectedState_CrossRequestScenario(t *testing.T) {
 
 	// Metadata discovery answering 404 keeps the mocked metadata below, and
 	// the token endpoint answering 404 fails the exchange, with no network.
-	server := httptest.NewServer(http.NotFoundHandler())
+	server := httptest.NewTLSServer(http.NotFoundHandler())
 	defer server.Close()
 
 	config := OAuthConfig{
@@ -821,7 +821,7 @@ func TestOAuthHandler_GetServerMetadata_FallbackToOAuthAuthorizationServer(t *te
 
 	// Create a test server that simulates the OAuth provider
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-protected-resource":
 			// Simulate failure of protected resource request
@@ -896,7 +896,7 @@ func TestOAuthHandler_GetServerMetadata_FallbackToDefaultEndpoints(t *testing.T)
 	authServerRequested := false
 
 	// Create a test server that returns 404 for both endpoints
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-protected-resource":
 			protectedResourceRequested = true
@@ -956,7 +956,7 @@ func TestOAuthHandler_GetServerMetadata_PathAwareDiscovery(t *testing.T) {
 	authServerRequested := false
 
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-protected-resource/googledrive":
 			protectedResourceRequested = true
@@ -1002,7 +1002,7 @@ func TestOAuthHandler_RefreshToken_GitHubErrorIn200Response(t *testing.T) {
 
 	// Create a server that returns HTTP 200 with an error in the body (GitHub's behavior)
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1061,7 +1061,7 @@ func TestOAuthHandler_RefreshToken_EmptyAccessToken(t *testing.T) {
 
 	// Create a server that returns a token response with empty access_token
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1123,7 +1123,7 @@ func TestOAuthHandler_RefreshToken_RefreshTokenRotation(t *testing.T) {
 
 	// Create a server that rotates refresh tokens (GitHub's behavior)
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1191,7 +1191,7 @@ func TestOAuthHandler_RefreshToken_SingleUseRefreshToken(t *testing.T) {
 
 	// Create a server that tracks used refresh tokens and rejects reuse
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1274,7 +1274,7 @@ func TestOAuthHandler_ProcessAuthorizationResponse_ErrorIn200(t *testing.T) {
 
 	// Create a server that returns HTTP 200 with error for token exchange
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1333,7 +1333,7 @@ func TestOAuthHandler_RefreshToken_KeepsOldRefreshToken(t *testing.T) {
 
 	// Create a server that doesn't return a new refresh token
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1391,7 +1391,7 @@ func TestOAuthHandler_RefreshToken_ProperHTTP400Error(t *testing.T) {
 
 	// Create a server that returns proper HTTP 400 errors (spec-compliant)
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1444,7 +1444,7 @@ func TestOAuthHandler_SetProtectedResourceMetadataURL(t *testing.T) {
 	var requestedPaths []string
 	var serverURL string
 
-	metadataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	metadataServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestedPaths = append(requestedPaths, r.URL.Path)
 		switch r.URL.Path {
 		case "/.well-known/oauth-protected-resource":
@@ -1523,7 +1523,7 @@ func TestOAuthHandler_SetProtectedResourceMetadataURL(t *testing.T) {
 func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 	t.Run("resource parameter captured from protected resource metadata", func(t *testing.T) {
 		var server *httptest.Server
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-protected-resource/mcp":
 				// Return protected resource metadata with a resource field (RFC 9728)
@@ -1567,7 +1567,7 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 
 	t.Run("mismatched resource from protected resource metadata rejected", func(t *testing.T) {
 		var server *httptest.Server
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-protected-resource":
 				// The declared resource belongs to another origin, so it does not
@@ -1600,7 +1600,7 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 
 	t.Run("resource parameter falls back to baseURL when not in metadata", func(t *testing.T) {
 		var server *httptest.Server
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-protected-resource":
 				// Return metadata WITHOUT resource field - should fall back to baseURL
@@ -1642,7 +1642,7 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 
 	t.Run("resource parameter included in authorization URL", func(t *testing.T) {
 		var server *httptest.Server
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-protected-resource/mcp":
 				// The resource declares the server's origin, which binds to the
@@ -1685,7 +1685,7 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 	t.Run("resource parameter included in token exchange", func(t *testing.T) {
 		var capturedResource string
 		var server *httptest.Server
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-protected-resource/mcp":
 				// The resource declares the server's origin, which binds to the
@@ -1740,7 +1740,7 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 	t.Run("resource parameter included in refresh token request", func(t *testing.T) {
 		var capturedResource string
 		var server *httptest.Server
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-protected-resource/mcp":
 				// The resource declares the server's origin, which binds to the
@@ -1793,7 +1793,7 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 	t.Run("baseURL used as resource when not in protected resource metadata", func(t *testing.T) {
 		var capturedResource string
 		var server *httptest.Server
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-protected-resource":
 				// Return metadata WITHOUT resource field - per RFC 8707 Section 2,
@@ -1848,7 +1848,7 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 // are used successfully.
 func TestOAuthHandler_GetServerMetadata_AuthServerReturnsHTML(t *testing.T) {
 	// Create a separate "auth server" that returns HTML at its .well-known endpoints
-	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	authServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return 200 with HTML for all requests (simulating a login page)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -1859,7 +1859,7 @@ func TestOAuthHandler_GetServerMetadata_AuthServerReturnsHTML(t *testing.T) {
 	// Create the MCP server that returns valid protected resource metadata
 	// pointing to the auth server above
 	var mcpServerURL string
-	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mcpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/oauth-protected-resource" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1932,7 +1932,7 @@ func TestValidateAuthServerMetadataURLs(t *testing.T) {
 }
 
 func TestOAuthHandler_GetServerMetadata_RejectsDangerousSchemes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/.well-known/oauth-protected-resource") {
 			http.NotFound(w, r)
 			return
@@ -2121,7 +2121,7 @@ func TestOAuthHandler_HandleUnauthorizedResponse_RelativeBaseURL(t *testing.T) {
 // verifies RFC 9728 §3.3/§7.3: an advertised PRM whose `resource` identifier
 // does not match the base URL MUST NOT be used.
 func TestOAuthHandler_GetServerMetadata_RejectsMismatchedResourceFromAdvertisedPRM(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/advertised-prm" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(OAuthProtectedResource{
@@ -2153,7 +2153,7 @@ func TestOAuthHandler_GetServerMetadata_RejectsMismatchedResourceFromAdvertisedP
 // `resource` identifier explicitly. Omitting it leaves no way to bind the
 // metadata to the resource the client addressed.
 func TestOAuthHandler_GetServerMetadata_RejectsEmptyResourceFromAdvertisedPRM(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/advertised-prm" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(OAuthProtectedResource{
@@ -2184,7 +2184,7 @@ func TestOAuthHandler_GetServerMetadata_RejectsEmptyResourceFromAdvertisedPRM(t 
 // URL is accepted and drives downstream discovery normally.
 func TestOAuthHandler_GetServerMetadata_AcceptsMatchingResourceFromAdvertisedPRM(t *testing.T) {
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/advertised-prm":
 			w.Header().Set("Content-Type", "application/json")
@@ -2257,7 +2257,7 @@ func TestOAuthHandler_ProcessAuthorizationResponse_201Created(t *testing.T) {
 	tokenStore := NewMemoryTokenStore()
 
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server":
 			w.Header().Set("Content-Type", "application/json")
@@ -2313,7 +2313,7 @@ func TestOAuthHandler_RefreshToken_201Created(t *testing.T) {
 	tokenStore := NewMemoryTokenStore()
 
 	var serverURL string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/oauth-authorization-server":
 			w.Header().Set("Content-Type", "application/json")
@@ -2369,7 +2369,7 @@ func TestOAuthHandler_GetServerMetadata_DoesNotHoldLockAcrossHTTP(t *testing.T) 
 	// metadataMu while the first call is mid-fetch.
 	release := make(chan struct{})
 	hit := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case hit <- struct{}{}:
 		default:
@@ -2442,7 +2442,7 @@ func TestOAuthHandler_MetadataDiscovery_SendsLatestProtocolVersion(t *testing.T)
 			serverURL  string
 		)
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			seenByPath[r.URL.Path] = r.Header.Get("MCP-Protocol-Version")
 			mu.Unlock()
@@ -2501,7 +2501,7 @@ func TestOAuthHandler_MetadataDiscovery_SendsLatestProtocolVersion(t *testing.T)
 			serverURL      string
 		)
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/.well-known/oauth-authorization-server":
 				mu.Lock()
