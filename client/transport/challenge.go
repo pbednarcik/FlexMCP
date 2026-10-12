@@ -17,11 +17,12 @@ type challenge struct {
 // order. A header may carry several, comma-separated, each a scheme token
 // followed by a token68 credential or by name=value parameters (values
 // tokens or quoted-strings, with backslash escapes). Only a parameter
-// carries '=' (RFC 9110 §11.2), so a bare token right after the scheme is
-// that challenge's token68, padded or not, and a bare token anywhere else
-// starts the next challenge. A token68 is skipped, as no challenge the
-// client acts on carries one; a parameter whose value is malformed, as a
-// quoted-string with no closing quote, is dropped rather than read in part.
+// carries '=' followed by a value (RFC 9110 §11.2), so what follows the
+// scheme up to the next ',' is that challenge's token68 when it is one by
+// its own grammar (see scanToken68), and a bare token anywhere else starts
+// the next challenge. A token68 is skipped, as no challenge the client acts
+// on carries one; a parameter whose value is malformed, as a quoted-string
+// with no closing quote, is dropped rather than read in part.
 func parseChallenges(headers []string) []challenge {
 	var challenges []challenge
 	for _, header := range headers {
@@ -30,6 +31,13 @@ func parseChallenges(headers []string) []challenge {
 		// since, so a bare token here is its token68.
 		afterScheme := false
 		for i < len(header) {
+			if afterScheme {
+				if end, ok := scanToken68(header, i); ok {
+					afterScheme = false // the challenge's token68, skipped
+					i = end
+					continue
+				}
+			}
 			if !isAuthTokenChar(header[i]) {
 				if header[i] == ',' {
 					afterScheme = false
@@ -78,6 +86,41 @@ func parseChallenges(headers []string) []challenge {
 		}
 	}
 	return challenges
+}
+
+// scanToken68 reports whether a token68 (RFC 9110 §11.2: letters, digits,
+// '-', '.', '_', '~', '+', '/', then any '=' padding) starts at i, alone up
+// to the end of the header or the next ',', and where it ends. Its
+// characters are not those of a token, which lack '/', so it is read by its
+// own grammar; a parameter (name=value) is not one, as a value follows its
+// '='.
+func scanToken68(header string, i int) (int, bool) {
+	j := i
+	for j < len(header) && isToken68Char(header[j]) {
+		j++
+	}
+	if j == i {
+		return i, false
+	}
+	for j < len(header) && header[j] == '=' {
+		j++
+	}
+	for j < len(header) && (header[j] == ' ' || header[j] == '\t') {
+		j++
+	}
+	if j < len(header) && header[j] != ',' {
+		return i, false
+	}
+	return j, true
+}
+
+// isToken68Char reports whether c may stand in a token68 before its padding.
+func isToken68Char(c byte) bool {
+	switch {
+	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		return true
+	}
+	return c == '-' || c == '.' || c == '_' || c == '~' || c == '+' || c == '/'
 }
 
 // bearerChallenge is what the Bearer challenge of a WWW-Authenticate header

@@ -233,6 +233,10 @@ func TestParseChallengesKeepsAToken68WithItsScheme(t *testing.T) {
 		`Negotiate abc, Bearer scope="x"`,
 		`Negotiate abc==, Bearer scope="x"`,
 		`Negotiate Bearer, Bearer scope="x"`,
+		// token68 also allows '/' and '+' (RFC 9110 §11.2), which a scheme
+		// name does not: the credential is read whole, not split at '/'.
+		`Negotiate abc/Bearer, Bearer scope="x"`,
+		`Negotiate a+b/c==, Bearer scope="x"`,
 	} {
 		challenges := parseChallenges([]string{header})
 		require.Len(t, challenges, 2, header)
