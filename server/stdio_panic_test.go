@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -41,32 +42,47 @@ func TestStdioServer_ToolCallWorkerPanicRecovery(t *testing.T) {
 	stdioServer := NewStdioServer(server)
 
 	// Build input: initialize, then panic tool call, then safe tool call
-	var input bytes.Buffer
 	initMsg := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
 	panicMsg := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"panic-tool","arguments":{}}}`
 	safeMsg := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"safe-tool","arguments":{}}}`
-	input.WriteString(initMsg + "\n")
-	input.WriteString(panicMsg + "\n")
-	input.WriteString(safeMsg + "\n")
 
-	var output bytes.Buffer
+	// The client keeps stdin open until the three answers are in. A tool call
+	// still queued when stdin closes is dropped, by design: the server exits
+	// promptly at EOF (Transports.md row 8). Closing stdin right after writing
+	// would race the workers against that, and this test is about a worker
+	// surviving a panic.
+	stdin, stdinWriter := io.Pipe()
+	stdoutReader, stdout := io.Pipe()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-
-	err := stdioServer.Listen(ctx, &input, &output)
-	// Listen returns nil on EOF (input exhausted)
-	require.NoError(t, err)
+	listened := make(chan error, 1)
+	go func() {
+		listened <- stdioServer.Listen(ctx, stdin, stdout)
+		_ = stdout.Close()
+	}()
+	go func() {
+		for _, line := range []string{initMsg, panicMsg, safeMsg} {
+			if _, err := io.WriteString(stdinWriter, line+"\n"); err != nil {
+				return
+			}
+		}
+	}()
 
 	// Parse responses
-	scanner := bufio.NewScanner(strings.NewReader(output.String()))
+	scanner := bufio.NewScanner(stdoutReader)
 	var responses []json.RawMessage
-	for scanner.Scan() {
+	for len(responses) < 3 && scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 		responses = append(responses, json.RawMessage(line))
 	}
+	require.NoError(t, scanner.Err())
+	_ = stdinWriter.Close()
+	go func() { _, _ = io.Copy(io.Discard, stdoutReader) }()
+	// Listen returns nil on EOF (input exhausted)
+	require.NoError(t, <-listened)
 
 	// Should have at least 3 responses (initialize + panic error + safe result)
 	require.GreaterOrEqual(t, len(responses), 3, "expected at least 3 responses, got %d", len(responses))
@@ -83,7 +99,6 @@ func TestStdioServer_ToolCallWorkerPanicRecovery(t *testing.T) {
 			continue
 		}
 
-		// The panic recovery sends id:null (request ID not available in recover scope)
 		if msg.Error != nil && strings.Contains(string(msg.Error), "internal panic") {
 			foundPanicError = true
 		}
