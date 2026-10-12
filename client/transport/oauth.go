@@ -18,8 +18,9 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// maxMetadataBodyBytes caps the size of an OAuth metadata document we are
-// willing to read.
+// maxMetadataBodyBytes caps the size of an OAuth metadata document, or any
+// other response from a server discovery chose, that we are willing to
+// read: past it a document is refused and an error body cut.
 const maxMetadataBodyBytes = 1 << 20 // 1 MiB
 
 // ErrNoToken is returned when no token is available in the token store
@@ -550,12 +551,12 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	// Accept any 2xx status; some authorization servers (e.g. Supabase) return
 	// 201 Created for successful token responses.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
 		return nil, extractOAuthError(body, resp.StatusCode, "refresh token request failed")
 	}
 
 	// Read the response body for parsing
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response body: %w", err)
 	}
@@ -1177,7 +1178,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 
 	// Parse the protected resource metadata
 	var protectedResource OAuthProtectedResource
-	if err := json.NewDecoder(resp.Body).Decode(&protectedResource); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBodyBytes)).Decode(&protectedResource); err != nil {
 		return metadataDiscoveryResult{}, fmt.Errorf("failed to decode protected resource response: %w", err)
 	}
 
@@ -1680,7 +1681,7 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
 		return extractOAuthError(body, resp.StatusCode, "registration request failed")
 	}
 
@@ -1690,7 +1691,7 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 		TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&regResponse); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBodyBytes)).Decode(&regResponse); err != nil {
 		return fmt.Errorf("failed to decode registration response: %w", err)
 	}
 
@@ -1872,12 +1873,12 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	// Accept any 2xx status; some authorization servers (e.g. Supabase) return
 	// 201 Created for successful token responses.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
 		return extractOAuthError(body, resp.StatusCode, "token request failed")
 	}
 
 	// Read the response body for parsing
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
 	if err != nil {
 		return fmt.Errorf("failed to read token response body: %w", err)
 	}
