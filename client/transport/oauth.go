@@ -62,6 +62,11 @@ var (
 	// resource identifier: an absolute URI with a scheme and a host and no
 	// fragment (RFC 8707 §2), which the resource parameter must be.
 	ErrInvalidResource = errors.New("the MCP server's URL is not a valid resource identifier")
+	// ErrResourceChanged is returned when an authorization response arrives
+	// for a flow started for another resource than the one the handler now
+	// names: the code is redeemed only for the resource it was obtained for
+	// (RFC 8707 §2.1).
+	ErrResourceChanged = errors.New("the authorization was started for another resource")
 )
 
 // OAuthConfig holds the OAuth configuration for the client
@@ -292,7 +297,7 @@ type OAuthHandler struct {
 	registeredAuthMethod string
 	registeredIssuer     string
 
-	mu            sync.RWMutex // Protects expectedState, expectedIssuer, issuerRequired, challengedScopes
+	mu            sync.RWMutex // Protects expectedState, expectedIssuer, issuerRequired, expectedResource, challengedScopes, registeredIssuer
 	expectedState string       // Expected state value for CSRF protection
 	// challengedScopes are the scopes the last WWW-Authenticate challenge
 	// named: authoritative for the operation that was refused, so the next
@@ -303,6 +308,9 @@ type OAuthHandler struct {
 	// that server advertises iss, so a response without it is rejected.
 	expectedIssuer string
 	issuerRequired bool
+	// expectedResource is the resource the authorization in progress was
+	// started for, the only one its code is redeemed for (RFC 8707 §2.1).
+	expectedResource string
 
 	// refreshMu protects refreshing, the token refresh in flight, if any.
 	// Callers of this handler that find the token expired share it: a
@@ -755,13 +763,20 @@ func (h *OAuthHandler) GetClientSecret() string {
 // server advertised, so the next call discovers again for the new server.
 func (h *OAuthHandler) SetBaseURL(baseURL string) {
 	h.metadataMu.Lock()
-	defer h.metadataMu.Unlock()
 	if h.baseURL == baseURL {
+		h.metadataMu.Unlock()
 		return
 	}
 	h.baseURL = baseURL
 	h.advertisedPRMURL = ""
 	h.forgetDiscoveryLocked()
+	h.metadataMu.Unlock()
+
+	// An authorization in progress was for the previous server: it is
+	// abandoned, so its callback is refused rather than redeemed here.
+	h.mu.Lock()
+	h.expectedState, h.expectedIssuer, h.issuerRequired, h.expectedResource = "", "", false, ""
+	h.mu.Unlock()
 }
 
 // GetExpectedState returns the expected state value (for testing purposes)
@@ -1564,7 +1579,7 @@ func (h *OAuthHandler) ProcessAuthorizationResponse(ctx context.Context, code, s
 // then is an error response acted on, returned as an OAuthError, and the
 // code exchanged.
 func (h *OAuthHandler) ProcessAuthorizationCallback(ctx context.Context, params url.Values, codeVerifier string) error {
-	expectedIssuer, issuerRequired, err := h.consumeExpectedState(params.Get("state"))
+	expectedIssuer, issuerRequired, expectedResource, err := h.consumeExpectedState(params.Get("state"))
 	if err != nil {
 		return err
 	}
@@ -1579,24 +1594,24 @@ func (h *OAuthHandler) ProcessAuthorizationCallback(ctx context.Context, params 
 			ErrorURI:         params.Get("error_uri"),
 		}
 	}
-	return h.exchangeAuthorizationCode(ctx, params.Get("code"), codeVerifier, issuer)
+	return h.exchangeAuthorizationCode(ctx, params.Get("code"), codeVerifier, issuer, expectedResource)
 }
 
 // consumeExpectedState checks state against the expected one and clears the
-// record, returning the issuer recorded with it: both are for one
-// authorization response.
-func (h *OAuthHandler) consumeExpectedState(state string) (expectedIssuer string, issuerRequired bool, err error) {
+// record, returning the issuer and the resource recorded with it: all are
+// for one authorization response.
+func (h *OAuthHandler) consumeExpectedState(state string) (expectedIssuer string, issuerRequired bool, expectedResource string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.expectedState == "" {
-		return "", false, errors.New("no expected state found, authorization flow may not have been initiated properly")
+		return "", false, "", errors.New("no expected state found, authorization flow may not have been initiated properly")
 	}
 	if state != h.expectedState {
-		return "", false, ErrInvalidState
+		return "", false, "", ErrInvalidState
 	}
-	expectedIssuer, issuerRequired = h.expectedIssuer, h.issuerRequired
-	h.expectedState, h.expectedIssuer, h.issuerRequired = "", "", false
-	return expectedIssuer, issuerRequired, nil
+	expectedIssuer, issuerRequired, expectedResource = h.expectedIssuer, h.issuerRequired, h.expectedResource
+	h.expectedState, h.expectedIssuer, h.issuerRequired, h.expectedResource = "", "", false, ""
+	return expectedIssuer, issuerRequired, expectedResource, nil
 }
 
 // validateIssuer applies RFC 9207 §2.4 to the iss of an authorization
@@ -1622,9 +1637,11 @@ func (h *OAuthHandler) validateIssuer(ctx context.Context, iss, expected string,
 }
 
 // exchangeAuthorizationCode redeems the code at the token endpoint of
-// issuer, the authorization server the user was sent to. Discovery may have
-// led elsewhere since; the code is not sent there.
-func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, codeVerifier, issuer string) error {
+// issuer, the authorization server the user was sent to, for resource, the
+// one the flow was started for (empty when the flow was started by another
+// handler instance). Discovery may have led elsewhere since; the code is not
+// sent there, nor redeemed for another resource.
+func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, codeVerifier, issuer, resource string) error {
 	if codeVerifier == "" && !h.config.PKCEDisabled {
 		return ErrPKCERequired
 	}
@@ -1637,10 +1654,14 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 		return fmt.Errorf("%w: the code is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, issuer, metadata.Issuer)
 	}
 
-	// RFC 8707: every token request names the resource.
+	// RFC 8707: every token request names the resource, and the code is
+	// redeemed only for the one it was obtained for.
 	resourceURL := h.getResourceURL()
 	if resourceURL == "" {
 		return ErrResourceUnknown
+	}
+	if resource != "" && !resourceIdentifiersEqual(resource, resourceURL) {
+		return fmt.Errorf("%w: started for %q, the handler now names %q", ErrResourceChanged, resource, resourceURL)
 	}
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
@@ -1823,6 +1844,7 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 	h.expectedState = state
 	h.expectedIssuer = metadata.Issuer
 	h.issuerRequired = metadata.AuthorizationResponseIssParameterSupported
+	h.expectedResource = resourceURL
 	h.mu.Unlock()
 
 	params := url.Values{}

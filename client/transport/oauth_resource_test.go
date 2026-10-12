@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -234,4 +235,70 @@ func TestOAuthHandler_RefusesADeclaredResourceWithAFragment(t *testing.T) {
 
 	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
 	require.ErrorIs(t, err, ErrInvalidResource)
+}
+
+// An authorization in progress belongs to the MCP server it was started for
+// (RFC 8707 §2.1: the code is redeemed for the resource it was granted for).
+// Pointing the handler at another server abandons it: the late callback is
+// refused and the code is not redeemed for the new server.
+func TestOAuthHandler_RetargetingAbandonsTheAuthorizationInProgress(t *testing.T) {
+	as := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+	asHTTP := as.start(t)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: asHTTP.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(asHTTP.URL + "/a")
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.NoError(t, err)
+
+	handler.SetBaseURL(asHTTP.URL + "/b")
+	err = handler.ProcessAuthorizationCallback(t.Context(), callback("", "code", "state"), "verifier")
+	require.Error(t, err, "server a's callback is not redeemed once the handler serves server b")
+	assert.Empty(t, handler.GetExpectedState())
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	assert.Empty(t, as.forms)
+}
+
+// The resource can change without a new base URL, when discovery runs again
+// and the server's metadata declares another one. The code is not redeemed
+// for a resource other than the one it was obtained for.
+func TestOAuthHandler_RedeemsTheCodeOnlyForTheResourceItWasObtainedFor(t *testing.T) {
+	as := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+	asHTTP := as.start(t)
+	// Found at the well-known path, the metadata may declare the origin as
+	// the resource; found at an advertised URL it must declare the base URL
+	// itself. So the resource changes from the origin to /mcp.
+	var mu sync.Mutex
+	path := ""
+	var resource *httptest.Server
+	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-protected-resource/mcp" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		declared := resource.URL + path
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": declared, "authorization_servers": []string{asHTTP.URL}})
+	}))
+	t.Cleanup(resource.Close)
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+	handler.SetBaseURL(resource.URL + "/mcp")
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.NoError(t, err)
+
+	mu.Lock()
+	path = "/mcp"
+	mu.Unlock()
+	handler.SetProtectedResourceMetadataURL(resource.URL + "/.well-known/oauth-protected-resource/mcp")
+	err = handler.ProcessAuthorizationCallback(t.Context(), callback("", "code", "state"), "verifier")
+	require.ErrorIs(t, err, ErrResourceChanged)
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	assert.Empty(t, as.forms)
 }
