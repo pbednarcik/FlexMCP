@@ -254,10 +254,18 @@ need code are marked **(code)**.
 - **(code)** A handler used on its own needs `SetBaseURL` before an
   authorization or a token request, and before discovery from the MCP server
   (`ErrResourceUnknown`); discovery and registration through a configured
-  `AuthServerMetadataURL` work without it. The transports set it. Every authorization and token request names the `resource`: the one the
-  server's protected resource metadata declares, or the base URL when there is
-  no such metadata. Either must be absolute, with no fragment
-  (`ErrInvalidResource`).
+  `AuthServerMetadataURL` work without it. The transports set it. Every
+  authorization and token request names the `resource`: the one the server's
+  protected resource metadata declares, or the base URL when there is no such
+  metadata. Either must be absolute, with no fragment (`ErrInvalidResource`).
+- **(code)** Authorization server endpoints are HTTPS only: metadata fetched
+  over `http`, or naming an `http` issuer or endpoint, is refused
+  (`ErrInsecureAuthorizationServer`), a local authorization server included.
+- Discovery that gets no answer (a failed or cancelled request, a `5xx` or
+  `429`) returns the error and tries again on the next call; the default
+  endpoints stand in only for metadata that is not there. Without protected
+  resource metadata, the metadata at the MCP server's own URL must name the
+  server, its origin or its base URL, as the issuer.
 - Client credentials belong to one authorization server: `ClientIssuer`, or
   else the first one they are used with. Another is refused
   (`ErrClientRegisteredElsewhere`). Without `ClientIssuer`, configured
@@ -301,6 +309,8 @@ need code are marked **(code)**.
 
 - Cancelling a request on an earlier revision over Streamable HTTP sends
   `notifications/cancelled`.
+- An SSE `endpoint` event must keep the connection's scheme, host and user
+  info: an `https` connection does not take an `http` endpoint.
 - On this revision a `404` with a JSON-RPC body is that error, not the end of a
   session.
 - A failed `initialize` establishes no session, and a `4xx` to it with a
