@@ -1865,3 +1865,24 @@ func TestSSE_CloseConcurrentWithMessageDoesNotPanic(t *testing.T) {
 
 	wg.Wait()
 }
+
+// An endpoint event must keep the connection's origin, scheme included: an
+// https connection does not take an http endpoint on the same host, where
+// every request, and its bearer token, would go in cleartext.
+func TestSSE_AnEndpointMustKeepTheConnectionsScheme(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		downgraded := strings.Replace(server.URL, "https://", "http://", 1) + "/message"
+		fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", downgraded)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	trans, err := NewSSE(server.URL, WithEndpointTimeout(500*time.Millisecond))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = trans.Close() })
+
+	require.Error(t, trans.Start(t.Context()), "the https connection took an http endpoint")
+	assert.Nil(t, trans.GetEndpoint())
+}

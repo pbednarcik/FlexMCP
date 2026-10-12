@@ -33,7 +33,7 @@ func TestSSE_WithOAuth(t *testing.T) {
 			}
 
 			// Create a valid endpoint URL
-			endpointURL := "http://" + r.Host + "/endpoint"
+			endpointURL := "https://" + r.Host + "/endpoint"
 
 			// Send the SSE endpoint event
 			w.Header().Set("Content-Type", "text/event-stream")
