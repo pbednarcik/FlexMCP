@@ -155,6 +155,15 @@ type Token struct {
 	Scope string `json:"scope,omitempty"`
 	// ExpiresAt is the time when the token expires
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Resource is the MCP server the token was issued for: the RFC 8707
+	// resource of the token request. The handler sends the token only to
+	// that server. Empty for a token saved without the record, which is sent
+	// as before.
+	Resource string `json:"resource,omitempty"`
+	// Issuer is the authorization server that issued the token, the only one
+	// its refresh token is sent to. Empty for a token saved without the
+	// record.
+	Issuer string `json:"issuer,omitempty"`
 }
 
 // IsExpired returns true if the token is expired
@@ -321,6 +330,26 @@ func NewOAuthHandler(config OAuthConfig) *OAuthHandler {
 	}
 }
 
+// tokenIsForThisServer reports whether token may be sent to the MCP server
+// the handler targets (MCP authorization: clients send only tokens issued
+// for the server). A token records the resource it was issued for; it is
+// for this server when that equals the resource discovery found, or, before
+// discovery, when it binds to the base URL as a protected resource's own
+// identifier would (resourceBindsToURL). A token saved without the record,
+// as one an application stored itself, is accepted as before.
+func (h *OAuthHandler) tokenIsForThisServer(token *Token) bool {
+	if token.Resource == "" {
+		return true
+	}
+	h.metadataMu.Lock()
+	resource, base := h.resourceURL, h.baseURL
+	h.metadataMu.Unlock()
+	if resource != "" {
+		return resourceIdentifiersEqual(token.Resource, resource)
+	}
+	return base != "" && resourceBindsToURL(token.Resource, base)
+}
+
 // GetAuthorizationHeader returns the Authorization header value for a request.
 //
 // If the stored token has expired, it refreshes it, or waits for a refresh
@@ -348,6 +377,11 @@ func (h *OAuthHandler) getValidToken(ctx context.Context) (*Token, error) {
 	token, err := h.config.TokenStore.GetToken(ctx)
 	if err != nil && !errors.Is(err, ErrNoToken) {
 		return nil, err
+	}
+	// A token for another MCP server is not this server's to receive, and
+	// its refresh token not this flow's to spend.
+	if err == nil && !h.tokenIsForThisServer(token) {
+		return nil, ErrOAuthAuthorizationRequired
 	}
 	if err == nil && !token.IsExpired() && token.AccessToken != "" {
 		return token, nil
@@ -432,6 +466,17 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, refreshToken string) (*
 	if resourceURL == "" {
 		return nil, ErrResourceUnknown
 	}
+	// The stored token's record says where its refresh token may go: only to
+	// the authorization server that issued it, for the server it was issued
+	// for. A refresh token the caller brings from elsewhere has no record.
+	if stored, err := h.config.TokenStore.GetToken(ctx); err == nil && stored.RefreshToken == refreshToken {
+		if stored.Issuer != "" && stored.Issuer != metadata.Issuer {
+			return nil, fmt.Errorf("%w: the refresh token is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, stored.Issuer, metadata.Issuer)
+		}
+		if !h.tokenIsForThisServer(stored) {
+			return nil, fmt.Errorf("%w: the refresh token is for %q", ErrOAuthAuthorizationRequired, stored.Resource)
+		}
+	}
 	data := url.Values{}
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
@@ -482,6 +527,8 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, refreshToken string) (*
 	if tokenResp.RefreshToken == "" {
 		tokenResp.RefreshToken = refreshToken
 	}
+	tokenResp.Resource = resourceURL
+	tokenResp.Issuer = metadata.Issuer
 
 	// Save the token
 	if err := h.config.TokenStore.SaveToken(ctx, &tokenResp); err != nil {
@@ -1610,6 +1657,9 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	if tokenResp.ExpiresIn > 0 {
 		tokenResp.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
+	// Record what the token is for and who issued it.
+	tokenResp.Resource = resourceURL
+	tokenResp.Issuer = metadata.Issuer
 
 	// Save the token
 	if err := h.config.TokenStore.SaveToken(ctx, &tokenResp); err != nil {
