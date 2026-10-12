@@ -82,3 +82,44 @@ func BenchmarkStreamableHTTPToolCall(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkStreamableHTTPToolCallParallel drives the modern small leg from
+// GOMAXPROCS goroutines at once: what a busy server sees, contention on
+// shared state included. Each goroutine builds its own request and recorder.
+func BenchmarkStreamableHTTPToolCallParallel(b *testing.B) {
+	srv := NewMCPServer("bench", "1.0.0", WithToolCapabilities(false))
+	srv.AddTool(mcp.NewToolWithRawSchema("echo", "echoes region",
+		json.RawMessage(`{"type":"object","properties":{"region":{"type":"string"}}}`)),
+		func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(request.GetString("region", "")), nil
+		})
+	httpSrv := NewStreamableHTTPServer(srv)
+	body, header := toolCallRequest(b, false)
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+			r.Header = header
+			httpSrv.ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				b.Errorf("status %d", w.Code)
+				return
+			}
+		}
+	})
+}
+
+// BenchmarkStreamableHTTPHarness is the request and recorder the tool call
+// legs build per iteration, without the server: their cost, to subtract.
+func BenchmarkStreamableHTTPHarness(b *testing.B) {
+	body, header := toolCallRequest(b, false)
+	b.ReportAllocs()
+	for b.Loop() {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		r.Header = header
+		_, _ = w, r
+	}
+}
