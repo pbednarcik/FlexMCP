@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -894,4 +895,36 @@ func TestStdioBroadcastsReachOnlyWhoAskedForThem(t *testing.T) {
 		params, _ := changed["params"].(map[string]any)
 		require.Nil(t, params["_meta"], "a legacy broadcast carries no subscription id")
 	})
+}
+
+// The end of input is the shutdown: a tool call still queued then is not
+// started. Listen cancels the context its workers share at EOF, so a worker
+// that finds it cancelled with a call in the queue drops the call.
+func TestStdioServer_AQueuedToolCallDoesNotStartAfterTheInputEnds(t *testing.T) {
+	started := 0
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+	mcpServer.AddTool(mcp.NewTool("count"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		started++
+		return mcp.NewToolResultText("ok"), nil
+	})
+	stdioServer := NewStdioServer(mcpServer)
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	// A worker picks at random between a queued call and the cancellation;
+	// each round gives it that choice once more.
+	for round := range 64 {
+		var output bytes.Buffer
+		stdioServer.toolCallQueue = make(chan *toolCallWork, 1)
+		stdioServer.toolCallQueue <- &toolCallWork{
+			ctx:     ended,
+			id:      round,
+			message: json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"count"}}`, round)),
+			writer:  &output,
+		}
+		stdioServer.workerWg.Add(1)
+		stdioServer.toolCallWorker(ended)
+		require.Zero(t, started, "round %d: a queued call started after the input ended", round)
+		require.Zero(t, output.Len(), "round %d: a queued call was answered after the input ended: %s", round, output.String())
+	}
 }

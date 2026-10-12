@@ -296,6 +296,15 @@ func (s *StdioServer) toolCallWorker(ctx context.Context) {
 				// Channel closed, exit worker
 				return
 			}
+			// The end of input is the shutdown: a call still queued then is
+			// dropped, not started. Passing this check admits the call to
+			// running work, which the shutdown cancels through its context
+			// like any other; it does not make the handler's entry atomic
+			// with the shutdown.
+			if ctx.Err() != nil {
+				s.cancelled.finish(work.id)
+				continue
+			}
 			// Process the tool call with panic recovery so a single
 			// panicking handler does not kill the worker permanently.
 			response := func() (resp mcp.JSONRPCMessage) {
