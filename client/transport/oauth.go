@@ -67,6 +67,13 @@ type OAuthConfig struct {
 	ClientURI string
 	// ClientSecret is the OAuth client secret (for confidential clients)
 	ClientSecret string
+	// ClientIssuer is the issuer of the authorization server ClientID and
+	// ClientSecret belong to. Client credentials are used with the server
+	// that issued them and no other (MCP authorization). When it is empty,
+	// they are bound to the first authorization server they are used with;
+	// set it, from configuration or from GetClientIssuer after a dynamic
+	// registration, to bind them from the first request.
+	ClientIssuer string
 	// TokenEndpointAuthMethod is how the client authenticates at the token
 	// endpoint: "client_secret_basic", "client_secret_post" or "none". Set it
 	// for pre-registered credentials, or for credentials saved from an
@@ -308,8 +315,9 @@ func NewOAuthHandler(config OAuthConfig) *OAuthHandler {
 	}
 
 	return &OAuthHandler{
-		config:     config,
-		httpClient: config.HTTPClient,
+		config:           config,
+		httpClient:       config.HTTPClient,
+		registeredIssuer: config.ClientIssuer,
 	}
 }
 
@@ -672,6 +680,15 @@ func (h *OAuthHandler) getResourceURL() string {
 	h.metadataMu.Lock()
 	defer h.metadataMu.Unlock()
 	return h.resourceURL
+}
+
+// GetClientIssuer returns the issuer of the authorization server the client
+// credentials are bound to, or "" while they are bound to none: what to
+// persist the credentials under, beside GetClientID and GetClientSecret.
+func (h *OAuthHandler) GetClientIssuer() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.registeredIssuer
 }
 
 // GetClientSecret returns the client secret
@@ -1394,13 +1411,12 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 		return fmt.Errorf("failed to decode registration response: %w", err)
 	}
 
-	// Update the client configuration
+	// The registration replaces the whole credential set: a secret from an
+	// earlier registration, or from configuration, does not stay beside the
+	// new client ID. RFC 7591 §3.2.1: the response carries the method the
+	// server actually registered, which may differ from the one requested.
 	h.config.ClientID = regResponse.ClientID
-	if regResponse.ClientSecret != "" {
-		h.config.ClientSecret = regResponse.ClientSecret
-	}
-	// RFC 7591 §3.2.1: the response carries the method the server actually
-	// registered, which may differ from the one requested.
+	h.config.ClientSecret = regResponse.ClientSecret
 	h.registeredAuthMethod = regResponse.TokenEndpointAuthMethod
 	h.mu.Lock()
 	h.registeredIssuer = metadata.Issuer
@@ -1419,14 +1435,23 @@ func applicationType(redirectURI string) string {
 	return "native"
 }
 
-// checkRegisteredIssuer refuses to use credentials from dynamic registration
-// with an authorization server other than the one that issued them.
+// checkRegisteredIssuer refuses to use the client credentials with an
+// authorization server other than the one they belong to (MCP
+// authorization: never reuse them with another). Credentials from dynamic
+// registration belong to the server that issued them, configured ones to
+// OAuthConfig.ClientIssuer, or else to the first server they are used with,
+// which this call binds them to.
 func (h *OAuthHandler) checkRegisteredIssuer(metadata *AuthServerMetadata) error {
-	h.mu.RLock()
-	registered := h.registeredIssuer
-	h.mu.RUnlock()
-	if registered != "" && metadata.Issuer != registered {
-		return fmt.Errorf("%w: registered with %q, discovered %q", ErrClientRegisteredElsewhere, registered, metadata.Issuer)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.registeredIssuer == "" {
+		if h.config.ClientID != "" {
+			h.registeredIssuer = metadata.Issuer
+		}
+		return nil
+	}
+	if metadata.Issuer != h.registeredIssuer {
+		return fmt.Errorf("%w: registered with %q, discovered %q", ErrClientRegisteredElsewhere, h.registeredIssuer, metadata.Issuer)
 	}
 	return nil
 }
