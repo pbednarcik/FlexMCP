@@ -40,6 +40,30 @@ func TestMetaMarshalling(t *testing.T) {
 			expMeta: &Meta{ProgressToken: "123", AdditionalFields: map[string]any{}},
 		},
 		{
+			name:    "integer token",
+			json:    `{"progressToken":7}`,
+			meta:    &Meta{ProgressToken: int64(7)},
+			expMeta: &Meta{ProgressToken: int64(7), AdditionalFields: map[string]any{}},
+		},
+		{
+			name:    "integer token past 2^53",
+			json:    `{"progressToken":9007199254740993}`,
+			meta:    &Meta{ProgressToken: int64(9007199254740993)},
+			expMeta: &Meta{ProgressToken: int64(9007199254740993), AdditionalFields: map[string]any{}},
+		},
+		{
+			name:    "integer token past int64",
+			json:    `{"progressToken":12345678901234567890123}`,
+			meta:    &Meta{ProgressToken: json.Number("12345678901234567890123")},
+			expMeta: &Meta{ProgressToken: json.Number("12345678901234567890123"), AdditionalFields: map[string]any{}},
+		},
+		{
+			name:    "fractional token",
+			json:    `{"progressToken":1.5}`,
+			meta:    &Meta{ProgressToken: 1.5},
+			expMeta: &Meta{ProgressToken: 1.5, AdditionalFields: map[string]any{}},
+		},
+		{
 			name: "additional fields only",
 			json: `{"a":2,"b":"1"}`,
 			meta: &Meta{AdditionalFields: map[string]any{"a": 2, "b": "1"}},
@@ -783,4 +807,17 @@ func TestCreateMessageParams_ToolsJSON(t *testing.T) {
 		assert.Equal(t, ToolChoiceMode("required"), ToolChoiceModeRequired)
 		assert.Equal(t, ToolChoiceMode("none"), ToolChoiceModeNone)
 	})
+}
+
+// A progress notification carries its token exactly as the request gave it: an
+// integer past 2^53 is not rounded through a float64.
+func TestProgressNotificationKeepsAnIntegerTokenExact(t *testing.T) {
+	for _, token := range []string{`9007199254740993`, `12345678901234567890123`, `"p1"`, `1.5`} {
+		var params ProgressNotificationParams
+		require.NoError(t, json.Unmarshal([]byte(`{"progressToken":`+token+`,"progress":1}`), &params))
+		encoded, err := json.Marshal(params)
+		require.NoError(t, err)
+		assert.Contains(t, string(encoded), `"progressToken":`+token+`,`)
+		assert.InDelta(t, 1, params.Progress, 0)
+	}
 }

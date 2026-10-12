@@ -235,10 +235,40 @@ func (m *Meta) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	m.ProgressToken = raw["progressToken"]
+	token := raw["progressToken"]
+	if _, number := token.(float64); number {
+		var exact struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+		}
+		if err := json.Unmarshal(data, &exact); err != nil {
+			return err
+		}
+		var err error
+		if token, err = decodeProgressToken(exact.ProgressToken); err != nil {
+			return err
+		}
+	}
+	m.ProgressToken = token
 	delete(raw, "progressToken")
 	m.AdditionalFields = raw
 	return nil
+}
+
+// decodeProgressToken decodes a progress token, a string or a number, with an
+// integer kept exact as a request id is: an int64, or a json.Number past it,
+// so the token comes back on its notifications as the request sent it. Any
+// other number is a float64.
+func decodeProgressToken(data []byte) (ProgressToken, error) {
+	i, err := strconv.ParseInt(string(data), 10, 64)
+	if err == nil {
+		return i, nil
+	}
+	if errors.Is(err, strconv.ErrRange) {
+		return json.Number(data), nil
+	}
+	var token any
+	err = json.Unmarshal(data, &token)
+	return token, err
 }
 
 func NewMetaFromMap(m map[string]any) *Meta {
@@ -767,6 +797,29 @@ type ProgressNotificationParams struct {
 	// Message related to progress. This should provide relevant human-readable
 	// progress information.
 	Message string `json:"message,omitempty"`
+}
+
+// UnmarshalJSON decodes the params with the progress token kept exact, as
+// [Meta] decodes it from the request.
+func (p *ProgressNotificationParams) UnmarshalJSON(data []byte) error {
+	type params ProgressNotificationParams
+	var decoded struct {
+		params
+		ProgressToken json.RawMessage `json:"progressToken"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*p = ProgressNotificationParams(decoded.params)
+	if len(decoded.ProgressToken) == 0 {
+		return nil
+	}
+	token, err := decodeProgressToken(decoded.ProgressToken)
+	if err != nil {
+		return err
+	}
+	p.ProgressToken = token
+	return nil
 }
 
 /* Pagination */
