@@ -253,22 +253,31 @@ need code are marked **(code)**.
   response.
 - **(code)** A handler used on its own needs `SetBaseURL` before discovery,
   authorization or a token request (`ErrResourceUnknown`); the transports set
-  it. The URL must be absolute, with no fragment (`ErrInvalidResource`). Every
-  authorization and token request names it as the `resource`.
+  it. Every authorization and token request names the `resource`: the one the
+  server's protected resource metadata declares, or the base URL when there is
+  no such metadata. Either must be absolute, with no fragment
+  (`ErrInvalidResource`).
 - Client credentials belong to one authorization server: `ClientIssuer`, or
   else the first one they are used with. Another is refused
-  (`ErrClientRegisteredElsewhere`). Store credentials under
-  `GetClientIssuer`. Registering again replaces the client ID and the secret.
+  (`ErrClientRegisteredElsewhere`). Without `ClientIssuer`, configured
+  credentials go to the first authorization server discovery names; set it, or
+  `AuthServerMetadataURL`, when they are for a known one. Store credentials
+  under `GetClientIssuer`. Registering again replaces the client ID and the
+  secret.
 - Saved tokens record the server and the issuer they are for (`Token.Resource`,
-  `Token.Issuer`), and are sent nowhere else. A token without the record, as
-  one your code stores itself, is used as before.
-- A change of `SetBaseURL` abandons an authorization in progress, and a code is
-  redeemed only for the resource it was obtained for (`ErrResourceChanged`).
+  `Token.Issuer`), and neither the token nor its refresh token is sent anywhere
+  else. `RefreshToken` refuses when the token store cannot be read. A token
+  without the record, as one your code stores itself, is used as before.
+- A change of `SetBaseURL` abandons an authorization in progress or starting,
+  and a code is redeemed only for the resource it was obtained for
+  (`ErrResourceChanged`). A callback handled by another handler instance
+  (`SetExpectedState`) has no resource recorded, so it is redeemed for the one
+  that handler names.
 - A 403 with `insufficient_scope` is an `AuthorizationRequiredError`, like a
   401. One challenge is acted on: `Bearer` before `DPoP`. Its scopes are the
   refused operation's and are replaced by the next challenge.
-- Dynamic client registration states an `application_type`: `native` for a
-  localhost or custom-scheme redirect, `web` otherwise.
+- Dynamic client registration states an `application_type`: `web` for an
+  `https` redirect, `native` for any other.
 
 ### Results and capabilities
 
