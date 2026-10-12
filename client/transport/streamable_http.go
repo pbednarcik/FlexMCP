@@ -203,6 +203,7 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 		discoveryURL.Fragment = ""
 		smc.oauthRecipient = discoveryURL.String()
 		smc.oauthHandler.SetBaseURL(smc.oauthRecipient)
+		smc.httpClient = originBoundClient(smc.httpClient)
 	}
 
 	return smc, nil

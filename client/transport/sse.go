@@ -168,6 +168,7 @@ func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 		discoveryURL.Fragment = ""
 		smc.oauthRecipient = discoveryURL.String()
 		smc.oauthHandler.SetBaseURL(smc.oauthRecipient)
+		smc.httpClient = originBoundClient(smc.httpClient)
 	}
 
 	return smc, nil
