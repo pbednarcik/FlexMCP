@@ -261,11 +261,14 @@ need code are marked **(code)**.
 - **(code)** Authorization server endpoints are HTTPS only: metadata fetched
   over `http`, or naming an `http` issuer or endpoint, is refused
   (`ErrInsecureAuthorizationServer`), a local authorization server included.
+  Discovery follows a redirect only while it stays on `https`; a token,
+  refresh or registration request follows none.
 - Discovery that gets no answer (a failed or cancelled request, a `5xx` or
   `429`) returns the error and tries again on the next call; the default
   endpoints stand in only for metadata that is not there. Without protected
-  resource metadata, the metadata at the MCP server's own URL must name the
-  server, its origin or its base URL, as the issuer.
+  resource metadata, metadata found under the MCP server's path must name
+  that URL as its issuer or is not used, and the metadata at the host's root
+  must name the origin.
 - Client credentials belong to one authorization server: `ClientIssuer`, or
   else the first one they are used with. Another is refused
   (`ErrClientRegisteredElsewhere`). Without `ClientIssuer`, configured
