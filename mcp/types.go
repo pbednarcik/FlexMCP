@@ -4,6 +4,8 @@ package mcp
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"maps"
 	"net/http"
@@ -233,10 +235,47 @@ func (m *Meta) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	m.setFields(raw)
+	return nil
+}
+
+// MarshalJSONTo is MarshalJSON written to the encoder that asks for it, with
+// its options, so the fields are not first copied into a map of their own
+// when there is no progress token to add, and the result not re-read.
+func (m *Meta) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if m.ProgressToken != nil {
+		raw := make(map[string]any, len(m.AdditionalFields)+1)
+		raw["progressToken"] = m.ProgressToken
+		maps.Copy(raw, m.AdditionalFields)
+		return jsonv2.MarshalEncode(enc, raw)
+	}
+	if m.AdditionalFields == nil {
+		// MarshalJSON writes an empty object, never null.
+		if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+			return err
+		}
+		return enc.WriteToken(jsontext.EndObject)
+	}
+	return jsonv2.MarshalEncode(enc, m.AdditionalFields)
+}
+
+// UnmarshalJSONFrom is UnmarshalJSON read from the decoder that holds the
+// value, with its options, so the value is not copied out and decoded again.
+func (m *Meta) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	raw := make(map[string]any)
+	if err := jsonv2.UnmarshalDecode(dec, &raw); err != nil {
+		return err
+	}
+	m.setFields(raw)
+	return nil
+}
+
+// setFields takes the progress token out of a decoded _meta and keeps the
+// rest as the additional fields.
+func (m *Meta) setFields(raw map[string]any) {
 	m.ProgressToken = raw["progressToken"]
 	delete(raw, "progressToken")
 	m.AdditionalFields = raw
-	return nil
 }
 
 func NewMetaFromMap(m map[string]any) *Meta {
