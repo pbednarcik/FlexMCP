@@ -15,7 +15,11 @@
 
 ## What FlexMCP is
 
-FlexMCP is a fork of [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go), the Go library for building MCP servers and clients. It keeps mcp-go's API and adds the changes a very busy MCP server needs, one that answers many complex calls, starting with fewer allocations on the hot request path. Next comes functionality some tools need that mcp-go does not offer yet, such as server notifications (list changes, progress) on the 2026-07-28 protocol and, later, long-running tool calls through the Tasks extension.
+FlexMCP is a fork of [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go), the Go library for building MCP servers and clients. It is aimed at projects on the newer protocol revisions that want closer compliance with the MCP specification and fewer allocations per call: complex clients, and busy servers that answer many complex calls. It speaks the 2026-07-28 revision first and the earlier ones a client may still ask for, and where mcp-go was lenient it keeps the specification's MUSTs, from request ids to OAuth (HTTPS-only authorization servers, PKCE always on, a token sent only to its own server). Cutting allocations on the hot request path is the work in progress, and long-running tool calls through the Tasks extension come after.
+
+## Coming from mcp-go
+
+Most code carries over unchanged, but some client APIs and behaviours changed. Before upgrading, read [Client changes](www/docs/pages/protocol-2026-07-28.mdx#client-changes) and [Request ids and progress tokens](www/docs/pages/protocol-2026-07-28.mdx#request-ids-and-progress-tokens).
 
 ## Install
 
