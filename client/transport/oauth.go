@@ -57,6 +57,11 @@ var (
 	// no base URL (set by the transports, or SetBaseURL) names it, so there
 	// is nothing to discover from and no resource parameter to send.
 	ErrResourceUnknown = errors.New("the MCP server to authorize for is not known: set its URL before starting authorization")
+	// ErrInvalidResource is returned when the MCP server's URL, or the
+	// resource its protected resource metadata declares, is not a canonical
+	// resource identifier: an absolute URI with a scheme and a host and no
+	// fragment (RFC 8707 §2), which the resource parameter must be.
+	ErrInvalidResource = errors.New("the MCP server's URL is not a valid resource identifier")
 )
 
 // OAuthConfig holds the OAuth configuration for the client
@@ -949,6 +954,14 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	baseURL := h.baseURL
 	h.metadataMu.Unlock()
 
+	// The base URL is the resource until protected resource metadata names
+	// one, which is checked where it is taken.
+	if baseURL != "" {
+		if err := checkResourceIdentifier(baseURL); err != nil {
+			return metadataDiscoveryResult{}, err
+		}
+	}
+
 	// RFC 8707: the resource parameter names the MCP server on every
 	// authorization and token request, whether or not the authorization
 	// server supports it. Protected resource metadata may name the resource
@@ -1083,6 +1096,11 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	// resource parameter value unless specific knowledge of the resource
 	// dictates otherwise."
 	if protectedResource.Resource != "" {
+		// Binding above compares the parsed fragment, and an empty one ("#")
+		// parses as none: the declared identifier is checked as such too.
+		if err := checkResourceIdentifier(protectedResource.Resource); err != nil {
+			return metadataDiscoveryResult{}, fmt.Errorf("protected resource metadata from %q: %w", protectedResourceURL, err)
+		}
 		resourceURL = protectedResource.Resource
 	}
 	scopesSupported := protectedResource.ScopesSupported
@@ -1171,6 +1189,23 @@ func resourceComponentsEqual(a, b *url.URL) bool {
 		return false
 	}
 	return a.User.String() == b.User.String()
+}
+
+// checkResourceIdentifier refuses what cannot be a resource parameter: RFC
+// 8707 §2 wants an absolute URI without a fragment, and MCP authorization
+// the server's canonical URI, with a scheme and a host.
+func checkResourceIdentifier(resource string) error {
+	parsed, err := url.Parse(resource)
+	if err != nil {
+		return fmt.Errorf("%w: %q: %w", ErrInvalidResource, resource, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%w: %q has no scheme or no host", ErrInvalidResource, resource)
+	}
+	if strings.Contains(resource, "#") {
+		return fmt.Errorf("%w: %q has a fragment", ErrInvalidResource, resource)
+	}
+	return nil
 }
 
 // resourceIdentifiersEqual reports whether two OAuth protected resource

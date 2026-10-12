@@ -177,3 +177,61 @@ func TestOAuthHandler_TokenRequestsNameTheResource(t *testing.T) {
 	_, _, _, form := server.lastTokenRequest(t)
 	assert.Equal(t, httpServer.URL+"/mcp", form.Get("resource"))
 }
+
+// The resource is the MCP server's canonical URI (RFC 8707 §2: an absolute
+// URI without a fragment; MCP authorization: scheme and host). A base URL
+// that is not one is refused before any request names it, on the path with
+// a configured authorization server as on the discovery path.
+func TestOAuthHandler_RefusesAResourceThatIsNotACanonicalURI(t *testing.T) {
+	server := &tokenAuthServer{codeChallengeMethods: []string{"S256"}}
+	httpServer := server.start(t)
+	for _, tt := range []struct {
+		name   string
+		base   string
+		config OAuthConfig
+	}{
+		{name: "relative, with a configured authorization server", base: "/mcp", config: OAuthConfig{AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server"}},
+		{name: "with a fragment, with a configured authorization server", base: httpServer.URL + "/mcp#fragment", config: OAuthConfig{AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server"}},
+		{name: "with an empty fragment", base: httpServer.URL + "/mcp#", config: OAuthConfig{AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server"}},
+		{name: "with a fragment, discovered", base: httpServer.URL + "/mcp#fragment"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := tt.config
+			config.ClientID = "client"
+			config.RedirectURI = "http://localhost:8085/callback"
+			config.TokenStore = NewMemoryTokenStore()
+			handler := NewOAuthHandler(config)
+			handler.SetBaseURL(tt.base)
+
+			_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+			require.ErrorIs(t, err, ErrInvalidResource)
+			_, err = handler.RefreshToken(t.Context(), "refresh")
+			require.ErrorIs(t, err, ErrInvalidResource)
+		})
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	assert.Empty(t, server.forms, "no token request named an invalid resource")
+}
+
+// Protected resource metadata may declare the resource, which binding holds
+// to the base URL's scheme, host and fragment; an empty fragment ("#") parses
+// as none and binds, so the declared resource is checked too.
+func TestOAuthHandler_RefusesADeclaredResourceWithAFragment(t *testing.T) {
+	as := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+	var resource *httptest.Server
+	resource = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-protected-resource" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"resource": resource.URL + "#", "authorization_servers": []string{as.URL}})
+	}))
+	t.Cleanup(resource.Close)
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+	handler.SetBaseURL(resource.URL)
+
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.ErrorIs(t, err, ErrInvalidResource)
+}
