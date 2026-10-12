@@ -211,7 +211,9 @@ removed.
 
 ## Migrating
 
-Nothing is required. When you are ready to adopt the new capabilities:
+Nothing is required to adopt the new revision. A few client APIs and
+behaviours did change along the way; see [Client changes](#client-changes)
+before upgrading a client. When you are ready to adopt the new capabilities:
 
 1. **Rewrite server-initiated requests as multi round-trip handlers.** Replace
    `RequestSampling`, `RequestElicitation`, and `RequestRoots` calls with
@@ -227,6 +229,68 @@ Nothing is required. When you are ready to adopt the new capabilities:
 
 Deprecated features remain functional for at least twelve months under the MCP
 [feature lifecycle policy](https://modelcontextprotocol.io/community/feature-lifecycle).
+
+## Client changes
+
+These change what a client sees, whichever revision it speaks. The ones that
+need code are marked **(code)**.
+
+### Pagination
+
+- **(code)** `PaginatedParams.Cursor` and `PaginatedResult.NextCursor` are
+  `*mcp.Cursor`. A missing `nextCursor` ends a listing; an empty one is a
+  cursor, sent on the next request. The `NewList*Result` helpers still take
+  an `mcp.Cursor`, where empty means the last page.
+
+### OAuth
+
+- **(code)** PKCE with S256 is always on, and an authorization server whose
+  metadata does not list S256 is refused. `PKCEEnabled` has no effect;
+  `PKCEDisabled` turns PKCE off for a server known to lack it.
+- **(code)** Hand the redirect's query to `ProcessAuthorizationCallback`, which
+  validates `iss` (RFC 9207). `ProcessAuthorizationResponse` refuses a response
+  without `iss` from a server that advertises it, and a state is good for one
+  response.
+- **(code)** A handler used on its own needs `SetBaseURL` before discovery,
+  authorization or a token request (`ErrResourceUnknown`); the transports set
+  it. The URL must be absolute, with no fragment (`ErrInvalidResource`). Every
+  authorization and token request names it as the `resource`.
+- Client credentials belong to one authorization server: `ClientIssuer`, or
+  else the first one they are used with. Another is refused
+  (`ErrClientRegisteredElsewhere`). Store credentials under
+  `GetClientIssuer`. Registering again replaces the client ID and the secret.
+- Saved tokens record the server and the issuer they are for (`Token.Resource`,
+  `Token.Issuer`), and are sent nowhere else. A token without the record, as
+  one your code stores itself, is used as before.
+- A change of `SetBaseURL` abandons an authorization in progress, and a code is
+  redeemed only for the resource it was obtained for (`ErrResourceChanged`).
+- A 403 with `insufficient_scope` is an `AuthorizationRequiredError`, like a
+  401. One challenge is acted on: `Bearer` before `DPoP`. Its scopes are the
+  refused operation's and are replaced by the next challenge.
+- Dynamic client registration states an `application_type`: `native` for a
+  localhost or custom-scheme redirect, `web` otherwise.
+
+### Results and capabilities
+
+- A `resultType` the client does not know is an error, not a complete result.
+  `task` is accepted only on `tools/call`, on this revision, when the client
+  declared `extensions["io.modelcontextprotocol/tasks"]`; the task is then in
+  `CallToolResult.Task`.
+- Without a `clientInfo` of your own, the client names itself `mcp-go` at the
+  version it was built with.
+- Roots must be `file://` URIs. On this revision `listChanged` is not declared
+  and `RootListChanges` sends nothing.
+- A tool call refused for a stale `Mcp-Param-*` header lists the tools again
+  and retries once.
+
+### Transport
+
+- Cancelling a request on an earlier revision over Streamable HTTP sends
+  `notifications/cancelled`.
+- On this revision a `404` with a JSON-RPC body is that error, not the end of a
+  session.
+- A failed `initialize` establishes no session, and a `4xx` to it with a
+  JSON-RPC body is that error, not a sign of an HTTP+SSE server.
 
 ## Reference
 
