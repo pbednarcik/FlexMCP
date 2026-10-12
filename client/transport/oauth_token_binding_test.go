@@ -142,3 +142,35 @@ func TestOAuthHandler_ARefreshTokenIsNotSentWhenItsRecordCannotBeRead(t *testing
 		})
 	}
 }
+
+// scriptedTokenStore answers its reads in order, the last one from then on.
+type scriptedTokenStore struct {
+	mu    sync.Mutex
+	reads []*Token
+}
+
+func (s *scriptedTokenStore) GetToken(context.Context) (*Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.reads[0]
+	if len(s.reads) > 1 {
+		s.reads = s.reads[1:]
+	}
+	return token, nil
+}
+
+func (s *scriptedTokenStore) SaveToken(context.Context, *Token) error { return nil }
+
+// What a refresh hands back is checked like a token read from the store: a
+// token another refresh left there for another server is not sent here.
+func TestOAuthHandler_ARefreshResultIsUsedOnlyForThisServer(t *testing.T) {
+	store := &scriptedTokenStore{reads: []*Token{
+		{AccessToken: "old", RefreshToken: "refresh", ExpiresAt: time.Now().Add(-time.Minute), Resource: "https://mcp.example/a"},
+		{AccessToken: "for-b", ExpiresAt: time.Now().Add(time.Hour), Resource: "https://mcp.example/b"},
+	}}
+	handler := NewOAuthHandler(OAuthConfig{TokenStore: store})
+	handler.SetBaseURL("https://mcp.example/a")
+
+	header, err := handler.GetAuthorizationHeader(t.Context())
+	require.ErrorIs(t, err, ErrOAuthAuthorizationRequired, "got %q", header)
+}

@@ -414,8 +414,10 @@ func (h *OAuthHandler) getValidToken(ctx context.Context) (*Token, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	if refresh.err != nil {
-		// If refresh fails, continue to authorization flow
+	// A refresh failed, or handed back a token that is not this server's:
+	// one found in the store, which another refresh may have left there, or
+	// one refreshed for the server the handler targeted before a change.
+	if refresh.err != nil || !h.tokenIsForThisServer(refresh.token) {
 		return nil, ErrOAuthAuthorizationRequired
 	}
 	return refresh.token, nil
