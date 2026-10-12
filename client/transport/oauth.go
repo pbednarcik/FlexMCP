@@ -1175,10 +1175,10 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 			return metadataDiscoveryResult{}, fmt.Errorf("protected resource metadata request to %q failed: status %d", protectedResourceURL, resp.StatusCode)
 		}
 		var fetchErr error
-		for _, u := range authorizationServerMetadataURLs(baseURL) {
+		for _, c := range legacyMetadataCandidates(baseURL) {
 			// Any failed fetch moves on to the next candidate URL, but metadata
 			// that may be there keeps the default endpoints from standing in.
-			metadata, err := h.fetchMetadataFromURL(ctx, u)
+			metadata, err := h.fetchMetadataFromURL(ctx, c.url)
 			if err != nil {
 				if errors.Is(err, errMetadataUnavailable) {
 					fetchErr = cmp.Or(fetchErr, err)
@@ -1189,14 +1189,19 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 				continue
 			}
 			// Without protected resource metadata the MCP server is its own
-			// authorization server (the 2025-03-26 revision), so the metadata
-			// found here names the server as its issuer (RFC 8414 §3.3). Naming
-			// another would let the server claim an issuer it is not, and the
-			// client credentials bound to that issuer.
-			if validateIssuer && !isOwnIssuer(metadata.Issuer, baseURL) {
+			// authorization server (the 2025-03-26 revision), and metadata names
+			// the issuer its URL was built from (RFC 8414 §3.3). Naming another
+			// would let whoever serves that URL claim an issuer it is not, and
+			// the client credentials bound to that issuer. Metadata under the
+			// server's path that does so is not used, and the host's root, which
+			// only its origin speaks for, is asked next.
+			if validateIssuer && strings.TrimSuffix(metadata.Issuer, "/") != c.issuer {
+				if c.underPath {
+					continue
+				}
 				return metadataDiscoveryResult{}, fmt.Errorf(
-					"authorization server metadata from %q declares issuer %q, not the MCP server %q",
-					u, metadata.Issuer, baseURL,
+					"authorization server metadata from %q declares issuer %q, not %q",
+					c.url, metadata.Issuer, c.issuer,
 				)
 			}
 			return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
@@ -1329,16 +1334,35 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL, scopesSupported: scopesSupported}, nil
 }
 
-// isOwnIssuer reports whether issuer names the MCP server at baseURL itself:
-// its origin, the 2025-03-26 revision's authorization base URL, or the base
-// URL the metadata URLs were built from. Only a final slash is ignored.
-func isOwnIssuer(issuer, baseURL string) bool {
+// legacyCandidate is a URL the 2025-03-26 fallback fetches authorization
+// server metadata from, and the issuer metadata found there must name: the
+// identifier the URL was built from (RFC 8414 §3.3), without a final slash.
+type legacyCandidate struct {
+	url, issuer string
+	// underPath marks a URL built from the MCP server's path, which speaks
+	// for that server only, not for the host's root.
+	underPath bool
+}
+
+// legacyMetadataCandidates returns, in order, the URLs built from the MCP
+// server's URL when it has a path, then those built from its origin, the
+// 2025-03-26 revision's authorization base URL.
+func legacyMetadataCandidates(baseURL string) []legacyCandidate {
 	base, err := url.Parse(baseURL)
 	if err != nil {
-		return false
+		return nil
 	}
-	issuer = strings.TrimSuffix(issuer, "/")
-	return issuer == base.Scheme+"://"+base.Host || issuer == strings.TrimSuffix(baseURL, "/")
+	origin := base.Scheme + "://" + base.Host
+	var candidates []legacyCandidate
+	if strings.Trim(base.Path, "/") != "" {
+		for _, u := range authorizationServerMetadataURLs(baseURL) {
+			candidates = append(candidates, legacyCandidate{url: u, issuer: strings.TrimSuffix(baseURL, "/"), underPath: true})
+		}
+	}
+	for _, u := range authorizationServerMetadataURLs(origin) {
+		candidates = append(candidates, legacyCandidate{url: u, issuer: origin})
+	}
+	return candidates
 }
 
 // buildWellKnownURL constructs a well-known discovery URL by inserting the

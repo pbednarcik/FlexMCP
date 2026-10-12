@@ -251,3 +251,40 @@ func TestOAuthHandler_FallbackMetadataMustNameTheServersOwnOrigin(t *testing.T) 
 	defer mu.Unlock()
 	assert.Empty(t, secrets, "the client secret went to the MCP server's token endpoint")
 }
+
+// On a shared host, metadata under one MCP server's path cannot speak for
+// the host's root authorization server (RFC 8414 §3.3 binds the issuer to
+// the URL the metadata came from): a document there that claims the root
+// issuer is not used, and the root's own metadata is, so a tenant cannot
+// take the root issuer's client credentials.
+func TestOAuthHandler_TenantMetadataCannotClaimTheRootIssuer(t *testing.T) {
+	var host *httptest.Server
+	host = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server/tenant/mcp":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           host.URL,
+				"authorization_endpoint":           host.URL + "/tenant/authorize",
+				"token_endpoint":                   host.URL + "/tenant/token",
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/.well-known/oauth-authorization-server":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           host.URL,
+				"authorization_endpoint":           host.URL + "/authorize",
+				"token_endpoint":                   host.URL + "/token",
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(host.Close)
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", ClientSecret: "secret", ClientIssuer: host.URL, RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+	handler.SetBaseURL(host.URL + "/tenant/mcp")
+
+	metadata, err := handler.GetServerMetadata(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, host.URL+"/token", metadata.TokenEndpoint, "the tenant's metadata spoke for the root issuer")
+}
