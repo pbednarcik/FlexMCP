@@ -581,6 +581,11 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	if tokenResp.RefreshToken == "" {
 		tokenResp.RefreshToken = refreshToken
 	}
+	// A response without a scope grants the scope the token had (RFC 6749
+	// §5.1, §6), which a later step-up must keep asking for.
+	if tokenResp.Scope == "" {
+		tokenResp.Scope = stored.Scope
+	}
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
 

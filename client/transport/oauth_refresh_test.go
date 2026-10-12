@@ -255,3 +255,23 @@ func TestOAuthHandler_RefreshAfterAStaleRead(t *testing.T) {
 	assert.Equal(t, "Bearer new-access", header)
 	assert.Equal(t, int32(1), server.refreshes.Load(), "refresh requests")
 }
+
+// A refresh response without a scope grants the scope the token had (RFC
+// 6749 §5.1, §6): the recorded grant is kept, so a later step-up still asks
+// for the scopes already granted.
+func TestOAuthHandler_ARefreshKeepsTheGrantedScope(t *testing.T) {
+	server := newRefreshServer(t, singleUseTokens(0))
+	handler, store := newRefreshTestHandler(t, server)
+	stored, err := store.GetToken(t.Context())
+	require.NoError(t, err)
+	granted := *stored
+	granted.Scope = "files:read"
+	require.NoError(t, store.SaveToken(t.Context(), &granted))
+
+	_, err = handler.GetAuthorizationHeader(t.Context())
+	require.NoError(t, err)
+	saved, err := store.GetToken(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "new-access", saved.AccessToken, "the token was refreshed")
+	assert.Equal(t, "files:read", saved.Scope)
+}
