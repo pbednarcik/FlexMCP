@@ -2361,15 +2361,17 @@ func (s *MCPServer) handleNotification(
 // inflightKey returns the key a request's cancel func is filed under, scoped
 // to its session so one client cannot cancel another's request. A session
 // with no ID, a modern HTTP request's ephemeral one, has no scope to offer:
-// ok is false, and closing the request's stream is its cancel.
+// ok is false, and closing the request's stream is its cancel. The id is keyed
+// with its type, so the string "7" and the integer 7 are two requests.
 func inflightKey(ctx context.Context, requestID any) (key string, ok bool) {
+	id := mcp.NewRequestId(requestID).String()
 	if session := ClientSessionFromContext(ctx); session != nil {
 		if session.SessionID() == "" {
 			return "", false
 		}
-		return fmt.Sprintf("%s:%v", session.SessionID(), requestID), true
+		return session.SessionID() + ":" + id, true
 	}
-	return fmt.Sprintf(":%v", requestID), true
+	return ":" + id, true
 }
 
 // requestIDValue decodes a JSON-RPC id from the wire as mcp.RequestId does: a

@@ -244,3 +244,36 @@ func TestAResponseIsNeverAnswered(t *testing.T) {
 		assert.Equal(t, http.StatusAccepted, resp.StatusCode, "%s", body)
 	})
 }
+
+// A string id and an integer id with the same digits are two ids: a cancel for
+// the integer 7 leaves request "7" running.
+func TestCancelledNotificationTellsAStringIDFromAnInteger(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, started := blockingToolServer(t)
+		ctx := srv.WithContext(t.Context(), cancelTestSession("cancel-session"))
+		responses := make(chan mcp.JSONRPCMessage, 1)
+		go func() {
+			responses <- srv.HandleMessage(ctx, json.RawMessage(`{"jsonrpc":"2.0","id":"7","method":"tools/call","params":{"name":"block"}}`))
+		}()
+		<-started
+		cancel := func(id string) json.RawMessage {
+			return json.RawMessage(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":` + id + `}}`)
+		}
+
+		require.Nil(t, srv.HandleMessage(ctx, cancel(`7`)))
+		synctest.Wait()
+		select {
+		case resp := <-responses:
+			t.Fatalf("a cancel for the integer 7 ended request \"7\": %v", resp)
+		default:
+		}
+
+		require.Nil(t, srv.HandleMessage(ctx, cancel(`"7"`)))
+		synctest.Wait()
+		select {
+		case <-responses:
+		default:
+			t.Fatal("the request did not end after its own cancel")
+		}
+	})
+}
