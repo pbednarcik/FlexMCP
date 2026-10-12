@@ -268,8 +268,14 @@ type AuthServerMetadata struct {
 
 // OAuthHandler handles OAuth authentication for HTTP requests
 type OAuthHandler struct {
-	config           OAuthConfig
-	httpClient       *http.Client
+	config OAuthConfig
+	// discoveryClient and credentialClient are copies of the configured
+	// client, sharing its transport, that differ in what a redirect may do:
+	// discovery follows one only while it stays on https; a request carrying
+	// credentials, a code or a refresh token follows none (see
+	// newRedirectPolicies).
+	discoveryClient  *http.Client
+	credentialClient *http.Client
 	serverMetadata   *AuthServerMetadata
 	metadataFetchErr error
 	// metadataOnce gates the discovery RPCs so they run once per
@@ -359,11 +365,41 @@ func NewOAuthHandler(config OAuthConfig) *OAuthHandler {
 		config.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 
+	discovery, credential := newRedirectPolicies(config.HTTPClient)
 	return &OAuthHandler{
 		config:           config,
-		httpClient:       config.HTTPClient,
+		discoveryClient:  discovery,
+		credentialClient: credential,
 		registeredIssuer: config.ClientIssuer,
 	}
+}
+
+// newRedirectPolicies returns two copies of client that share its transport,
+// leaving client itself as the application configured it. The HTTPS rule for
+// authorization servers holds across redirects: a discovery request follows
+// a redirect only while it stays on https, and otherwise as client's own
+// policy says; a request carrying client credentials, a code or a refresh
+// token follows none, so a 307 cannot resend its body elsewhere, and the
+// redirect response is its failure.
+func newRedirectPolicies(client *http.Client) (discovery, credential *http.Client) {
+	discoveryCopy, credentialCopy := *client, *client
+	follow := client.CheckRedirect
+	discoveryCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if strings.EqualFold(via[0].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+			return fmt.Errorf("%w: redirect from %q to %q", ErrInsecureAuthorizationServer, via[len(via)-1].URL, req.URL)
+		}
+		if follow != nil {
+			return follow(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	credentialCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &discoveryCopy, &credentialCopy
 }
 
 // tokenIsForThisServer reports whether token may be sent to the MCP server
@@ -542,7 +578,7 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 		return nil, fmt.Errorf("failed to create refresh token request: %w", err)
 	}
 
-	resp, err := h.httpClient.Do(req)
+	resp, err := h.credentialClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send refresh token request: %w", err)
 	}
@@ -1120,7 +1156,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 	// per the MCP spec.
 	req.Header.Set("MCP-Protocol-Version", mcp.LATEST_PROTOCOL_VERSION)
 
-	resp, err := h.httpClient.Do(req)
+	resp, err := h.discoveryClient.Do(req)
 	if err != nil {
 		return metadataDiscoveryResult{}, fmt.Errorf("failed to send protected resource request: %w", err)
 	}
@@ -1459,7 +1495,7 @@ func (h *OAuthHandler) fetchMetadataFromURL(ctx context.Context, metadataURL str
 	// per the MCP spec.
 	req.Header.Set("MCP-Protocol-Version", mcp.LATEST_PROTOCOL_VERSION)
 
-	resp, err := h.httpClient.Do(req)
+	resp, err := h.discoveryClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to send metadata request: %w", errMetadataUnavailable, err)
 	}
@@ -1674,7 +1710,7 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := h.httpClient.Do(req)
+	resp, err := h.credentialClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send registration request: %w", err)
 	}
@@ -1864,7 +1900,7 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 		return fmt.Errorf("failed to create token request: %w", err)
 	}
 
-	resp, err := h.httpClient.Do(req)
+	resp, err := h.credentialClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send token request: %w", err)
 	}
