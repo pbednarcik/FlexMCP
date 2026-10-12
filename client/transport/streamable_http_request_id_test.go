@@ -59,6 +59,11 @@ func TestStreamableHTTP_TheAnswerToAPostIsItsOwn(t *testing.T) {
 		require.NotNil(t, response.Error)
 		assert.Equal(t, mcp.INVALID_REQUEST, response.Error.Code)
 	})
+	t.Run("a json response to another id", func(t *testing.T) {
+		trans, _ := serve(t, "application/json", `{"jsonrpc":"2.0","id":2,"result":{"answer":0}}`)
+		_, err := trans.SendRequest(t.Context(), request)
+		require.ErrorContains(t, err, "answers request int64:2, not int64:1")
+	})
 	t.Run("a stream error with a null id", func(t *testing.T) {
 		trans, _ := serve(t, "text/event-stream", refusal)
 		response, err := trans.SendRequest(t.Context(), request)

@@ -38,12 +38,18 @@ func TestStreamableHTTP_WithOAuth(t *testing.T) {
 			return
 		}
 
-		// Return a successful response
+		// Return a successful response to the request's own id
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("Failed to decode request: %v", err)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"jsonrpc": "2.0",
-			"id":      1,
+			"id":      request.ID,
 			"result":  "success",
 		}); err != nil {
 			t.Errorf("Failed to encode JSON response: %v", err)

@@ -615,6 +615,9 @@ func (c *StreamableHTTP) SendRequest(
 		if response.ID.IsNil() && response.Error == nil {
 			return nil, fmt.Errorf("response should contain RPC id: %v", response)
 		}
+		if !response.ID.IsNil() && response.ID.String() != request.ID.String() {
+			return nil, fmt.Errorf("the response answers request %s, not %s", response.ID, request.ID)
+		}
 
 		c.markConnected(request, &response, sessionID, session)
 		return &response, nil
