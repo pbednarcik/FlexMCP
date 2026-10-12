@@ -36,6 +36,12 @@ func (s *MCPServer) HandleMessage(
 			"Failed to parse message",
 		)
 	}
+	// A response, success or error, to a request the server sent, such as a
+	// keep-alive ping: nothing waits for it, and a response is never answered,
+	// whatever its id.
+	if len(baseMessage.RawID) > 0 && (baseMessage.Result != nil || baseMessage.Error != nil) {
+		return nil
+	}
 	var validID bool
 	baseMessage.ID, validID = requestIDValue(baseMessage.RawID)
 	if !validID {
@@ -62,13 +68,6 @@ func (s *MCPServer) HandleMessage(
 		}
 		s.handleNotification(ctx, notification, message)
 		return nil // Return nil for notifications
-	}
-
-	if baseMessage.Result != nil || baseMessage.Error != nil {
-		// A response, success or error, to a request the server sent, such as
-		// a keep-alive ping: nothing waits for it, and a response is never
-		// answered.
-		return nil
 	}
 
 	handleErr := s.hooks.onRequestInitialization(ctx, baseMessage.ID, message)

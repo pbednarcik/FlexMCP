@@ -941,7 +941,7 @@ func TestStdioServer_AToolCallCancelledWhileQueuedIsNotStarted(t *testing.T) {
 		return mcp.NewToolResultText("ok"), nil
 	})
 	stdioServer := NewStdioServer(mcpServer)
-	id := float64(7)
+	id := int64(7)
 	stdioServer.cancelled.start(id)
 	stdioServer.cancelled.cancel(id)
 	var output bytes.Buffer

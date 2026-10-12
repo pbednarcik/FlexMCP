@@ -152,12 +152,13 @@ func TestStreamableHTTP_RefusalEchoesALargeIntegerIDExactly(t *testing.T) {
 	assert.Contains(t, string(body), `"id":`+idTwoTo53Plus)
 }
 
-// An id no number type can hold, such as 1e400, is not a valid request id: the
-// request is refused as invalid with a null id, never run and answered as some
-// other id (JSON-RPC 2.0, section 5).
-func TestAnUnrepresentableIDIsRefused(t *testing.T) {
+// A request id is a string or an integer (MCP base protocol). Anything else,
+// a fraction, a boolean, an object, an array or a number no type can hold such
+// as 1e400, is refused as an invalid request with a null id, never run and
+// never answered as some other id (JSON-RPC 2.0, section 5).
+func TestAnInvalidIDIsRefused(t *testing.T) {
 	const ran = `"result"`
-	for _, id := range []string{"1e400", "-1e400"} {
+	for _, id := range []string{"null", "1e400", "-1e400", "1.5", "true", "{}", "[1]"} {
 		message := `{"jsonrpc":"2.0","id":` + id + `,"method":"ping"}`
 		t.Run("handle message "+id, func(t *testing.T) {
 			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
@@ -205,4 +206,41 @@ func TestStdioCancelsAnIDPastInt64(t *testing.T) {
 	requests.start(id)
 	requests.cancel(id)
 	assert.True(t, requests.finish(id))
+}
+
+// A response is never answered (JSON-RPC 2.0, section 5), whatever its id: a
+// null id is how a peer answers a request whose id it could not read, and an
+// invalid one is still no request to refuse.
+func TestAResponseIsNeverAnswered(t *testing.T) {
+	for _, id := range []string{"1", "null", "1.5", "true", "{}"} {
+		for _, body := range []string{`"result":{}`, `"error":{"code":-32600,"message":"Invalid request id"}`} {
+			message := `{"jsonrpc":"2.0","id":` + id + `,` + body + `}`
+			t.Run("handle message "+message, func(t *testing.T) {
+				assert.Nil(t, NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+			})
+			t.Run("stdio "+message, func(t *testing.T) {
+				stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+				stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+				var output bytes.Buffer
+				require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+				assert.Empty(t, output.String())
+			})
+		}
+	}
+	t.Run("streamable http accepts an error with a null id", func(t *testing.T) {
+		server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+		t.Cleanup(server.Close)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL,
+			strings.NewReader(`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request id"}}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode, "%s", body)
+	})
 }

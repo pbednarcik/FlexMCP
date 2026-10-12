@@ -2372,24 +2372,26 @@ func inflightKey(ctx context.Context, requestID any) (key string, ok bool) {
 	return fmt.Sprintf(":%v", requestID), true
 }
 
-// requestIDValue decodes a JSON-RPC id from the wire as mcp.RequestId does,
-// an integer exactly as an int64, so an id past 2^53 is echoed and matched as
-// sent. Any other value decodes as encoding/json would, and an absent or null
-// id is nil. ok is false for an id no Go value holds, such as 1e400: the
-// request is invalid, never answered as some other id.
+// requestIDValue decodes a JSON-RPC id from the wire as mcp.RequestId does: a
+// string, or an integer kept exact, so an id past 2^53 is echoed and matched
+// as sent. An absent id is nil, a notification's. ok is false for any other
+// id, null, a fraction, a boolean, an object, an array or a number no type
+// holds such as 1e400: a request id is a string or an integer and never null
+// (MCP base protocol), and such a request is invalid, never run or answered
+// as some other id.
 func requestIDValue(raw json.RawMessage) (id any, ok bool) {
 	if len(raw) == 0 {
 		return nil, true
 	}
 	var requestID mcp.RequestId
-	if json.Unmarshal(raw, &requestID) == nil {
-		return requestID.Value(), true
-	}
-	var value any
-	if json.Unmarshal(raw, &value) != nil {
+	if json.Unmarshal(raw, &requestID) != nil {
 		return nil, false
 	}
-	return value, true
+	switch value := requestID.Value(); value.(type) {
+	case string, int64, json.Number:
+		return value, true
+	}
+	return nil, false
 }
 
 func createResponse(id any, result any) mcp.JSONRPCMessage {

@@ -400,7 +400,8 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	isInitializeRequest := jsonMessage.Method == mcp.MethodInitialize
 
 	requestID, validID := requestIDValue(jsonMessage.ID)
-	if !validID {
+	isResponse := jsonMessage.Method == "" && (len(jsonMessage.Result) > 0 || len(jsonMessage.Error) > 0)
+	if !validID && !isResponse {
 		s.writeJSONRPCError(w, nil, mcp.INVALID_REQUEST, "invalid request id")
 		return
 	}

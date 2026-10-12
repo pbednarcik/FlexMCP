@@ -57,12 +57,12 @@ type cancelledRequests struct {
 	inflight map[any]bool
 }
 
-// comparableID reports whether id can key the map: a JSON-RPC id is a number
-// or a string, and anything else is refused before it gets here, but a map
-// key that is not comparable would panic.
+// comparableID reports whether id can key the map: a request id is a string or
+// an integer, and anything else is refused before it gets here, but a map key
+// that is not comparable would panic.
 func comparableID(id any) bool {
 	switch id.(type) {
-	case int64, json.Number, float64, string:
+	case int64, json.Number, string:
 		return true
 	}
 	return false
@@ -423,11 +423,18 @@ func (s *StdioServer) processMessage(
 		Method string          `json:"method"`
 		RawID  json.RawMessage `json:"id,omitempty"`
 		ID     any             `json:"-"`
+		Result json.RawMessage `json:"result,omitempty"`
+		Error  json.RawMessage `json:"error,omitempty"`
 		Params struct {
 			RequestID json.RawMessage `json:"requestId"`
 		} `json:"params"`
 	}
 	parsed := json.Unmarshal(rawMessage, &baseMessage) == nil
+	// A response is never answered, whatever its id, and the stdio server sends
+	// no request for one to answer: it is dropped before any id bookkeeping.
+	if parsed && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
+		return nil
+	}
 	var validID bool
 	baseMessage.ID, validID = requestIDValue(baseMessage.RawID)
 	if parsed && !validID {
