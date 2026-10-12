@@ -407,3 +407,17 @@ func TestStreamableHTTP_AChallengeFromThePreviousServerIsNotRecorded(t *testing.
 	require.Error(t, err)
 	assert.Empty(t, tr.GetOAuthHandler().ChallengedScopes(), "server a's challenge was recorded for server b")
 }
+
+// The advertised metadata URL is checked against the server the handler
+// targets when it is recorded, not only when the challenge was read: a
+// challenge read for one server and recorded after a retarget does not send
+// the next server's discovery to the previous server's metadata.
+func TestOAuthHandler_AnAdvertisedMetadataURLIsCheckedWhenRecorded(t *testing.T) {
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", TokenStore: NewMemoryTokenStore()})
+	handler.SetBaseURL("https://b.example/mcp")
+
+	handler.recordChallenge(bearerChallenge{resourceMetadata: "https://a.example/.well-known/oauth-protected-resource"}, "")
+	handler.metadataMu.Lock()
+	defer handler.metadataMu.Unlock()
+	assert.Empty(t, handler.advertisedPRMURL, "server a's metadata URL was recorded for server b")
+}

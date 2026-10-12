@@ -689,7 +689,10 @@ func (h *OAuthHandler) SetProtectedResourceMetadataURL(u string) {
 func (h *OAuthHandler) setAdvertisedPRMURL(u, recipient string) {
 	h.metadataMu.Lock()
 	defer h.metadataMu.Unlock()
-	if recipient != "" && recipient != h.baseURL {
+	// Checked again against the base URL it is recorded for, in the same
+	// critical section: the base URL may have changed since the challenge
+	// was read.
+	if (recipient != "" && recipient != h.baseURL) || checkAdvertisedPRMURL(u, h.baseURL) != nil {
 		return
 	}
 	h.advertisedPRMURL = u
@@ -777,6 +780,11 @@ func (h *OAuthHandler) validateAdvertisedPRMURL(candidate string) error {
 	h.metadataMu.Lock()
 	baseURL := h.baseURL
 	h.metadataMu.Unlock()
+	return checkAdvertisedPRMURL(candidate, baseURL)
+}
+
+// checkAdvertisedPRMURL is validateAdvertisedPRMURL against baseURL.
+func checkAdvertisedPRMURL(candidate, baseURL string) error {
 	if baseURL == "" {
 		return errors.New("no base URL configured for origin validation")
 	}
