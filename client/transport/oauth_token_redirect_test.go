@@ -120,6 +120,37 @@ func TestOAuthTransports_TokenRedirectsStayOnTheOrigin(t *testing.T) {
 		_, err = trans.SendRequest(t.Context(), request)
 		require.NoError(t, err)
 	})
+	t.Run("without OAuth a redirect is followed as the client says", func(t *testing.T) {
+		var followed atomic.Int32
+		other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			followed.Add(1)
+			if r.URL.Path == "/sse" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, "event: endpoint\ndata: /message\n\n")
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+		}))
+		t.Cleanup(other.Close)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+r.URL.Path, http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(server.Close)
+
+		streamable, err := NewStreamableHTTP(server.URL+"/mcp", WithHTTPBasicClient(server.Client()))
+		require.NoError(t, err)
+		_, err = streamable.SendRequest(t.Context(), request)
+		require.NoError(t, err)
+
+		sse, err := NewSSE(server.URL+"/sse", WithHTTPClient(server.Client()))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sse.Close() })
+		require.NoError(t, sse.Start(t.Context()))
+		require.Equal(t, int32(2), followed.Load())
+	})
 }
 
 // An origin is scheme, host and port, a missing port being the scheme's

@@ -382,11 +382,11 @@ func NewOAuthHandler(config OAuthConfig) *OAuthHandler {
 
 // newRedirectPolicies returns two copies of client that share its transport,
 // leaving client itself as the application configured it. The HTTPS rule for
-// authorization servers holds across redirects: a discovery request follows
-// a redirect as client's own policy says, and only while the URL that policy
-// leaves stays on https; a request carrying client credentials, a code or a refresh
-// token follows none, so a 307 cannot resend its body elsewhere, and the
-// redirect response is its failure.
+// authorization servers holds across redirects: a discovery request follows a
+// redirect as client's own policy says, and only while the URL that policy
+// leaves stays on https; a request carrying client credentials, a code or a
+// refresh token follows none, so a 307 cannot resend its body elsewhere, and
+// the redirect response is its failure.
 func newRedirectPolicies(client *http.Client) (discovery, credential *http.Client) {
 	discoveryCopy, credentialCopy := *client, *client
 	follow := client.CheckRedirect
