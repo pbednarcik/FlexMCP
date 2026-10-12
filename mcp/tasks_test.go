@@ -128,6 +128,37 @@ func TestNewTaskOptionsSurviveTheWire(t *testing.T) {
 	assert.Equal(t, map[string]any{"taskId": "parent-task"}, parsed.Meta.AdditionalFields[RelatedTaskMetaKey])
 }
 
+// A tools/call answered with a task (the Tasks extension, 2026-07-28) carries
+// the task at the top level of the result, with no content: it is kept as
+// the result's Task, and written back the same way.
+func TestCallToolResultCarriesTheTask(t *testing.T) {
+	const wire = `{"resultType":"task","taskId":"t1","status":"working","statusMessage":"queued","createdAt":"2026-01-01T00:00:00Z","lastUpdatedAt":"2026-01-01T00:00:01Z","ttlMs":60000,"pollIntervalMs":1000}`
+	raw := json.RawMessage(wire)
+	result, err := ParseCallToolResult(&raw)
+	require.NoError(t, err)
+	require.NotNil(t, result.Task)
+	ttl, poll := int64(60000), int64(1000)
+	assert.Equal(t, ExtensionTask{
+		TaskId: "t1", Status: TaskStatusWorking, StatusMessage: "queued",
+		CreatedAt: "2026-01-01T00:00:00Z", LastUpdatedAt: "2026-01-01T00:00:01Z",
+		TTLMs: &ttl, PollIntervalMs: &poll,
+	}, *result.Task)
+
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.JSONEq(t, wire, string(encoded), "no content is invented for a task")
+
+	complete := json.RawMessage(`{"content":[]}`)
+	result, err = ParseCallToolResult(&complete)
+	require.NoError(t, err)
+	assert.Nil(t, result.Task, "a complete result has no task")
+
+	noID := json.RawMessage(`{"resultType":"task","status":"working"}`)
+	_, err = ParseCallToolResult(&noID)
+	require.Error(t, err, "a task result without a taskId is no handle")
+	assert.ErrorContains(t, err, "taskId")
+}
+
 func TestParseListTasksResultRoundTrip(t *testing.T) {
 	working := NewTask("a", WithTaskCreatedAt("2026-01-01T00:00:00Z"), WithTaskTTL(1000))
 	failed := NewTask("b", WithTaskStatus(TaskStatusFailed), WithTaskStatusMessage("boom"))

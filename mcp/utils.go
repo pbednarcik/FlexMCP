@@ -876,6 +876,10 @@ func ParseCallToolResult(rawMessage *json.RawMessage) (*CallToolResult, error) {
 	if err := json.Unmarshal(*rawMessage, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
+	// A task the client cannot name is no handle to poll with.
+	if result.Task != nil && result.Task.TaskId == "" {
+		return nil, fmt.Errorf("task result without a taskId")
+	}
 
 	return &result, nil
 }

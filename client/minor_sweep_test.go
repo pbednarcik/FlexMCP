@@ -237,6 +237,13 @@ func TestTaskResultTypeNeedsTheTasksExtension(t *testing.T) {
 		if err != nil {
 			return "", err
 		}
+		// An accepted task is a handle the caller polls with: it is kept.
+		require.NotNil(t, result.Task, "the task handle is kept")
+		assert.Equal(t, "t1", result.Task.TaskId)
+		assert.Equal(t, mcp.TaskStatusWorking, result.Task.Status)
+		require.NotNil(t, result.Task.PollIntervalMs)
+		assert.Equal(t, int64(1000), *result.Task.PollIntervalMs)
+		assert.Nil(t, result.Task.TTLMs, "a null ttlMs is unlimited")
 		return result.ResultType, nil
 	}
 	listTools := func(c *Client) (mcp.ResultType, error) {

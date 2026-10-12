@@ -160,6 +160,29 @@ func NewTasksCapabilityWithToolsOnly() *TasksCapability {
 // a task, and a server that it serves tasks.
 const ExtensionTasks = "io.modelcontextprotocol/tasks"
 
+// ExtensionTask is a task of the Tasks extension of protocol version
+// 2026-07-28 (see ExtensionTasks), the handle a client polls with: a
+// tools/call answered with resultType "task" carries these fields at the top
+// level of its result, and no content. [Task] is the 2025-11-25 shape, whose
+// fields are named ttl and pollInterval.
+type ExtensionTask struct {
+	// TaskId identifies the task.
+	TaskId string `json:"taskId"`
+	// Status is the task's current state.
+	Status TaskStatus `json:"status"`
+	// StatusMessage optionally describes the current state.
+	StatusMessage string `json:"statusMessage,omitempty"`
+	// CreatedAt is when the task was created, an ISO 8601 timestamp.
+	CreatedAt string `json:"createdAt"`
+	// LastUpdatedAt is when the task last changed, an ISO 8601 timestamp.
+	LastUpdatedAt string `json:"lastUpdatedAt"`
+	// TTLMs is how long, in milliseconds from creation, the task is kept;
+	// nil is unlimited.
+	TTLMs *int64 `json:"ttlMs"`
+	// PollIntervalMs is the suggested time, in milliseconds, between polls.
+	PollIntervalMs *int64 `json:"pollIntervalMs,omitempty"`
+}
+
 // RelatedTaskMetaKey is the metadata key for associating a message with a task.
 const RelatedTaskMetaKey = "io.modelcontextprotocol/related-task"
 

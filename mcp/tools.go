@@ -54,6 +54,11 @@ type CallToolResult struct {
 	//
 	// If not set, this is assumed to be false (the call was successful).
 	IsError bool `json:"isError,omitempty"`
+	// Task is the task the call was accepted as, when ResultType is
+	// [ResultTypeTask] (the Tasks extension): the result is then the task
+	// and carries no content. On the wire its fields stand at the top level
+	// of the result.
+	Task *ExtensionTask `json:"-"`
 }
 
 // CallToolRequest is used by the client to invoke a tool provided by the server.
@@ -546,6 +551,20 @@ func (r CallToolRequest) RequireBoolSlice(key string) ([]bool, error) {
 // multi round-trip fields are present only while the server is asking the
 // client for more input (SEP-2322).
 func (r CallToolResult) MarshalJSON() ([]byte, error) {
+	if r.Task != nil {
+		// A result accepted as a task is the task, with no content.
+		return json.Marshal(struct {
+			Meta           *Meta      `json:"_meta,omitempty"`
+			CreatedAt      string     `json:"createdAt"`
+			LastUpdatedAt  string     `json:"lastUpdatedAt"`
+			PollIntervalMs *int64     `json:"pollIntervalMs,omitempty"`
+			ResultType     ResultType `json:"resultType"`
+			Status         TaskStatus `json:"status"`
+			StatusMessage  string     `json:"statusMessage,omitempty"`
+			TaskId         string     `json:"taskId"`
+			TTLMs          *int64     `json:"ttlMs"`
+		}{r.Meta, r.Task.CreatedAt, r.Task.LastUpdatedAt, r.Task.PollIntervalMs, ResultTypeTask, r.Task.Status, r.Task.StatusMessage, r.Task.TaskId, r.Task.TTLMs})
+	}
 	content := r.Content
 	if content == nil {
 		content = []Content{}
@@ -589,6 +608,15 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	r.IsError = raw.IsError
 	r.InputRequests = raw.InputRequests
 	r.RequestState = raw.RequestState
+
+	r.Task = nil
+	if raw.ResultType == ResultTypeTask {
+		var task ExtensionTask
+		if err := json.Unmarshal(data, &task); err != nil {
+			return err
+		}
+		r.Task = &task
+	}
 
 	r.Content = nil
 	if raw.Content != nil {
