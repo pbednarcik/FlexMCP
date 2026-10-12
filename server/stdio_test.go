@@ -928,3 +928,53 @@ func TestStdioServer_AQueuedToolCallDoesNotStartAfterTheInputEnds(t *testing.T) 
 		require.Zero(t, output.Len(), "round %d: a queued call was answered after the input ended: %s", round, output.String())
 	}
 }
+
+// The end of input shuts the server down even when the read loop is running
+// a tool call itself because the queue was full: that call is cancelled as
+// running work is, the loop reaches the end of input, and Listen returns.
+func TestStdioServer_TheEndOfInputReachesACallRunOnTheReadLoop(t *testing.T) {
+	started := make(chan string, 3)
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+	for _, name := range []string{"busy", "queued", "overflow"} {
+		mcpServer.AddTool(mcp.NewTool(name), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			started <- name
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+	}
+	stdioServer := NewStdioServer(mcpServer)
+	WithWorkerPoolSize(1)(stdioServer)
+	WithQueueSize(1)(stdioServer)
+	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+
+	stdin, input := io.Pipe()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	listened := make(chan error, 1)
+	go func() { listened <- stdioServer.Listen(ctx, stdin, io.Discard) }()
+	call := func(id int, name string) {
+		_, err := fmt.Fprintf(input, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q}}`+"\n", id, name)
+		require.NoError(t, err)
+	}
+
+	// The only worker is busy, the queue holds one call, and the next runs
+	// on the read loop.
+	call(1, "busy")
+	require.Equal(t, "busy", <-started)
+	call(2, "queued")
+	call(3, "overflow")
+	require.Equal(t, "overflow", <-started)
+	require.NoError(t, input.Close())
+
+	select {
+	case err := <-listened:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the end of input did not reach the call run on the read loop; Listen is still running")
+	}
+	select {
+	case name := <-started:
+		t.Fatalf("%s started after the input ended", name)
+	default:
+	}
+}

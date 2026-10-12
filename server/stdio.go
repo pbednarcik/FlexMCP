@@ -45,6 +45,11 @@ type StdioServer struct {
 	// cancelled remembers which in-flight requests the client cancelled by
 	// notification, so that nothing more is sent for them.
 	cancelled cancelledRequests
+
+	// inputEnded is closed when the reader reaches the end of input, ahead of
+	// the read loop, which may be running a tool call itself (see
+	// processMessage). Set by processInputStream, read on its loop.
+	inputEnded chan struct{}
 }
 
 // cancelledRequests tracks the requests in flight on a stdio server and which
@@ -251,9 +256,16 @@ type inputLine struct {
 // the loop itself returns at once.
 func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Reader, stdout io.Writer) error {
 	lines := make(chan inputLine, 64)
+	inputEnded := make(chan struct{})
+	s.inputEnded = inputEnded
 	go func() {
 		for {
 			text, err := reader.ReadString('\n')
+			if err != nil {
+				// Said before the line is handed over, which a loop running a
+				// call of its own would hold up.
+				close(inputEnded)
+			}
 			select {
 			case lines <- inputLine{text: text, err: err}:
 			case <-ctx.Done():
@@ -432,9 +444,22 @@ func (s *StdioServer) processMessage(
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			// Queue is full, process synchronously as fallback
+			// Queue is full, process synchronously as fallback. The read loop
+			// cannot see the end of input while the call runs, so the end of
+			// input cancels the call directly, as the shutdown cancels
+			// running work.
 			s.errLogger.Printf("Tool call queue full, processing synchronously")
-			s.answer(baseMessage.ID, s.handleMessage(ctx, baseMessage.ID, rawMessage), writer)
+			callCtx, cancel := context.WithCancel(ctx)
+			inputEnded := s.inputEnded
+			go func() {
+				select {
+				case <-inputEnded:
+					cancel()
+				case <-callCtx.Done():
+				}
+			}()
+			s.answer(baseMessage.ID, s.handleMessage(callCtx, baseMessage.ID, rawMessage), writer)
+			cancel()
 			return nil
 		}
 	}
