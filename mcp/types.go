@@ -400,7 +400,14 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	// JSON numbers are unmarshaled as float64 in Go
+	// An integer is kept exact: through a float64, one past 2^53 would lose
+	// its last digits and no longer match the request it answers.
+	if i, err := strconv.ParseInt(string(data), 10, 64); err == nil {
+		r.value = i
+		return nil
+	}
+
+	// Any other JSON number, such as 1.5 or 1e3, goes through a float64
 	var f float64
 	if err := json.Unmarshal(data, &f); err == nil {
 		if f == float64(int64(f)) {

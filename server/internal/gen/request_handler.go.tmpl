@@ -23,9 +23,10 @@ func (s *MCPServer) HandleMessage(
 	var baseMessage struct {
 		JSONRPC string      `json:"jsonrpc"`
 		Method  mcp.MCPMethod `json:"method"`
-		ID      any           `json:"id,omitempty"`
-		Result  any           `json:"result,omitempty"`
-		Error   any           `json:"error,omitempty"`
+		RawID   json.RawMessage `json:"id,omitempty"`
+		ID      any             `json:"-"`
+		Result  any             `json:"result,omitempty"`
+		Error   any             `json:"error,omitempty"`
 	}
 
 	if err := json.Unmarshal(message, &baseMessage); err != nil {
@@ -35,6 +36,7 @@ func (s *MCPServer) HandleMessage(
 			"Failed to parse message",
 		)
 	}
+	baseMessage.ID = requestIDValue(baseMessage.RawID)
 
 	// Check for valid JSONRPC version
 	if baseMessage.JSONRPC != mcp.JSONRPC_VERSION {
@@ -54,7 +56,7 @@ func (s *MCPServer) HandleMessage(
 				"Failed to parse notification",
 			)
 		}
-		s.handleNotification(ctx, notification)
+		s.handleNotification(ctx, notification, message)
 		return nil // Return nil for notifications
 	}
 

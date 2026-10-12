@@ -51,7 +51,7 @@ type StdioServer struct {
 // of them the client cancelled with notifications/cancelled. After a cancel
 // the server sends nothing more for that request, not even the error its
 // handler returns on the cancelled context: the client has stopped waiting.
-// Keyed by the JSON-RPC id as decoded from the wire, a number or a string.
+// Keyed by the JSON-RPC id as requestIDValue decodes it, exact for an integer.
 type cancelledRequests struct {
 	mu       sync.Mutex
 	inflight map[any]bool
@@ -62,7 +62,7 @@ type cancelledRequests struct {
 // key that is not comparable would panic.
 func comparableID(id any) bool {
 	switch id.(type) {
-	case float64, string:
+	case int64, float64, string:
 		return true
 	}
 	return false
@@ -420,13 +420,15 @@ func (s *StdioServer) processMessage(
 
 	// Tool calls go to the worker pool, so a slow one never blocks the read loop.
 	var baseMessage struct {
-		Method string `json:"method"`
-		ID     any    `json:"id,omitempty"`
+		Method string          `json:"method"`
+		RawID  json.RawMessage `json:"id,omitempty"`
+		ID     any             `json:"-"`
 		Params struct {
-			RequestID any `json:"requestId"`
+			RequestID json.RawMessage `json:"requestId"`
 		} `json:"params"`
 	}
 	parsed := json.Unmarshal(rawMessage, &baseMessage) == nil
+	baseMessage.ID = requestIDValue(baseMessage.RawID)
 	if parsed && baseMessage.ID != nil {
 		s.cancelled.start(baseMessage.ID)
 	}
@@ -469,7 +471,7 @@ func (s *StdioServer) processMessage(
 	// A cancellation is noted before the core acts on it, so the cancelled
 	// request's response is dropped whenever its handler returns.
 	if parsed && baseMessage.Method == string(mcp.MethodNotificationCancelled) {
-		s.cancelled.cancel(baseMessage.Params.RequestID)
+		s.cancelled.cancel(requestIDValue(baseMessage.Params.RequestID))
 	}
 
 	// Notifications carry no response and must not queue behind a request.

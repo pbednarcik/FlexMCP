@@ -399,10 +399,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	isInitializeRequest := jsonMessage.Method == mcp.MethodInitialize
 
-	var requestID any
-	if len(jsonMessage.ID) > 0 {
-		_ = json.Unmarshal(jsonMessage.ID, &requestID)
-	}
+	requestID := requestIDValue(jsonMessage.ID)
 
 	// Decide which protocol era this message belongs to. Both eras run through
 	// the same stateless path below; the era only chooses the version check

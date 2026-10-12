@@ -2325,11 +2325,18 @@ func (s *MCPServer) executeRegularToolAsTask(
 func (s *MCPServer) handleNotification(
 	ctx context.Context,
 	notification mcp.JSONRPCNotification,
+	message json.RawMessage,
 ) mcp.JSONRPCMessage {
-	// Handle cancellation notifications per MCP spec
+	// Handle cancellation notifications per MCP spec. The request is named by
+	// its exact id, read from message as the request's own key was.
 	if notification.Method == string(mcp.MethodNotificationCancelled) {
-		if reqID, ok := notification.Params.AdditionalFields["requestId"]; ok {
-			if key, ok := inflightKey(ctx, reqID); ok {
+		var cancelled struct {
+			Params struct {
+				RequestID json.RawMessage `json:"requestId"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(message, &cancelled) == nil && len(cancelled.Params.RequestID) > 0 {
+			if key, ok := inflightKey(ctx, requestIDValue(cancelled.Params.RequestID)); ok {
 				if cancel, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
 					if cancelFunc, ok := cancel.(context.CancelFunc); ok {
 						cancelFunc()
@@ -2362,6 +2369,20 @@ func inflightKey(ctx context.Context, requestID any) (key string, ok bool) {
 		return fmt.Sprintf("%s:%v", session.SessionID(), requestID), true
 	}
 	return fmt.Sprintf(":%v", requestID), true
+}
+
+// requestIDValue decodes a JSON-RPC id from the wire as mcp.RequestId does,
+// an integer exactly as an int64, so an id past 2^53 is echoed and matched as
+// sent. Any other value decodes as encoding/json would, and an absent or null
+// id is nil.
+func requestIDValue(raw json.RawMessage) any {
+	var id mcp.RequestId
+	if json.Unmarshal(raw, &id) == nil {
+		return id.Value()
+	}
+	var value any
+	_ = json.Unmarshal(raw, &value)
+	return value
 }
 
 func createResponse(id any, result any) mcp.JSONRPCMessage {

@@ -2455,7 +2455,7 @@ func TestMCPServer_ToolHandlerPreservesJSONRPCError(t *testing.T) {
 	errorResponse, ok := response.(mcp.JSONRPCError)
 	require.True(t, ok)
 	assert.Equal(t, mcp.JSONRPC_VERSION, errorResponse.JSONRPC)
-	assert.Equal(t, float64(4), errorResponse.ID.Value())
+	assert.Equal(t, int64(4), errorResponse.ID.Value())
 	assert.Equal(t, mcp.URL_ELICITATION_REQUIRED, errorResponse.Error.Code)
 	assert.Equal(t, "tool call failed: "+handlerErr.Error(), errorResponse.Error.Message)
 	assert.Equal(t, map[string]any{
@@ -2486,7 +2486,7 @@ func TestMCPServer_ToolHandlerErrorDefaultsToInternalError(t *testing.T) {
 	errorResponse, ok := response.(mcp.JSONRPCError)
 	require.True(t, ok)
 	assert.Equal(t, mcp.JSONRPC_VERSION, errorResponse.JSONRPC)
-	assert.Equal(t, float64(5), errorResponse.ID.Value())
+	assert.Equal(t, int64(5), errorResponse.ID.Value())
 	assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
 	assert.Equal(t, handlerErr.Error(), errorResponse.Error.Message)
 	assert.Nil(t, errorResponse.Error.Data)
@@ -4294,7 +4294,7 @@ func TestMCPServer_Complete(t *testing.T) {
 		response := server.HandleMessage(t.Context(), []byte(message))
 		assert.Equal(t, mcp.JSONRPCError{
 			JSONRPC: mcp.JSONRPC_VERSION,
-			ID:      mcp.NewRequestId(float64(1)),
+			ID:      mcp.NewRequestId(int64(1)),
 			Error:   mcp.NewJSONRPCErrorDetails(mcp.METHOD_NOT_FOUND, "completions not supported", nil),
 		}, response)
 	})
@@ -4320,7 +4320,7 @@ func TestMCPServer_Complete(t *testing.T) {
 		response := server.HandleMessage(t.Context(), []byte(invalidRefTypeMessage))
 		assert.Equal(t, mcp.JSONRPCError{
 			JSONRPC: mcp.JSONRPC_VERSION,
-			ID:      mcp.NewRequestId(float64(1)),
+			ID:      mcp.NewRequestId(int64(1)),
 			Error:   mcp.NewJSONRPCErrorDetails(mcp.INVALID_REQUEST, "unparsable completion/complete request: unknown reference type: ref/invalid", nil),
 		}, response)
 	})
@@ -4349,7 +4349,7 @@ func TestMCPServer_Complete(t *testing.T) {
 			response := server.HandleMessage(t.Context(), []byte(promptMessage))
 			assert.Equal(t, mcp.JSONRPCResponse{
 				JSONRPC: mcp.JSONRPC_VERSION,
-				ID:      mcp.NewRequestId(float64(1)),
+				ID:      mcp.NewRequestId(int64(1)),
 				Result: mcp.CompleteResult{
 					Completion: mcp.Completion{
 						Values: []string{},
@@ -4377,7 +4377,7 @@ func TestMCPServer_Complete(t *testing.T) {
 			response := server.HandleMessage(t.Context(), []byte(resourceMessage))
 			assert.Equal(t, mcp.JSONRPCResponse{
 				JSONRPC: mcp.JSONRPC_VERSION,
-				ID:      mcp.NewRequestId(float64(1)),
+				ID:      mcp.NewRequestId(int64(1)),
 				Result: mcp.CompleteResult{
 					Completion: mcp.Completion{
 						Values: []string{},
@@ -4424,7 +4424,7 @@ func TestMCPServer_Complete(t *testing.T) {
 			response := server.HandleMessage(t.Context(), []byte(message))
 			assert.Equal(t, mcp.JSONRPCResponse{
 				JSONRPC: mcp.JSONRPC_VERSION,
-				ID:      mcp.NewRequestId(float64(1)),
+				ID:      mcp.NewRequestId(int64(1)),
 				Result: mcp.CompleteResult{
 					Completion: mcp.Completion{
 						Values: []string{"python", "pytorch", "pyside"},
@@ -4479,7 +4479,7 @@ func TestMCPServer_Complete(t *testing.T) {
 			response := server.HandleMessage(t.Context(), []byte(message))
 			assert.Equal(t, mcp.JSONRPCResponse{
 				JSONRPC: mcp.JSONRPC_VERSION,
-				ID:      mcp.NewRequestId(float64(1)),
+				ID:      mcp.NewRequestId(int64(1)),
 				Result: mcp.CompleteResult{
 					Completion: mcp.Completion{
 						Values:  []string{"cursor", "code"},

@@ -19,6 +19,8 @@ func TestRequestIdRoundTrip(t *testing.T) {
 		{"string", NewRequestId("abc"), `"abc"`, "abc", "string:abc"},
 		{"integer", NewRequestId(int64(7)), `7`, int64(7), "int64:7"},
 		{"integral float", NewRequestId(float64(3)), `3`, int64(3), "int64:3"},
+		{"integer past 2^53", NewRequestId(int64(9007199254740993)), `9007199254740993`, int64(9007199254740993), "int64:9007199254740993"},
+		{"negative past 2^53", NewRequestId(int64(-9007199254740993)), `-9007199254740993`, int64(-9007199254740993), "int64:-9007199254740993"},
 		{"fraction", NewRequestId(1.5), `1.5`, 1.5, "float64:1.5"},
 		{"null", NewRequestId(nil), `null`, nil, "<nil>"},
 	}

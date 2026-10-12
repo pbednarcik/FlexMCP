@@ -62,7 +62,7 @@ func handleForError(t *testing.T, srv *MCPServer, request string) mcp.JSONRPCErr
 	response := srv.HandleMessage(t.Context(), []byte(request))
 	errorResponse, ok := response.(mcp.JSONRPCError)
 	require.True(t, ok, "expected an error response, got %T", response)
-	assert.Equal(t, mcp.NewRequestId(float64(7)), errorResponse.ID)
+	assert.Equal(t, mcp.NewRequestId(int64(7)), errorResponse.ID)
 	return errorResponse
 }
 
