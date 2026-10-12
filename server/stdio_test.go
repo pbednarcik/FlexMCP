@@ -1028,3 +1028,44 @@ func TestStdioServer_ACallPastAFullQueueIsRefused(t *testing.T) {
 	}
 	require.Equal(t, overflow, refused, "every call past the full queue is refused")
 }
+
+// A tools/call without an id is a notification, and a notification is never
+// answered (JSON-RPC 2.0, section 4.1), not even with a refusal when the queue
+// is full.
+func TestStdioServer_AnOverflowedNotificationIsNotAnswered(t *testing.T) {
+	started := make(chan struct{}, 3)
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+	mcpServer.AddTool(mcp.NewTool("hold"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	stdioServer := NewStdioServer(mcpServer)
+	WithWorkerPoolSize(1)(stdioServer)
+	WithQueueSize(1)(stdioServer)
+	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+
+	stdin, input := io.Pipe()
+	var output bytes.Buffer
+	listened := make(chan error, 1)
+	go func() { listened <- stdioServer.Listen(t.Context(), stdin, &output) }()
+
+	_, err := fmt.Fprintln(input, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hold"}}`)
+	require.NoError(t, err)
+	<-started
+	go func() {
+		defer input.Close()
+		if _, err := fmt.Fprintln(input, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hold"}}`); err != nil {
+			return
+		}
+		_, _ = fmt.Fprintln(input, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"hold"}}`)
+	}()
+
+	select {
+	case err := <-listened:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the end of input was not seen; Listen is still running")
+	}
+	require.NotContains(t, output.String(), "server busy", "a notification was answered")
+}

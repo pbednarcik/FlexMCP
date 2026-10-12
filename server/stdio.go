@@ -446,10 +446,13 @@ func (s *StdioServer) processMessage(
 			// The queue is full: the call is refused at once rather than run
 			// on the read loop, which must keep reading so that the end of
 			// input, the shutdown, is seen however many lines wait behind it.
-			// The pool and the queue bound the tool calls in flight.
+			// The pool and the queue bound the tool calls in flight. A call
+			// without an id is a notification, dropped without a reply.
 			s.errLogger.Printf("Tool call queue full, refusing the call")
-			s.answer(baseMessage.ID, createErrorResponse(baseMessage.ID, mcp.INTERNAL_ERROR,
-				"server busy: the tool call queue is full, retry later"), writer)
+			if baseMessage.ID != nil {
+				s.answer(baseMessage.ID, createErrorResponse(baseMessage.ID, mcp.INTERNAL_ERROR,
+					"server busy: the tool call queue is full, retry later"), writer)
+			}
 			return nil
 		}
 	}
