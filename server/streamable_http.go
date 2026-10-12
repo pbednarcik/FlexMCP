@@ -416,6 +416,14 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// here, the modern header validation, and the HTTP status of an error.
 	era := detectRequestEra(r.header(), rawData)
 
+	// On 2026-07-28 the server sends no requests, so a response from the client
+	// answers none: it is input the server cannot accept (rule 4), refused with
+	// an error that names no request.
+	if era.modern && isResponse {
+		s.writeJSONRPCError(w, nil, mcp.INVALID_REQUEST, "a client sends no responses on this protocol revision")
+		return
+	}
+
 	// The header is only required after initialize, which negotiates the
 	// version itself. Responses posted by the client are checked as well.
 	if !era.modern && !isInitializeRequest && s.rejectUnsupportedProtocolVersion(w, era.headerVersion, requestID) {

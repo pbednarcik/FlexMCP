@@ -682,22 +682,35 @@ func legacyInitialize(t *testing.T, url string) {
 
 func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 	// A POST carrying an id plus a result or an error is a client-to-server
-	// response. The
-	// server sends no requests, so nothing awaits one: a modern response is a
-	// malformed modern message (it carries no _meta) and is rejected as such; a
-	// legacy response is accepted and dropped, as the handshake-era transport
-	// rules require.
+	// response. On 2026-07-28 the server sends no requests, so nothing awaits
+	// one: a modern response is input the server cannot accept, refused with
+	// 400 and an error that names no request (rule 4); a legacy response is
+	// accepted and dropped, as the handshake-era transport rules require.
 	tests := []struct {
 		name string
 		// protocolVersion is sent in the Mcp-Protocol-Version header.
 		protocolVersion string
 		// errorForm sends an error response instead of a result.
-		errorForm  bool
-		wantStatus int
+		errorForm bool
+		// emptyResult sends an empty result, as a ping's answer.
+		emptyResult bool
+		wantStatus  int
 	}{
 		{
 			name:            "a modern response is rejected",
 			protocolVersion: mcp.ProtocolVersion20260728,
+			wantStatus:      http.StatusBadRequest,
+		},
+		{
+			name:            "a modern empty response is rejected",
+			protocolVersion: mcp.ProtocolVersion20260728,
+			emptyResult:     true,
+			wantStatus:      http.StatusBadRequest,
+		},
+		{
+			name:            "a modern error response is rejected",
+			protocolVersion: mcp.ProtocolVersion20260728,
+			errorForm:       true,
 			wantStatus:      http.StatusBadRequest,
 		},
 		{
@@ -719,6 +732,9 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 			legacyInitialize(t, httpServer.URL)
 
 			response := map[string]any{"jsonrpc": "2.0", "id": 42, "result": map[string]any{"action": "accept"}}
+			if tt.emptyResult {
+				response["result"] = map[string]any{}
+			}
 			if tt.errorForm {
 				delete(response, "result")
 				response["error"] = map[string]any{"code": mcp.METHOD_NOT_FOUND, "message": "Method not found"}
@@ -747,8 +763,8 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 			var message map[string]any
 			require.NoError(t, json.Unmarshal(payload, &message))
 			errDetails := message["error"].(map[string]any)
-			assert.Equal(t, float64(mcp.INVALID_PARAMS), errDetails["code"])
-			assert.Contains(t, errDetails["message"], "missing or invalid _meta field")
+			assert.Equal(t, float64(mcp.INVALID_REQUEST), errDetails["code"])
+			assert.Nil(t, message["id"], "the refusal names no request")
 		})
 	}
 }
