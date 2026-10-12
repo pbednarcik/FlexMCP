@@ -240,16 +240,18 @@ func TestStreamableHTTP_WithOAuth_PreservesPathInBaseURL(t *testing.T) {
 }
 
 func TestStreamableHTTP_OAuthMetadataDiscovery(t *testing.T) {
-	// Test that we correctly extract resource_metadata URL from WWW-Authenticate header per RFC9728
-	const expectedMetadataURL = "https://auth.example.com/.well-known/oauth-protected-resource"
-
-	// Create a test server that returns 401 with WWW-Authenticate header
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Test that we correctly extract resource_metadata URL from WWW-Authenticate header per RFC9728.
+	// The URL shares the server's origin: one that does not is passed over (see
+	// TestStreamableHTTP_ErrorAndHandlerReadTheSameChallenge).
+	var server *httptest.Server
+	var expectedMetadataURL string
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return 401 with WWW-Authenticate header containing resource_metadata
 		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+expectedMetadataURL+`"`)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer server.Close()
+	expectedMetadataURL = server.URL + "/.well-known/oauth-protected-resource"
 
 	// Create a token store with a valid token so the request reaches the server
 	// The server will still return 401 to simulate token rejection
@@ -395,8 +397,8 @@ func TestParseAuthParams(t *testing.T) {
 	}
 }
 
-// The resource_metadata URL (RFC 9728 §5.1) of the challenge acted on.
-func TestParseBearerChallengeResourceMetadata(t *testing.T) {
+// The resource_metadata URL (RFC 9728 §5.1) of the first Bearer challenge.
+func TestBearerChallengeResourceMetadata(t *testing.T) {
 	testCases := []struct {
 		name        string
 		wwwAuth     string
@@ -454,7 +456,7 @@ func TestParseBearerChallengeResourceMetadata(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := parseBearerChallenge([]string{tc.wwwAuth}).resourceMetadata; got != tc.expectedURL {
+			if got := firstBearerChallenge([]string{tc.wwwAuth}).resourceMetadata; got != tc.expectedURL {
 				t.Errorf("Expected %q, got %q", tc.expectedURL, got)
 			}
 		})

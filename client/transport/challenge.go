@@ -119,30 +119,46 @@ func bearerChallenges(headers []string) []bearerChallenge {
 	return append(bearer, dpop...)
 }
 
-// parseBearerChallenge reads the first challenge the client acts on (see
-// bearerChallenges) and takes every parameter from that one challenge.
-func parseBearerChallenge(headers []string) bearerChallenge {
-	if challenges := bearerChallenges(headers); len(challenges) > 0 {
-		return challenges[0]
+// actedOnChallenge returns the challenge of resp the client acts on, the
+// one selection the transports' errors, the 403 classification and the OAuth
+// handler all use: the first of bearerChallenges that is usable. On a 403
+// only an insufficient_scope challenge is (RFC 6750 §3.1: the token is
+// valid but does not cover the operation). With a handler, a challenge
+// whose resource_metadata fails the handler's origin validation is not, and
+// is passed over whole, so a compromised or misconfigured resource cannot
+// send discovery to an attacker's metadata endpoint.
+func actedOnChallenge(resp *http.Response, handler *OAuthHandler) (bearerChallenge, bool) {
+	for _, c := range bearerChallenges(resp.Header.Values("WWW-Authenticate")) {
+		if resp.StatusCode == http.StatusForbidden && c.errorCode != "insufficient_scope" {
+			continue
+		}
+		if handler != nil && c.resourceMetadata != "" && handler.validateAdvertisedPRMURL(c.resourceMetadata) != nil {
+			continue
+		}
+		return c, true
 	}
-	return bearerChallenge{}
+	return bearerChallenge{}, false
 }
 
-// insufficientScope reports whether resp is a 403 whose challenge says the
-// token lacks the scopes the operation needs, which the client answers by
-// stepping up its authorization rather than by failing.
-func insufficientScope(resp *http.Response) bool {
-	return resp.StatusCode == http.StatusForbidden &&
-		parseBearerChallenge(resp.Header.Values("WWW-Authenticate")).errorCode == "insufficient_scope"
+// insufficientScope reports whether resp is a 403 with a usable challenge
+// saying the token lacks the scopes the operation needs (see
+// actedOnChallenge), which the client answers by stepping up its
+// authorization rather than by failing.
+func insufficientScope(resp *http.Response, handler *OAuthHandler) bool {
+	if resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+	_, ok := actedOnChallenge(resp, handler)
+	return ok
 }
 
 // authorizationError builds the error for a 401, or a 403 with an
-// insufficient_scope challenge, carrying what the challenge said. With an
-// OAuth handler the challenge is fed to it first, so the next authorization
-// uses the advertised metadata URL and the challenged scopes, and the error
-// carries the handler.
+// insufficient_scope challenge, carrying what the challenge acted on said
+// (see actedOnChallenge). With an OAuth handler the same challenge is
+// recorded by it first, so the next authorization uses its metadata URL and
+// scopes, and the error carries the handler.
 func authorizationError(resp *http.Response, handler *OAuthHandler) error {
-	challenge := parseBearerChallenge(resp.Header.Values("WWW-Authenticate"))
+	challenge, _ := actedOnChallenge(resp, handler)
 	base := AuthorizationRequiredError{
 		ResourceMetadataURL: challenge.resourceMetadata,
 		Scopes:              challenge.scopes,
@@ -152,6 +168,6 @@ func authorizationError(resp *http.Response, handler *OAuthHandler) error {
 	if handler == nil {
 		return &base
 	}
-	handler.HandleUnauthorizedResponse(resp)
+	handler.recordChallenge(challenge)
 	return &OAuthAuthorizationRequiredError{Handler: handler, AuthorizationRequiredError: base}
 }

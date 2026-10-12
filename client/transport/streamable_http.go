@@ -573,7 +573,7 @@ func (c *StreamableHTTP) SendRequest(
 
 	// Check if we got an error response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp) {
+		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {
 			return nil, authorizationError(resp, c.oauthHandler)
 		}
 
@@ -1016,7 +1016,7 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 	switch {
 	case resp.StatusCode == http.StatusOK, resp.StatusCode == http.StatusAccepted, resp.StatusCode == http.StatusNoContent:
 		return nil
-	case resp.StatusCode == http.StatusUnauthorized, insufficientScope(resp):
+	case resp.StatusCode == http.StatusUnauthorized, insufficientScope(resp, c.oauthHandler):
 		return authorizationError(resp, c.oauthHandler)
 	default:
 		body, _ := io.ReadAll(resp.Body)

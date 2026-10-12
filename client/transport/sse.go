@@ -291,7 +291,7 @@ func (c *SSE) start(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp) {
+		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {
 			return authorizationError(resp, c.oauthHandler)
 		}
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
@@ -610,7 +610,7 @@ func (c *SSE) SendRequest(
 	// Check if we got an error response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		deleteResponseChan()
-		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp) {
+		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {
 			return nil, authorizationError(resp, c.oauthHandler)
 		}
 		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, body)
@@ -765,7 +765,7 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp) {
+		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {
 			return authorizationError(resp, c.oauthHandler)
 		}
 

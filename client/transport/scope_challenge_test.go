@@ -27,6 +27,14 @@ func challengingServer(t *testing.T, status int, challenge string) *httptest.Ser
 	return server
 }
 
+// firstBearerChallenge is the first of bearerChallenges, or none.
+func firstBearerChallenge(headers []string) bearerChallenge {
+	if challenges := bearerChallenges(headers); len(challenges) > 0 {
+		return challenges[0]
+	}
+	return bearerChallenge{}
+}
+
 func sendOn(t *testing.T, trans *StreamableHTTP) (request, notification error) {
 	t.Helper()
 	_, request = trans.SendRequest(t.Context(), JSONRPCRequest{
@@ -214,7 +222,7 @@ func TestStreamableHTTP_PrefersTheBearerChallengeOverDPoP(t *testing.T) {
 		assert.Equal(t, "insufficient_scope", authErr.ErrorCode)
 		assert.Equal(t, []string{"files:write"}, authErr.Scopes)
 	}
-	assert.Equal(t, []string{"a"}, parseBearerChallenge([]string{`DPoP scope="a"`}).scopes, "a DPoP challenge alone is still read")
+	assert.Equal(t, []string{"a"}, firstBearerChallenge([]string{`DPoP scope="a"`}).scopes, "a DPoP challenge alone is still read")
 }
 
 // After the scheme comes a token68 or auth-params, and only an auth-param
@@ -256,6 +264,47 @@ func TestOAuthHandler_TakesOneChallengeWhole(t *testing.T) {
 	}}})
 	assert.Equal(t, []string{"y"}, handler.ChallengedScopes(), "a challenge whose metadata fails validation is passed over whole")
 	assert.Equal(t, "https://example.com/mcp/prm", handler.advertisedPRMURL)
+}
+
+// The transport and the handler act on the same challenge: the error the
+// caller gets carries the scopes and metadata URL the handler recorded, and
+// a challenge the handler passes over (its metadata URL fails origin
+// validation) is passed over for the error too.
+func TestStreamableHTTP_ErrorAndHandlerReadTheSameChallenge(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("WWW-Authenticate", `Bearer scope="a", resource_metadata="https://attacker.example/prm"`)
+		w.Header().Add("WWW-Authenticate", `Bearer scope="b", resource_metadata="`+server.URL+`/prm"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	store := NewMemoryTokenStore()
+	require.NoError(t, store.SaveToken(t.Context(), &Token{AccessToken: "token", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)}))
+	trans, err := NewStreamableHTTP(server.URL, WithHTTPOAuth(OAuthConfig{ClientID: "client", TokenStore: store}))
+	require.NoError(t, err)
+
+	request, _ := sendOn(t, trans)
+	var authErr *OAuthAuthorizationRequiredError
+	require.ErrorAs(t, request, &authErr)
+	assert.Equal(t, []string{"b"}, authErr.Scopes)
+	assert.Equal(t, server.URL+"/prm", authErr.ResourceMetadataURL)
+	assert.Equal(t, authErr.Scopes, authErr.Handler.ChallengedScopes())
+}
+
+// On a 403 the challenge that counts is the one saying insufficient_scope
+// (RFC 6750 §3.1), wherever it stands: an earlier challenge with another
+// error does not turn the step-up into an ordinary failure.
+func TestStreamableHTTP_FindsTheInsufficientScopeChallengeOnA403(t *testing.T) {
+	server := challengingServer(t, http.StatusForbidden, `Bearer error="invalid_token", Bearer error="insufficient_scope", scope="files:write"`)
+	trans, err := NewStreamableHTTP(server.URL)
+	require.NoError(t, err)
+
+	for _, err := range collect(sendOn(t, trans)) {
+		var authErr *AuthorizationRequiredError
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, "insufficient_scope", authErr.ErrorCode)
+		assert.Equal(t, []string{"files:write"}, authErr.Scopes)
+	}
 }
 
 func TestParseChallenges(t *testing.T) {
