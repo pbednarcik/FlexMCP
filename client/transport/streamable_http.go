@@ -567,7 +567,7 @@ func (c *StreamableHTTP) SendRequest(
 	// Check if we got an error response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {
-			return nil, authorizationError(resp, c.oauthHandler)
+			return nil, authorizationError(resp, c.oauthHandler, c.oauthRecipient)
 		}
 
 		// A JSON-RPC error in the body is the answer, whatever the status.
@@ -1010,7 +1010,7 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 	case resp.StatusCode == http.StatusOK, resp.StatusCode == http.StatusAccepted, resp.StatusCode == http.StatusNoContent:
 		return nil
 	case resp.StatusCode == http.StatusUnauthorized, insufficientScope(resp, c.oauthHandler):
-		return authorizationError(resp, c.oauthHandler)
+		return authorizationError(resp, c.oauthHandler, c.oauthRecipient)
 	default:
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf(

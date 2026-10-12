@@ -198,9 +198,10 @@ func insufficientScope(resp *http.Response, handler *OAuthHandler) bool {
 // authorizationError builds the error for a 401, or a 403 with an
 // insufficient_scope challenge, carrying what the challenge acted on said
 // (see actedOnChallenge). With an OAuth handler the same challenge is
-// recorded by it first, so the next authorization uses its metadata URL and
-// scopes, and the error carries the handler.
-func authorizationError(resp *http.Response, handler *OAuthHandler) error {
+// recorded by it first, as recipient's, the base URL the transport sent the
+// request to, so the next authorization uses its metadata URL and scopes,
+// and the error carries the handler.
+func authorizationError(resp *http.Response, handler *OAuthHandler, recipient string) error {
 	challenge, _ := actedOnChallenge(resp, handler)
 	base := AuthorizationRequiredError{
 		ResourceMetadataURL: challenge.resourceMetadata,
@@ -211,6 +212,6 @@ func authorizationError(resp *http.Response, handler *OAuthHandler) error {
 	if handler == nil {
 		return &base
 	}
-	handler.recordChallenge(challenge)
+	handler.recordChallenge(challenge, recipient)
 	return &OAuthAuthorizationRequiredError{Handler: handler, AuthorizationRequiredError: base}
 }

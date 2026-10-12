@@ -640,11 +640,16 @@ func (h *OAuthHandler) SetProtectedResourceMetadataURL(u string) {
 	h.forgetDiscoveryLocked()
 }
 
-// setAdvertisedPRMURL records the metadata URL the MCP server advertised,
-// already validated against the base URL, and discovers again from it.
-func (h *OAuthHandler) setAdvertisedPRMURL(u string) {
+// setAdvertisedPRMURL records the metadata URL the MCP server at recipient
+// advertised, already validated against the base URL, and discovers again
+// from it, unless the handler no longer targets recipient (empty: its own
+// target).
+func (h *OAuthHandler) setAdvertisedPRMURL(u, recipient string) {
 	h.metadataMu.Lock()
 	defer h.metadataMu.Unlock()
+	if recipient != "" && recipient != h.baseURL {
+		return
+	}
 	h.advertisedPRMURL = u
 	h.forgetDiscoveryLocked()
 }
@@ -681,7 +686,7 @@ func (h *OAuthHandler) HandleUnauthorizedResponse(resp *http.Response) {
 		return
 	}
 	if c, ok := actedOnChallenge(resp, h); ok {
-		h.recordChallenge(c)
+		h.recordChallenge(c, "")
 	}
 }
 
@@ -689,12 +694,30 @@ func (h *OAuthHandler) HandleUnauthorizedResponse(resp *http.Response) {
 // authorization: its scopes, which replace the last challenge's even when
 // there are none (they are the refused operation's, not a standing grant),
 // and its metadata URL, already validated.
-func (h *OAuthHandler) recordChallenge(c bearerChallenge) {
+//
+// The challenge is the server's that sent it, recipient (empty: the
+// handler's own target): it is dropped when the handler no longer targets
+// recipient, or was retargeted since this call began, so a late challenge
+// from the previous server is not recorded for the next.
+func (h *OAuthHandler) recordChallenge(c bearerChallenge, recipient string) {
+	h.mu.RLock()
+	target := h.target
+	h.mu.RUnlock()
+	h.metadataMu.Lock()
+	base := h.baseURL
+	h.metadataMu.Unlock()
+	if recipient != "" && recipient != base {
+		return
+	}
 	h.mu.Lock()
+	if h.target != target {
+		h.mu.Unlock()
+		return
+	}
 	h.challengedScopes = c.scopes
 	h.mu.Unlock()
 	if c.resourceMetadata != "" {
-		h.setAdvertisedPRMURL(c.resourceMetadata)
+		h.setAdvertisedPRMURL(c.resourceMetadata, recipient)
 	}
 }
 

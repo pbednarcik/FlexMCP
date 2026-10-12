@@ -370,3 +370,40 @@ func TestParseChallenges(t *testing.T) {
 	assert.Empty(t, challenges[4].params, "a truncated quoted-string is dropped, not read in part")
 	assert.Empty(t, parseChallenges([]string{"", "   "}))
 }
+
+// A challenge is the server's that sent it: one that arrives after the
+// transport's handler was pointed at another server is not recorded for
+// that server's authorization.
+func TestStreamableHTTP_AChallengeFromThePreviousServerIsNotRecorded(t *testing.T) {
+	var b *httptest.Server
+	b = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                           b.URL,
+			"authorization_endpoint":           b.URL + "/authorize",
+			"token_endpoint":                   b.URL + "/token",
+			"code_challenge_methods_supported": []string{"S256"},
+		})
+	}))
+	t.Cleanup(b.Close)
+	var tr *StreamableHTTP
+	a := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tr.GetOAuthHandler().SetBaseURL(b.URL) // retargeted while A answers
+		w.Header().Set("WWW-Authenticate", `Bearer scope="a-only:admin"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(a.Close)
+	store := NewMemoryTokenStore()
+	require.NoError(t, store.SaveToken(t.Context(), &Token{AccessToken: "app-token", ExpiresAt: time.Now().Add(time.Hour)}))
+	tr, err := NewStreamableHTTP(a.URL, WithHTTPOAuth(OAuthConfig{
+		ClientID:              "client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            store,
+		AuthServerMetadataURL: b.URL + "/.well-known/oauth-authorization-server",
+	}))
+	require.NoError(t, err)
+
+	_, err = tr.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: mcp.JSONRPC_VERSION, ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
+	require.Error(t, err)
+	assert.Empty(t, tr.GetOAuthHandler().ChallengedScopes(), "server a's challenge was recorded for server b")
+}
