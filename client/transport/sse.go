@@ -60,6 +60,9 @@ type SSE struct {
 
 	// OAuth support
 	oauthHandler *OAuthHandler
+	// oauthRecipient is the base URL the transport set on oauthHandler: a
+	// request carries a token only while the handler still targets it.
+	oauthRecipient string
 }
 
 // ClientOption configures an SSE transport client.
@@ -163,8 +166,8 @@ func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 		discoveryURL := *parsedURL
 		discoveryURL.RawQuery = ""
 		discoveryURL.Fragment = ""
-		baseURL := discoveryURL.String()
-		smc.oauthHandler.SetBaseURL(baseURL)
+		smc.oauthRecipient = discoveryURL.String()
+		smc.oauthHandler.SetBaseURL(smc.oauthRecipient)
 	}
 
 	return smc, nil
@@ -268,7 +271,7 @@ func (c *SSE) start(ctx context.Context) error {
 
 	// Add OAuth authorization if configured
 	if c.oauthHandler != nil {
-		authHeader, err := c.oauthHandler.GetAuthorizationHeader(ctx)
+		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
 		if err != nil {
 			// If we get an authorization error, return a specific error that can be handled by the client
 			if errors.Is(err, ErrOAuthAuthorizationRequired) {
@@ -555,7 +558,7 @@ func (c *SSE) SendRequest(
 
 	// Add OAuth authorization if configured
 	if c.oauthHandler != nil {
-		authHeader, err := c.oauthHandler.GetAuthorizationHeader(ctx)
+		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
 		if err != nil {
 			// If we get an authorization error, return a specific error that can be handled by the client
 			if errors.Is(err, ErrOAuthAuthorizationRequired) {
@@ -731,7 +734,7 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 
 	// Add OAuth authorization if configured
 	if c.oauthHandler != nil {
-		authHeader, err := c.oauthHandler.GetAuthorizationHeader(ctx)
+		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
 		if err != nil {
 			// If we get an authorization error, return a specific error that can be handled by the client
 			if errors.Is(err, ErrOAuthAuthorizationRequired) {

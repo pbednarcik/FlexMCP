@@ -367,12 +367,24 @@ func NewOAuthHandler(config OAuthConfig) *OAuthHandler {
 // identifier would (resourceBindsToURL). A token saved without the record,
 // as one an application stored itself, is accepted as before.
 func (h *OAuthHandler) tokenIsForThisServer(token *Token) bool {
-	if token.Resource == "" {
-		return true
-	}
+	return h.tokenIsFor(token, "")
+}
+
+// tokenIsFor reports whether token may be sent to recipient, the base URL a
+// transport sends its requests to: only while the handler targets that URL,
+// read in the same snapshot as the target the token is checked against, and
+// then as tokenIsForThisServer says. An empty recipient is the handler's own
+// target.
+func (h *OAuthHandler) tokenIsFor(token *Token, recipient string) bool {
 	h.metadataMu.Lock()
 	resource, base := h.resourceURL, h.baseURL
 	h.metadataMu.Unlock()
+	if recipient != "" && recipient != base {
+		return false
+	}
+	if token.Resource == "" {
+		return true
+	}
 	if resource != "" {
 		return resourceIdentifiersEqual(token.Resource, resource)
 	}
@@ -384,7 +396,13 @@ func (h *OAuthHandler) tokenIsForThisServer(token *Token) bool {
 // If the stored token has expired, it refreshes it, or waits for a refresh
 // another caller already started, and returns ctx's error if ctx ends first.
 func (h *OAuthHandler) GetAuthorizationHeader(ctx context.Context) (string, error) {
-	token, err := h.getValidToken(ctx)
+	return h.authorizationHeader(ctx, "")
+}
+
+// authorizationHeader is GetAuthorizationHeader for a request to recipient,
+// the base URL the transport sends it to (see tokenIsFor).
+func (h *OAuthHandler) authorizationHeader(ctx context.Context, recipient string) (string, error) {
+	token, err := h.getValidToken(ctx, recipient)
 	if err != nil {
 		return "", err
 	}
@@ -401,15 +419,15 @@ func (h *OAuthHandler) GetAuthorizationHeader(ctx context.Context) (string, erro
 	return fmt.Sprintf("%s %s", tokenType, token.AccessToken), nil
 }
 
-// getValidToken returns a valid token, refreshing if necessary
-func (h *OAuthHandler) getValidToken(ctx context.Context) (*Token, error) {
+// getValidToken returns a valid token for recipient, refreshing if necessary
+func (h *OAuthHandler) getValidToken(ctx context.Context, recipient string) (*Token, error) {
 	token, err := h.config.TokenStore.GetToken(ctx)
 	if err != nil && !errors.Is(err, ErrNoToken) {
 		return nil, err
 	}
 	// A token for another MCP server is not this server's to receive, and
 	// its refresh token not this flow's to spend.
-	if err == nil && !h.tokenIsForThisServer(token) {
+	if err == nil && !h.tokenIsFor(token, recipient) {
 		return nil, ErrOAuthAuthorizationRequired
 	}
 	if err == nil && !token.IsExpired() && token.AccessToken != "" {
@@ -430,10 +448,10 @@ func (h *OAuthHandler) getValidToken(ctx context.Context) (*Token, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	// A refresh failed, or handed back a token that is not this server's:
+	// A refresh failed, or handed back a token that is not the recipient's:
 	// one found in the store, which another refresh may have left there, or
 	// one refreshed for the server the handler targeted before a change.
-	if refresh.err != nil || !h.tokenIsForThisServer(refresh.token) {
+	if refresh.err != nil || !h.tokenIsFor(refresh.token, recipient) {
 		return nil, ErrOAuthAuthorizationRequired
 	}
 	return refresh.token, nil

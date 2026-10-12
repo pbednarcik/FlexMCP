@@ -167,6 +167,9 @@ type StreamableHTTP struct {
 
 	// OAuth support
 	oauthHandler *OAuthHandler
+	// oauthRecipient is the base URL the transport set on oauthHandler: a
+	// request carries a token only while the handler still targets it.
+	oauthRecipient string
 }
 
 // NewStreamableHTTP creates a new Streamable HTTP transport with the given server URL.
@@ -198,8 +201,8 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 		discoveryURL := *parsedURL
 		discoveryURL.RawQuery = ""
 		discoveryURL.Fragment = ""
-		baseURL := discoveryURL.String()
-		smc.oauthHandler.SetBaseURL(baseURL)
+		smc.oauthRecipient = discoveryURL.String()
+		smc.oauthHandler.SetBaseURL(smc.oauthRecipient)
 	}
 
 	return smc, nil
@@ -684,7 +687,7 @@ func (c *StreamableHTTP) sendHTTP(
 
 	// Add OAuth authorization if configured
 	if c.oauthHandler != nil {
-		authHeader, err := c.oauthHandler.GetAuthorizationHeader(ctx)
+		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
 		if err != nil {
 			// If we get an authorization error, return a specific error that can be handled by the client
 			if errors.Is(err, ErrOAuthAuthorizationRequired) {
