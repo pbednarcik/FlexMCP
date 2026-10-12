@@ -263,6 +263,30 @@ func TestOAuthHandler_RetargetingAbandonsTheAuthorizationInProgress(t *testing.T
 	assert.Empty(t, as.forms)
 }
 
+// An authorization that the base URL changes under while it starts is for
+// the previous server: it is refused, and nothing of it is recorded after
+// the retarget cleared what was pending.
+func TestOAuthHandler_RetargetingAbandonsAnAuthorizationStartingBesideIt(t *testing.T) {
+	asHTTP := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: asHTTP.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(asHTTP.URL + "/a")
+	handler.testHookFlowSnapshot = func() { handler.SetBaseURL(asHTTP.URL + "/b") }
+
+	authURL, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.ErrorIs(t, err, ErrResourceChanged)
+	assert.Empty(t, authURL)
+	assert.Empty(t, handler.GetExpectedState(), "server a's state outlived the retarget")
+	assert.Empty(t, handler.GetExpectedIssuer(), "server a's issuer outlived the retarget")
+	handler.mu.RLock()
+	defer handler.mu.RUnlock()
+	assert.Empty(t, handler.expectedResource, "server a's resource outlived the retarget")
+}
+
 // The resource can change without a new base URL, when discovery runs again
 // and the server's metadata declares another one. The code is not redeemed
 // for a resource other than the one it was obtained for.

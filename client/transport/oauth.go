@@ -315,6 +315,12 @@ type OAuthHandler struct {
 	// expectedResource is the resource the authorization in progress was
 	// started for, the only one its code is redeemed for (RFC 8707 §2.1).
 	expectedResource string
+	// target counts the changes of base URL, so an authorization that
+	// started before one is not recorded after it.
+	target uint64
+	// testHookFlowSnapshot, nil outside tests, runs when an authorization has
+	// read the server it is for and has not yet recorded itself.
+	testHookFlowSnapshot func()
 
 	// refreshMu protects refreshing, the token refresh in flight, if any.
 	// Callers of this handler that find the token expired share it: a
@@ -803,6 +809,7 @@ func (h *OAuthHandler) SetBaseURL(baseURL string) {
 	// abandoned, so its callback is refused rather than redeemed here. So
 	// are the scopes that server's last challenge named.
 	h.mu.Lock()
+	h.target++
 	h.expectedState, h.expectedIssuer, h.issuerRequired, h.expectedResource = "", "", false, ""
 	h.challengedScopes = nil
 	h.mu.Unlock()
@@ -1849,6 +1856,9 @@ func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServer
 // GenerateCodeChallenge). It is required, and the authorization server must
 // list S256 in its metadata, unless OAuthConfig.PKCEDisabled is set.
 func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChallenge string) (string, error) {
+	h.mu.RLock()
+	target := h.target
+	h.mu.RUnlock()
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get server metadata: %w", err)
@@ -1876,10 +1886,19 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 		}
 	}
 
+	if h.testHookFlowSnapshot != nil {
+		h.testHookFlowSnapshot()
+	}
 	// Record the state, and the issuer the user is sent to, for the
 	// response's validation (RFC 9207: the recorded issuer comes from the
-	// validated metadata, never from the response).
+	// validated metadata, never from the response). An authorization the
+	// base URL changed under is for the previous server, and abandoned as
+	// SetBaseURL abandons one in progress.
 	h.mu.Lock()
+	if h.target != target {
+		h.mu.Unlock()
+		return "", fmt.Errorf("%w: the base URL changed while the authorization started", ErrResourceChanged)
+	}
 	h.expectedState = state
 	h.expectedIssuer = metadata.Issuer
 	h.issuerRequired = metadata.AuthorizationResponseIssParameterSupported
