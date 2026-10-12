@@ -455,9 +455,21 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			close(endpointChan)
 		})
 	case "message":
-		var baseMessage JSONRPCResponse
-		if err := json.Unmarshal([]byte(data), &baseMessage); err != nil {
+		var message struct {
+			JSONRPCResponse
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal([]byte(data), &message); err != nil {
 			c.logger.Error("Error unmarshaling message", "err", err)
+			return
+		}
+		baseMessage := message.JSONRPCResponse
+
+		// A request from the server is never a response, even when it carries
+		// the id of one the client is waiting on: request ids are per sender.
+		// This transport serves no server requests.
+		if message.Method != "" && !baseMessage.ID.IsNil() {
+			c.logger.Error("Ignoring a server request: the SSE transport serves none", "method", message.Method)
 			return
 		}
 
