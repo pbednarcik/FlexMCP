@@ -297,8 +297,12 @@ type OAuthHandler struct {
 	registeredAuthMethod string
 	registeredIssuer     string
 
-	mu            sync.RWMutex // Protects expectedState, expectedIssuer, issuerRequired, expectedResource, challengedScopes, registeredIssuer
-	expectedState string       // Expected state value for CSRF protection
+	// mu protects expectedState, expectedIssuer, issuerRequired,
+	// expectedResource, challengedScopes, and the client credentials:
+	// config.ClientID, config.ClientSecret, registeredAuthMethod and
+	// registeredIssuer, which are replaced and read together.
+	mu            sync.RWMutex
+	expectedState string // Expected state value for CSRF protection
 	// challengedScopes are the scopes the last WWW-Authenticate challenge
 	// named: authoritative for the operation that was refused, so the next
 	// authorization asks for them first.
@@ -318,6 +322,12 @@ type OAuthHandler struct {
 	// send it.
 	refreshMu  sync.Mutex
 	refreshing *tokenRefresh
+}
+
+// clientCredentials is one snapshot of the client credentials, taken under
+// mu.
+type clientCredentials struct {
+	id, secret, authMethod string
 }
 
 // tokenRefresh is a token refresh shared by the callers that wait for it.
@@ -569,6 +579,8 @@ func (h *OAuthHandler) RefreshToken(ctx context.Context, refreshToken string) (*
 
 // GetClientID returns the client ID
 func (h *OAuthHandler) GetClientID() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.config.ClientID
 }
 
@@ -766,6 +778,8 @@ func (h *OAuthHandler) GetClientIssuer() string {
 
 // GetClientSecret returns the client secret
 func (h *OAuthHandler) GetClientSecret() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	return h.config.ClientSecret
 }
 
@@ -1475,7 +1489,7 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	}
 
 	// Add client_secret if this is a confidential client
-	if h.config.ClientSecret != "" {
+	if h.GetClientSecret() != "" {
 		regRequest["token_endpoint_auth_method"] = "client_secret_post"
 	}
 
@@ -1527,10 +1541,10 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	// earlier registration, or from configuration, does not stay beside the
 	// new client ID. RFC 7591 §3.2.1: the response carries the method the
 	// server actually registered, which may differ from the one requested.
+	h.mu.Lock()
 	h.config.ClientID = regResponse.ClientID
 	h.config.ClientSecret = regResponse.ClientSecret
 	h.registeredAuthMethod = regResponse.TokenEndpointAuthMethod
-	h.mu.Lock()
 	h.registeredIssuer = metadata.Issuer
 	h.mu.Unlock()
 
@@ -1547,25 +1561,24 @@ func applicationType(redirectURI string) string {
 	return "native"
 }
 
-// checkRegisteredIssuer refuses to use the client credentials with an
-// authorization server other than the one they belong to (MCP
-// authorization: never reuse them with another). Credentials from dynamic
-// registration belong to the server that issued them, configured ones to
-// OAuthConfig.ClientIssuer, or else to the first server they are used with,
-// which this call binds them to.
-func (h *OAuthHandler) checkRegisteredIssuer(metadata *AuthServerMetadata) error {
+// credentialsFor returns the client credentials for use with the
+// authorization server of metadata, refusing them for any server but the one
+// they belong to (MCP authorization: never reuse them with another).
+// Credentials from dynamic registration belong to the server that issued
+// them, configured ones to OAuthConfig.ClientIssuer, or else to the first
+// server they are used with, which this call binds them to. The credentials
+// returned are the ones checked: a registration cannot replace them between.
+func (h *OAuthHandler) credentialsFor(metadata *AuthServerMetadata) (clientCredentials, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.registeredIssuer == "" {
 		if h.config.ClientID != "" {
 			h.registeredIssuer = metadata.Issuer
 		}
-		return nil
+	} else if metadata.Issuer != h.registeredIssuer {
+		return clientCredentials{}, fmt.Errorf("%w: registered with %q, discovered %q", ErrClientRegisteredElsewhere, h.registeredIssuer, metadata.Issuer)
 	}
-	if metadata.Issuer != h.registeredIssuer {
-		return fmt.Errorf("%w: registered with %q, discovered %q", ErrClientRegisteredElsewhere, h.registeredIssuer, metadata.Issuer)
-	}
-	return nil
+	return clientCredentials{id: h.config.ClientID, secret: h.config.ClientSecret, authMethod: h.registeredAuthMethod}, nil
 }
 
 // ErrInvalidState is returned when the state parameter doesn't match the expected value
@@ -1757,11 +1770,20 @@ func isClientAuthMethod(method string) bool {
 // authorization server returned from dynamic client registration. Save it
 // along with the client ID and secret to reuse registered credentials.
 func (h *OAuthHandler) GetTokenEndpointAuthMethod() string {
+	h.mu.RLock()
+	registered := h.registeredAuthMethod
+	h.mu.RUnlock()
+	return h.authMethod(registered)
+}
+
+// authMethod is the configured client authentication method or, failing
+// that, registered.
+func (h *OAuthHandler) authMethod(registered string) string {
 	if isClientAuthMethod(h.config.TokenEndpointAuthMethod) {
 		return h.config.TokenEndpointAuthMethod
 	}
-	if isClientAuthMethod(h.registeredAuthMethod) {
-		return h.registeredAuthMethod
+	if isClientAuthMethod(registered) {
+		return registered
 	}
 	return ""
 }
@@ -1771,11 +1793,11 @@ func (h *OAuthHandler) GetTokenEndpointAuthMethod() string {
 // when that is the only one of the two secret-based methods the server's
 // metadata lists. A server that says nothing keeps getting the secret in the
 // request body, as before.
-func (h *OAuthHandler) tokenEndpointAuthMethod(metadata *AuthServerMetadata) string {
-	if h.config.ClientSecret == "" {
+func (h *OAuthHandler) tokenEndpointAuthMethod(metadata *AuthServerMetadata, creds clientCredentials) string {
+	if creds.secret == "" {
 		return clientAuthNone
 	}
-	if method := h.GetTokenEndpointAuthMethod(); method != "" {
+	if method := h.authMethod(creds.authMethod); method != "" {
 		return method
 	}
 	supported := metadata.TokenEndpointAuthMethodsSupported
@@ -1788,15 +1810,16 @@ func (h *OAuthHandler) tokenEndpointAuthMethod(metadata *AuthServerMetadata) str
 // newTokenRequest builds a token endpoint request carrying data and the
 // client's credentials.
 func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServerMetadata, data url.Values) (*http.Request, error) {
-	if err := h.checkRegisteredIssuer(metadata); err != nil {
+	creds, err := h.credentialsFor(metadata)
+	if err != nil {
 		return nil, err
 	}
-	method := h.tokenEndpointAuthMethod(metadata)
+	method := h.tokenEndpointAuthMethod(metadata, creds)
 	basic := method == clientSecretBasic
 	if !basic {
-		data.Set("client_id", h.config.ClientID)
+		data.Set("client_id", creds.id)
 		if method == clientSecretPost {
-			data.Set("client_secret", h.config.ClientSecret)
+			data.Set("client_secret", creds.secret)
 		}
 	}
 
@@ -1814,7 +1837,7 @@ func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServer
 	if basic {
 		// RFC 6749 §2.3.1: the client ID and secret are form-encoded before
 		// they are used as the Basic user name and password.
-		req.SetBasicAuth(url.QueryEscape(h.config.ClientID), url.QueryEscape(h.config.ClientSecret))
+		req.SetBasicAuth(url.QueryEscape(creds.id), url.QueryEscape(creds.secret))
 	}
 	return req, nil
 }
@@ -1830,7 +1853,8 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 	if err != nil {
 		return "", fmt.Errorf("failed to get server metadata: %w", err)
 	}
-	if err := h.checkRegisteredIssuer(metadata); err != nil {
+	creds, err := h.credentialsFor(metadata)
+	if err != nil {
 		return "", err
 	}
 	// The flow is for an MCP server, which the resource parameter names on
@@ -1864,7 +1888,7 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 
 	params := url.Values{}
 	params.Set("response_type", "code")
-	params.Set("client_id", h.config.ClientID)
+	params.Set("client_id", creds.id)
 	params.Set("redirect_uri", h.config.RedirectURI)
 	params.Set("state", state)
 

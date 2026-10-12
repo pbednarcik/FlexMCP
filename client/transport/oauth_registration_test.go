@@ -175,3 +175,34 @@ func TestOAuthHandler_RegistrationReplacesTheWholeCredentialSet(t *testing.T) {
 	assert.Empty(t, handler.GetClientSecret(), "the old secret is not paired with the new client")
 	assert.Equal(t, httpServer.URL, handler.GetClientIssuer())
 }
+
+// The credentials are replaced and read as one record: a registration that
+// runs beside authorization and token requests does not race them (run with
+// -race).
+func TestOAuthHandler_CredentialsAreReplacedAndReadAsOneRecord(t *testing.T) {
+	server := &tokenAuthServer{registration: map[string]any{"client_id": "new", "client_secret": "new-secret", "token_endpoint_auth_method": "client_secret_basic"}, codeChallengeMethods: []string{"S256"}}
+	httpServer := server.start(t)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "old",
+		ClientSecret:          "old-secret",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(httpServer.URL + "/mcp")
+
+	var wg sync.WaitGroup
+	for _, use := range []func(){
+		func() { _ = handler.RegisterClient(t.Context(), "test") },
+		func() { _, _ = handler.GetAuthorizationURL(t.Context(), "state", "challenge") },
+		func() { _, _ = handler.RefreshToken(t.Context(), "refresh") },
+		func() { _ = handler.GetClientID() },
+		func() { _ = handler.GetClientSecret() },
+		func() { _ = handler.GetTokenEndpointAuthMethod() },
+	} {
+		wg.Go(use)
+	}
+	wg.Wait()
+	assert.Equal(t, "new", handler.GetClientID())
+	assert.Equal(t, "new-secret", handler.GetClientSecret())
+}
