@@ -550,16 +550,32 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			line = strings.TrimRight(line, "\r\n")
 			// First try to parse as a generic message to check for ID field
 			var baseMessage struct {
-				JSONRPC string         `json:"jsonrpc"`
-				ID      *mcp.RequestId `json:"id,omitempty"`
-				Method  string         `json:"method,omitempty"`
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id,omitempty"`
+				Method  string          `json:"method,omitempty"`
+				Error   json.RawMessage `json:"error,omitempty"`
 			}
 			if err := json.Unmarshal([]byte(line), &baseMessage); err != nil {
 				continue
 			}
+			var id mcp.RequestId
+			readableID := len(baseMessage.ID) > 0 && json.Unmarshal(baseMessage.ID, &id) == nil && !id.IsNil()
+
+			// A request id is a string or an integer and never null: a
+			// request whose id cannot be read is answered as invalid, with a
+			// null id, and a response without one cannot be matched to a
+			// request, so it is logged.
+			if len(baseMessage.ID) > 0 && !readableID {
+				if baseMessage.Method != "" {
+					c.sendResponse(*NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
+				} else {
+					c.logger.Error("Dropping a response without a readable id", "id", string(baseMessage.ID), "error", string(baseMessage.Error))
+				}
+				continue
+			}
 
 			// If it has a method but no ID, it's a notification
-			if baseMessage.Method != "" && baseMessage.ID == nil {
+			if baseMessage.Method != "" && len(baseMessage.ID) == 0 {
 				var notification mcp.JSONRPCNotification
 				if err := json.Unmarshal([]byte(line), &notification); err != nil {
 					continue
@@ -573,7 +589,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			}
 
 			// If it has a method and an ID, it's an incoming request
-			if baseMessage.Method != "" && baseMessage.ID != nil {
+			if baseMessage.Method != "" {
 				var request JSONRPCRequest
 				if err := json.Unmarshal([]byte(line), &request); err == nil {
 					c.handleIncomingRequest(request)
