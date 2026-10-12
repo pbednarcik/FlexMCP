@@ -473,6 +473,13 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			return
 		}
 
+		// A response without an id, an error to a request whose id the server
+		// could not read, answers no request this shared stream can name.
+		if baseMessage.ID.IsNil() && message.Method == "" {
+			c.logger.Error("Dropping a response without a readable id", "error", baseMessage.Error)
+			return
+		}
+
 		// Handle notification
 		if baseMessage.ID.IsNil() {
 			var notification mcp.JSONRPCNotification

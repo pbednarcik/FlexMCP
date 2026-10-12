@@ -51,3 +51,30 @@ func TestSSE_AServerRequestIsNotTakenForAResponse(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"answer":42}`, string(response.Result))
 }
+
+// An error with a null id is a response, not a notification: the shared SSE
+// stream cannot tell which request it answers, so it reaches no handler.
+func TestSSE_AnErrorWithANullIDIsNotANotification(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s/message\n\n", server.URL)
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Invalid request id\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n")
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	trans, err := NewSSE(server.URL + "/sse")
+	require.NoError(t, err)
+	notifications := make(chan string, 2)
+	trans.SetNotificationHandler(func(notification mcp.JSONRPCNotification) {
+		notifications <- notification.Method
+	})
+	require.NoError(t, trans.Start(t.Context()))
+	t.Cleanup(func() { _ = trans.Close() })
+
+	assert.Equal(t, "notifications/message", <-notifications, "an error with a null id reached the notification handler")
+}
