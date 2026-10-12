@@ -158,7 +158,7 @@ func TestStreamableHTTP_RefusalEchoesALargeIntegerIDExactly(t *testing.T) {
 // never answered as some other id (JSON-RPC 2.0, section 5).
 func TestAnInvalidIDIsRefused(t *testing.T) {
 	const ran = `"result"`
-	for _, id := range []string{"null", "1e400", "-1e400", "1.5", "true", "{}", "[1]"} {
+	for _, id := range []string{"null", "1e400", "-1e400", "1.5", "1.0", "1e3", "true", "{}", "[1]"} {
 		message := `{"jsonrpc":"2.0","id":` + id + `,"method":"ping"}`
 		t.Run("handle message "+id, func(t *testing.T) {
 			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))

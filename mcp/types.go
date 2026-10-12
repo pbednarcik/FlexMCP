@@ -377,8 +377,8 @@ type Result struct {
 
 // RequestId is a uniquely identifying ID for a request in JSON-RPC.
 // It can be any JSON-serializable value, typically a number or string.
-// Decoded from the wire, its value is a string, an int64 for a whole number
-// inside the int64 range, a json.Number for an integer past it, or a float64.
+// Decoded from the wire, its value is a string, an int64, or a json.Number for
+// an integer past int64; any other id is refused.
 type RequestId struct {
 	value any
 }
@@ -429,16 +429,20 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	// Try unmarshaling as string first
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
+	if len(data) > 0 && data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return fmt.Errorf("invalid request id: %w", err)
+		}
 		r.value = s
 		return nil
 	}
 
-	// An integer is kept exact: through a float64, one past 2^53 would lose
-	// its last digits and no longer match the request it answers. One past
-	// int64 is kept as its literal.
+	// A request id is a string or an integer (MCP base protocol), and an
+	// integer is a plain literal: one with a fraction or an exponent is
+	// refused, whole or not, so no id passes through a float64 and none
+	// depends on its spelling or its size. One past int64 is kept as its
+	// literal.
 	i, err := strconv.ParseInt(string(data), 10, 64)
 	if err == nil {
 		r.value = i
@@ -448,18 +452,6 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 		r.value = json.Number(data)
 		return nil
 	}
-
-	// Any other JSON number, such as 1.5 or 1e3, goes through a float64
-	var f float64
-	if err := json.Unmarshal(data, &f); err == nil {
-		if i, ok := integralInt64(f); ok {
-			r.value = i
-		} else {
-			r.value = f
-		}
-		return nil
-	}
-
 	return fmt.Errorf("invalid request id: %s", string(data))
 }
 

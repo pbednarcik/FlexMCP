@@ -23,7 +23,6 @@ func TestRequestIdRoundTrip(t *testing.T) {
 		{"negative past 2^53", NewRequestId(int64(-9007199254740993)), `-9007199254740993`, int64(-9007199254740993), "int64:-9007199254740993"},
 		{"integer past int64", NewRequestId(json.Number("9223372036854775808")), `9223372036854775808`, json.Number("9223372036854775808"), "number:9223372036854775808"},
 		{"negative past int64", NewRequestId(json.Number("-9223372036854775809")), `-9223372036854775809`, json.Number("-9223372036854775809"), "number:-9223372036854775809"},
-		{"fraction", NewRequestId(1.5), `1.5`, 1.5, "float64:1.5"},
 		{"null", NewRequestId(nil), `null`, nil, "<nil>"},
 	}
 
@@ -44,23 +43,25 @@ func TestRequestIdRoundTrip(t *testing.T) {
 	}
 }
 
-// A number past int64 that is integral is still an integer id, kept as the
-// literal; one with a fraction or exponent is a float64 id, an int64 only
-// when it is integral and inside the int64 range.
-func TestRequestIdDecodesNumbersPastInt64(t *testing.T) {
-	tests := []struct {
-		wire  string
-		value any
-	}{
-		{`18446744073709551616`, json.Number("18446744073709551616")},
-		{`9.223372036854775808e18`, 9.223372036854775808e18},
-		{`-9.223372036854775808e18`, int64(-9223372036854775808)},
-		{`1e19`, 1e19},
-	}
-	for _, tt := range tests {
+// A request id is a string or an integer (MCP base protocol), and an integer
+// is a plain literal: one with a fraction or an exponent is refused, even when
+// its value is whole, so no id passes through a float64 and none depends on
+// its spelling or its size.
+func TestRequestIdDecodesOnlyIntegerLiterals(t *testing.T) {
+	for wire, value := range map[string]any{
+		`0`:                    int64(0),
+		`-0`:                   int64(0),
+		`-7`:                   int64(-7),
+		`18446744073709551616`: json.Number("18446744073709551616"),
+		`"1.5"`:                "1.5",
+	} {
 		var id RequestId
-		require.NoError(t, json.Unmarshal([]byte(tt.wire), &id))
-		assert.Equal(t, tt.value, id.Value(), tt.wire)
+		require.NoError(t, json.Unmarshal([]byte(wire), &id), wire)
+		assert.Equal(t, value, id.Value(), wire)
+	}
+	for _, wire := range []string{`1.5`, `1.0`, `1e3`, `1E3`, `-0.0`, `9.223372036854775808e18`, `1e19`, `1e400`} {
+		var id RequestId
+		require.EqualError(t, json.Unmarshal([]byte(wire), &id), "invalid request id: "+wire)
 	}
 }
 
