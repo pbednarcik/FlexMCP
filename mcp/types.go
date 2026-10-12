@@ -375,10 +375,11 @@ type Result struct {
 	ResultType ResultType `json:"resultType,omitempty"`
 }
 
-// RequestId is a uniquely identifying ID for a request in JSON-RPC.
-// It can be any JSON-serializable value, typically a number or string.
-// Decoded from the wire, its value is a string, an int64, or a json.Number for
-// an integer past int64; any other id is refused.
+// RequestId is the id of a JSON-RPC message. A request's id is a string or an
+// integer, never null (MCP base protocol); only an error answering a request
+// whose id could not be read carries a null one. Decoded from the wire, its
+// value is a string, an int64, or a json.Number for an integer past int64;
+// any other id is refused.
 type RequestId struct {
 	value any
 }

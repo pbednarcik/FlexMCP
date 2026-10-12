@@ -325,8 +325,11 @@ need code are marked **(code)**.
 - A failed `initialize` establishes no session, and a `4xx` to it with a
   JSON-RPC body is that error, not a sign of an HTTP+SSE server.
 - A request the server sends over SSE is not taken for the response to a
-  client request with the same id; the SSE transport serves no server
-  requests and drops it.
+  client request with the same id. The SSE transport serves no server
+  requests: it answers `ping` with an empty result and any other method with
+  `-32601`.
+- Over Streamable HTTP, a POST's answer is the response carrying its request's
+  id, or an error with a null id; a response to another id is an error.
 
 ## Request ids and progress tokens
 
@@ -339,11 +342,17 @@ These apply to servers and clients alike, whichever revision they speak.
   `ProgressNotificationParams.ProgressToken`) arrives the same way, and a
   fractional token stays a `float64`. A type switch or assertion on
   `float64` no longer matches.
-- A request id is a string or a plain integer literal, never `null`. Any other
-  id, `1.0`, `1e3`, `1.5`, `true` or an object, is refused with `-32600` and a
-  null id; a client drops a message whose id it cannot read. A message with
-  `"id": null` and a method is an invalid request, not a notification.
-- A response the server receives is never answered, whatever its id.
+- A request id is a string or a plain integer literal, never `null`. A request
+  with any other id, `1.0`, `1e3`, `1.5`, `true` or an object, is refused with
+  `-32600` and a null id, by the server and by a client alike; a message with
+  `"id": null` and a method is such a request, not a notification. A response
+  whose id a client cannot read answers nothing it can name and is dropped.
+- A message that is not a request object gets `-32600`, carrying its id when
+  that could be read; `-32700` is only for text that is not JSON.
+- A response the server receives is never answered, whatever its id, and a
+  `null` result or error still makes one. Over Streamable HTTP on this
+  revision, where the server sends no requests, a POSTed response is refused
+  with `400`.
 
 ## Reference
 
