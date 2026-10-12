@@ -45,8 +45,9 @@ func (s *MCPServer) HandleMessage(
 	}
 	// A response, success or error, to a request the server sent, such as a
 	// keep-alive ping: nothing waits for it, and a response is never answered,
-	// whatever its id, and a null result or error still makes one.
-	if len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
+	// whatever its id, and a null result or error still makes one. A message
+	// with a method is a request, whatever it carries besides.
+	if baseMessage.Method == "" && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
 		return nil
 	}
 	var validID bool
@@ -64,23 +65,22 @@ func (s *MCPServer) HandleMessage(
 		)
 	}
 
-	if baseMessage.ID == nil {
-		var notification mcp.JSONRPCNotification
-		if err := json.Unmarshal(message, &notification); err != nil {
-			return createErrorResponse(
-				nil,
-				mcp.PARSE_ERROR,
-				"Failed to parse notification",
-			)
-		}
-		s.handleNotification(ctx, notification, message)
-		return nil // Return nil for notifications
-	}
-
-	// An id with no method, result or error is neither a request nor a
-	// response.
+	// A message with no method and no result or error is neither a request, a
+	// notification nor a response: an invalid request, whose error repeats the
+	// id if it has one (JSON-RPC 2.0, section 5.1).
 	if baseMessage.Method == "" {
 		return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "Invalid request: no method")
+	}
+
+	if baseMessage.ID == nil {
+		// A notification is never answered, not even one whose params cannot
+		// be read: it is dropped.
+		var notification mcp.JSONRPCNotification
+		if err := json.Unmarshal(message, &notification); err != nil {
+			return nil
+		}
+		s.handleNotification(ctx, notification, message)
+		return nil
 	}
 
 	handleErr := s.hooks.onRequestInitialization(ctx, baseMessage.ID, message)

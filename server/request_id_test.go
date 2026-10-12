@@ -345,3 +345,130 @@ func TestAMessageWithoutAMethodIsAnInvalidRequest(t *testing.T) {
 		})
 	}
 }
+
+// postRaw posts message to url as one Streamable HTTP request, with
+// protocolVersion in the header when it is set, and answers the status and the
+// body.
+func postRaw(t *testing.T, url, message, protocolVersion string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(message))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	if protocolVersion != "" {
+		req.Header.Set(mcp.HeaderProtocolVersion, protocolVersion)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode, string(body)
+}
+
+// A message with a method and an id is a request, whatever null members it
+// carries besides: it is answered, never dropped as a response.
+func TestARequestWithANullResultIsStillARequest(t *testing.T) {
+	for _, message := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"ping","result":null}`,
+		`{"jsonrpc":"2.0","id":1,"method":"ping","error":null}`,
+		`{"jsonrpc":"2.0","id":1,"method":"ping","params":{},"result":null,"error":null}`,
+	} {
+		t.Run("handle message "+message, func(t *testing.T) {
+			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{}}`, string(response))
+		})
+		t.Run("stdio "+message, func(t *testing.T) {
+			stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+			stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+			var output bytes.Buffer
+			require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+			assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{}}`, output.String())
+		})
+		t.Run("streamable http "+message, func(t *testing.T) {
+			server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+			t.Cleanup(server.Close)
+			status, body := postRaw(t, server.URL, message, "")
+			assert.Equal(t, http.StatusOK, status, "%s", body)
+			assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{}}`, body)
+		})
+	}
+}
+
+// A message with neither an id nor a method is no notification: an invalid
+// request, answered with a null id (JSON-RPC 2.0, section 5.1), and refused
+// with 400 over Streamable HTTP.
+func TestAMessageWithNeitherIDNorMethodIsAnInvalidRequest(t *testing.T) {
+	const want = `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request: no method"}}`
+	for _, message := range []string{`{"jsonrpc":"2.0"}`, `{"jsonrpc":"2.0","method":null}`, `{"jsonrpc":"2.0","params":{}}`} {
+		t.Run("handle message "+message, func(t *testing.T) {
+			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+			require.NoError(t, err)
+			assert.JSONEq(t, want, string(response))
+		})
+		t.Run("stdio "+message, func(t *testing.T) {
+			stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+			stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+			var output bytes.Buffer
+			require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+			assert.JSONEq(t, want, output.String())
+		})
+		for _, version := range []string{"", mcp.ProtocolVersion20260728} {
+			t.Run("streamable http "+version+" "+message, func(t *testing.T) {
+				server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+				t.Cleanup(server.Close)
+				status, body := postRaw(t, server.URL, message, version)
+				assert.Equal(t, http.StatusBadRequest, status, "%s", body)
+				assert.JSONEq(t, want, body)
+			})
+		}
+	}
+}
+
+// A notification is never answered (MCP base protocol), not even one whose
+// params cannot be read: it is dropped. Over Streamable HTTP it is input the
+// server cannot accept, refused with 400 rather than accepted with 202.
+func TestANotificationThatCannotBeReadIsNeverAnswered(t *testing.T) {
+	const message = `{"jsonrpc":"2.0","method":"notifications/initialized","params":5}`
+	t.Run("handle message", func(t *testing.T) {
+		assert.Nil(t, NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+	})
+	t.Run("stdio", func(t *testing.T) {
+		stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+		stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+		var output bytes.Buffer
+		require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+		assert.Empty(t, output.String())
+	})
+	for _, version := range []string{"", mcp.ProtocolVersion20260728} {
+		t.Run("streamable http "+version, func(t *testing.T) {
+			server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+			t.Cleanup(server.Close)
+			status, body := postRaw(t, server.URL, message, version)
+			assert.Equal(t, http.StatusBadRequest, status, "%s", body)
+			assert.Contains(t, body, `"id":null`)
+			assert.Contains(t, body, `"code":-32600`)
+		})
+	}
+}
+
+// On 2026-07-28 a client sends no responses, so a message with an id and
+// nothing else is refused as the invalid request it is; earlier revisions
+// accept it as an empty response, as a lax client answers a ping.
+func TestAnIDAloneIsRefusedOnlyOnTheModernRevision(t *testing.T) {
+	const message = `{"jsonrpc":"2.0","id":3}`
+	t.Run("modern", func(t *testing.T) {
+		server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+		t.Cleanup(server.Close)
+		status, body := postRaw(t, server.URL, message, mcp.ProtocolVersion20260728)
+		assert.Equal(t, http.StatusBadRequest, status, "%s", body)
+		assert.JSONEq(t, `{"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"Invalid request: no method"}}`, body)
+	})
+	t.Run("legacy", func(t *testing.T) {
+		server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+		t.Cleanup(server.Close)
+		status, body := postRaw(t, server.URL, message, mcp.LATEST_LEGACY_PROTOCOL_VERSION)
+		assert.Equal(t, http.StatusAccepted, status, "%s", body)
+	})
+}

@@ -423,6 +423,19 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		s.writeJSONRPCError(w, nil, mcp.INVALID_REQUEST, "a client sends no responses on this protocol revision")
 		return
 	}
+	// A message with no method that is no response is an invalid request.
+	// Earlier revisions still take an id alone as an empty response, the way a
+	// lax client answers a ping.
+	if jsonMessage.Method == "" && !isResponse && (len(jsonMessage.ID) == 0 || era.modern) {
+		s.writeJSONRPCError(w, requestID, mcp.INVALID_REQUEST, "Invalid request: no method")
+		return
+	}
+	// A notification is never answered, so one the server cannot read is
+	// refused here, as input it cannot accept (rule 4), not accepted with 202.
+	if jsonMessage.Method != "" && len(jsonMessage.ID) == 0 && json.Unmarshal(rawData, new(mcp.JSONRPCNotification)) != nil {
+		s.writeJSONRPCError(w, nil, mcp.INVALID_REQUEST, "notification could not be read")
+		return
+	}
 
 	// The header is only required after initialize, which negotiates the
 	// version itself. Responses posted by the client are checked as well.

@@ -431,8 +431,9 @@ func (s *StdioServer) processMessage(
 	}
 	parsed := json.Unmarshal(rawMessage, &baseMessage) == nil
 	// A response is never answered, whatever its id, and the stdio server sends
-	// no request for one to answer: it is dropped before any id bookkeeping.
-	if parsed && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
+	// no request for one to answer: it is dropped before any id bookkeeping. A
+	// message with a method is a request, whatever it carries besides.
+	if parsed && baseMessage.Method == "" && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
 		return nil
 	}
 	var validID bool

@@ -694,7 +694,9 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 		errorForm bool
 		// emptyResult sends an empty result, as a ping's answer.
 		emptyResult bool
-		wantStatus  int
+		// nullResult sends a null result.
+		nullResult bool
+		wantStatus int
 	}{
 		{
 			name:            "a modern response is rejected",
@@ -705,6 +707,12 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 			name:            "a modern empty response is rejected",
 			protocolVersion: mcp.ProtocolVersion20260728,
 			emptyResult:     true,
+			wantStatus:      http.StatusBadRequest,
+		},
+		{
+			name:            "a modern null result is rejected",
+			protocolVersion: mcp.ProtocolVersion20260728,
+			nullResult:      true,
 			wantStatus:      http.StatusBadRequest,
 		},
 		{
@@ -734,6 +742,9 @@ func TestClientToServerResponsesByProtocolEra(t *testing.T) {
 			response := map[string]any{"jsonrpc": "2.0", "id": 42, "result": map[string]any{"action": "accept"}}
 			if tt.emptyResult {
 				response["result"] = map[string]any{}
+			}
+			if tt.nullResult {
+				response["result"] = nil
 			}
 			if tt.errorForm {
 				delete(response, "result")
