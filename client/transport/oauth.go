@@ -633,13 +633,13 @@ func (h *OAuthHandler) HandleUnauthorizedResponse(resp *http.Response) {
 }
 
 // recordChallenge records what the challenge acted on says for the next
-// authorization: its scopes, and its metadata URL, already validated.
+// authorization: its scopes, which replace the last challenge's even when
+// there are none (they are the refused operation's, not a standing grant),
+// and its metadata URL, already validated.
 func (h *OAuthHandler) recordChallenge(c bearerChallenge) {
-	if len(c.scopes) > 0 {
-		h.mu.Lock()
-		h.challengedScopes = c.scopes
-		h.mu.Unlock()
-	}
+	h.mu.Lock()
+	h.challengedScopes = c.scopes
+	h.mu.Unlock()
 	if c.resourceMetadata != "" {
 		h.setAdvertisedPRMURL(c.resourceMetadata)
 	}
@@ -706,8 +706,10 @@ func (h *OAuthHandler) scopesToRequest(ctx context.Context) []string {
 	h.mu.RLock()
 	challenged := h.challengedScopes
 	h.mu.RUnlock()
+	// What the current token was granted is kept only from a token for this
+	// server: another server's grant is not this one's to ask for.
 	var granted []string
-	if token, err := h.config.TokenStore.GetToken(ctx); err == nil {
+	if token, err := h.config.TokenStore.GetToken(ctx); err == nil && h.tokenIsForThisServer(token) {
 		granted = strings.Fields(token.Scope)
 	}
 	if scopes := unionScopes(challenged, h.config.Scopes, granted); len(scopes) > 0 {
@@ -773,9 +775,11 @@ func (h *OAuthHandler) SetBaseURL(baseURL string) {
 	h.metadataMu.Unlock()
 
 	// An authorization in progress was for the previous server: it is
-	// abandoned, so its callback is refused rather than redeemed here.
+	// abandoned, so its callback is refused rather than redeemed here. So
+	// are the scopes that server's last challenge named.
 	h.mu.Lock()
 	h.expectedState, h.expectedIssuer, h.issuerRequired, h.expectedResource = "", "", false, ""
+	h.challengedScopes = nil
 	h.mu.Unlock()
 }
 

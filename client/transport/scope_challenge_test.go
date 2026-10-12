@@ -311,6 +311,47 @@ func TestStreamableHTTP_FindsTheInsufficientScopeChallengeOnA403(t *testing.T) {
 	}
 }
 
+// The challenged scopes are the refused operation's (MCP authorization:
+// authoritative for the operation), not a standing grant: each challenge
+// replaces them, one without a scope too, and a change of server clears
+// them. Scopes kept from a stored token come only from a token for this
+// server.
+func TestOAuthHandler_ChallengedScopesBelongToTheOperation(t *testing.T) {
+	as := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+	store := NewMemoryTokenStore()
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            store,
+		AuthServerMetadataURL: as.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(as.URL + "/a")
+	challenge := func(value string) {
+		handler.HandleUnauthorizedResponse(&http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{"Www-Authenticate": []string{value}}})
+	}
+	requested := func() string {
+		authURL, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+		require.NoError(t, err)
+		parsed, err := url.Parse(authURL)
+		require.NoError(t, err)
+		return parsed.Query().Get("scope")
+	}
+
+	challenge(`Bearer scope="admin"`)
+	assert.Equal(t, "admin", requested())
+	challenge(`Bearer error="invalid_token"`)
+	assert.Empty(t, handler.ChallengedScopes(), "a challenge without a scope replaces the last one's")
+	assert.Empty(t, requested())
+
+	challenge(`Bearer scope="admin"`)
+	handler.SetBaseURL(as.URL + "/b")
+	assert.Empty(t, handler.ChallengedScopes(), "server a's challenge does not carry over to server b")
+	assert.Empty(t, requested())
+
+	require.NoError(t, store.SaveToken(t.Context(), &Token{AccessToken: "a", Scope: "admin", Resource: as.URL + "/a", Issuer: as.URL}))
+	assert.Empty(t, requested(), "server a's token's scopes are not asked for server b")
+}
+
 func TestParseChallenges(t *testing.T) {
 	challenges := parseChallenges([]string{
 		`Basic realm="legacy, old", Bearer Scope="a b", error=invalid_token, realm="say \"hi\""`,
