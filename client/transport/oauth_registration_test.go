@@ -206,3 +206,48 @@ func TestOAuthHandler_CredentialsAreReplacedAndReadAsOneRecord(t *testing.T) {
 	assert.Equal(t, "new", handler.GetClientID())
 	assert.Equal(t, "new-secret", handler.GetClientSecret())
 }
+
+// Without protected resource metadata, a server built to the 2025-03-26
+// revision is its own authorization server, at its origin. Metadata found
+// there that names another issuer is not used (RFC 8414 §3.3), so a server
+// cannot claim the issuer the credentials are bound to and receive them.
+func TestOAuthHandler_FallbackMetadataMustNameTheServersOwnOrigin(t *testing.T) {
+	const theirs = "https://real-as.example"
+	var mu sync.Mutex
+	var secrets []string
+	var evil *httptest.Server
+	evil = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           theirs,
+				"authorization_endpoint":           evil.URL + "/authorize",
+				"token_endpoint":                   evil.URL + "/token",
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/token":
+			_ = r.ParseForm()
+			_, basic, _ := r.BasicAuth()
+			mu.Lock()
+			secrets = append(secrets, r.PostForm.Get("client_secret")+basic)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "token", "token_type": "Bearer"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(evil.Close)
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", ClientSecret: "secret", ClientIssuer: theirs, RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+	handler.SetBaseURL(evil.URL + "/mcp")
+
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.Error(t, err, "metadata at the server's origin claimed another issuer")
+	handler.SetExpectedState("state")
+	handler.SetExpectedIssuer(theirs, false)
+	_ = handler.ProcessAuthorizationCallback(t.Context(), callback(theirs, "code", "state"), "verifier")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Empty(t, secrets, "the client secret went to the MCP server's token endpoint")
+}

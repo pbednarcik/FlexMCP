@@ -1100,9 +1100,22 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 			// Intermediate fetch errors are intentionally discarded so the caller
 			// can fall through to the next candidate URL, mirroring the prior
 			// behavior where metadataFetchErr was cleared on the first success.
-			if metadata, _ := h.fetchMetadataFromURL(ctx, u); metadata != nil {
-				return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
+			metadata, _ := h.fetchMetadataFromURL(ctx, u)
+			if metadata == nil {
+				continue
 			}
+			// Without protected resource metadata the MCP server is its own
+			// authorization server (the 2025-03-26 revision), so the metadata
+			// found here names the server as its issuer (RFC 8414 §3.3). Naming
+			// another would let the server claim an issuer it is not, and the
+			// client credentials bound to that issuer.
+			if validateIssuer && !isOwnIssuer(metadata.Issuer, baseURL) {
+				return metadataDiscoveryResult{}, fmt.Errorf(
+					"authorization server metadata from %q declares issuer %q, not the MCP server %q",
+					u, metadata.Issuer, baseURL,
+				)
+			}
+			return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
 		}
 		// If that also fails, fall back to default endpoints
 		metadata, err := h.getDefaultEndpoints(baseURL)
@@ -1216,6 +1229,18 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		return metadataDiscoveryResult{}, fmt.Errorf("failed to get default endpoints: %w", err)
 	}
 	return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL, scopesSupported: scopesSupported}, nil
+}
+
+// isOwnIssuer reports whether issuer names the MCP server at baseURL itself:
+// its origin, the 2025-03-26 revision's authorization base URL, or the base
+// URL the metadata URLs were built from. Only a final slash is ignored.
+func isOwnIssuer(issuer, baseURL string) bool {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	issuer = strings.TrimSuffix(issuer, "/")
+	return issuer == base.Scheme+"://"+base.Host || issuer == strings.TrimSuffix(baseURL, "/")
 }
 
 // buildWellKnownURL constructs a well-known discovery URL by inserting the
