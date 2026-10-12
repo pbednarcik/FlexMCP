@@ -385,29 +385,22 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// Body has already been buffered by the caller (ServeHTTP or Handle).
 	rawData := r.Body
-	// The envelope: a client's response carries an id and no method.
-	var jsonMessage struct {
-		ID     json.RawMessage `json:"id"`
-		Result json.RawMessage `json:"result,omitempty"`
-		Error  json.RawMessage `json:"error,omitempty"`
-		Method mcp.MCPMethod   `json:"method,omitempty"`
-	}
-	if err := json.Unmarshal(rawData, &jsonMessage); err != nil {
+	// The envelope, decoded once for every check below and for dispatch: a
+	// client's response carries an id and no method.
+	jsonMessage, ok := decodeEnvelope(rawData)
+	if !ok {
 		s.writeJSONRPCError(w, nil, mcp.PARSE_ERROR, "request body is not valid json")
 		return
 	}
 
 	isInitializeRequest := jsonMessage.Method == mcp.MethodInitialize
 
-	var requestID any
-	if len(jsonMessage.ID) > 0 {
-		_ = json.Unmarshal(jsonMessage.ID, &requestID)
-	}
+	requestID := jsonMessage.id()
 
 	// Decide which protocol era this message belongs to. Both eras run through
 	// the same stateless path below; the era only chooses the version check
 	// here, the modern header validation, and the HTTP status of an error.
-	era := detectRequestEra(r.header(), rawData)
+	era := detectEnvelopeEra(r.header(), jsonMessage)
 
 	// The header is only required after initialize, which negotiates the
 	// version itself. Responses posted by the client are checked as well.
@@ -538,7 +531,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		}
 	}()
 
-	response := s.server.HandleMessage(ctx, rawData)
+	response := s.server.handleEnvelope(ctx, rawData, jsonMessage)
 	if listening {
 		// Stop broadcasts before draining what is already queued.
 		s.server.unregisterListenSession(session)

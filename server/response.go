@@ -195,15 +195,28 @@ func (s *MCPServer) validateStandardHeadersForMessage(
 	if len(headers) == 0 || headers.Get(mcp.HeaderProtocolVersion) == "" {
 		return nil
 	}
-
-	var wrapper struct {
-		Params json.RawMessage `json:"params"`
+	envelope, ok := decodeEnvelope(message)
+	if !ok {
+		return nil
 	}
-	if err := json.Unmarshal(message, &wrapper); err != nil {
+	envelope.Method = method
+	return s.validateStandardHeadersForEnvelope(ctx, headers, protocolVersion, envelope)
+}
+
+// validateStandardHeadersForEnvelope is validateStandardHeadersForMessage for
+// a decoded envelope.
+func (s *MCPServer) validateStandardHeadersForEnvelope(
+	_ context.Context,
+	headers http.Header,
+	protocolVersion string,
+	envelope *requestEnvelope,
+) error {
+	if len(headers) == 0 || headers.Get(mcp.HeaderProtocolVersion) == "" {
 		return nil
 	}
 
-	if err := mcp.ValidateStandardHeaders(headers.Get, protocolVersion, method, wrapper.Params); err != nil {
+	method := envelope.Method
+	if err := mcp.ValidateStandardHeaders(headers.Get, protocolVersion, method, envelope.Params); err != nil {
 		return err
 	}
 
@@ -212,11 +225,15 @@ func (s *MCPServer) validateStandardHeadersForMessage(
 	if method != mcp.MethodToolsCall {
 		return nil
 	}
-	bindings, ok := s.headerBindingsForCall(wrapper.Params)
+	name, ok := envelope.paramsName()
 	if !ok {
 		return nil
 	}
-	return mcp.ValidateParamHeadersWithBindings(lookupHeader(headers), bindings, wrapper.Params)
+	bindings, ok := s.headerBindingsForTool(name)
+	if !ok {
+		return nil
+	}
+	return mcp.ValidateParamHeadersWithBindings(lookupHeader(headers), bindings, envelope.Params)
 }
 
 // lookupHeader reports the first value of a header and whether it was sent at
@@ -232,25 +249,21 @@ func lookupHeader(headers http.Header) func(string) (string, bool) {
 	}
 }
 
-// headerBindingsForCall resolves the x-mcp-header bindings of the tool named
-// by a tools/call request, cached from the tool's registration. It returns
+// headerBindingsForTool resolves the x-mcp-header bindings of the tool a
+// tools/call request names, cached from the tool's registration. It returns
 // ok=false when the tool is unknown, leaving the not-found error to the
 // handler.
-func (s *MCPServer) headerBindingsForCall(params json.RawMessage) ([]mcp.ParamHeaderBinding, bool) {
-	var call struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(params, &call); err != nil || call.Name == "" {
+func (s *MCPServer) headerBindingsForTool(name string) ([]mcp.ParamHeaderBinding, bool) {
+	if name == "" {
 		return nil, false
 	}
-
 	s.toolsMu.RLock()
 	defer s.toolsMu.RUnlock()
-	if tool, ok := s.tools[call.Name]; ok {
-		return s.cachedHeaderBindings(call.Name, &tool.Tool), true
+	if tool, ok := s.tools[name]; ok {
+		return s.cachedHeaderBindings(name, &tool.Tool), true
 	}
-	if taskTool, ok := s.taskTools[call.Name]; ok {
-		return s.cachedHeaderBindings(call.Name, &taskTool.Tool), true
+	if taskTool, ok := s.taskTools[name]; ok {
+		return s.cachedHeaderBindings(name, &taskTool.Tool), true
 	}
 	return nil, false
 }

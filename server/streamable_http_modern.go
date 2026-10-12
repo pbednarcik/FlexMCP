@@ -66,26 +66,19 @@ type requestEra struct {
 	headerVersion string
 }
 
-// detectRequestEra determines the protocol era of a POST request from the
+// detectEnvelopeEra determines the protocol era of a POST request from the
 // version declared in the body's _meta and in the Mcp-Protocol-Version header.
 //
 // A request is modern when either source names 2026-07-28 or later; naming it
 // in only one of the two is a header mismatch, reported separately by
 // [StreamableHTTPServer.validateModernRequest].
-func detectRequestEra(header http.Header, body []byte) requestEra {
-	era := requestEra{headerVersion: header.Get(mcp.HeaderProtocolVersion)}
-
-	// Only the version is read, typed, so no generic _meta map is built for
-	// a decision that needs one string. The tag spells mcp.MetaKeyProtocolVersion.
-	var wrapper struct {
-		Params struct {
-			Meta struct {
-				ProtocolVersion string `json:"io.modelcontextprotocol/protocolVersion"`
-			} `json:"_meta"`
-		} `json:"params"`
-	}
-	if json.Unmarshal(body, &wrapper) == nil {
-		era.metaVersion = wrapper.Params.Meta.ProtocolVersion
+//
+// Only the version is read from the decoded envelope, so no generic _meta map
+// is built for a decision that needs one string.
+func detectEnvelopeEra(header http.Header, envelope *requestEnvelope) requestEra {
+	era := requestEra{
+		headerVersion: header.Get(mcp.HeaderProtocolVersion),
+		metaVersion:   envelope.metaProtocolVersion(),
 	}
 
 	era.modern = mcp.IsModernProtocol(era.metaVersion) || mcp.IsModernProtocol(era.headerVersion)

@@ -98,27 +98,24 @@ type SessionWithProtocolVersion interface {
 // required client capabilities are missing, or a well-known key holds a value
 // of the wrong shape.
 func extractRequestProtocolInfo(message json.RawMessage) (*RequestProtocolInfo, error) {
-	// One typed partial decode of the four well-known keys, whose tags spell
-	// mcp.MetaKeyProtocolVersion, MetaKeyClientInfo, MetaKeyClientCapabilities
-	// and MetaKeyLogLevel. Each value is decoded on its own, so a malformed
-	// optional one is ignored.
-	var wrapper struct {
-		Params struct {
-			Meta struct {
-				ProtocolVersion    json.RawMessage `json:"io.modelcontextprotocol/protocolVersion"`
-				ClientInfo         json.RawMessage `json:"io.modelcontextprotocol/clientInfo"`
-				ClientCapabilities json.RawMessage `json:"io.modelcontextprotocol/clientCapabilities"`
-				LogLevel           json.RawMessage `json:"io.modelcontextprotocol/logLevel"`
-			} `json:"_meta"`
-		} `json:"params"`
+	envelope, ok := decodeEnvelope(message)
+	if !ok {
+		return &RequestProtocolInfo{}, nil
 	}
-	if err := json.Unmarshal(message, &wrapper); err != nil {
+	return protocolInfoFromEnvelope(envelope)
+}
+
+// protocolInfoFromEnvelope is extractRequestProtocolInfo for a decoded
+// envelope: it reads _meta's four well-known keys, each decoded on its own,
+// so a malformed optional one is ignored.
+func protocolInfoFromEnvelope(envelope *requestEnvelope) (*RequestProtocolInfo, error) {
+	meta, ok := envelope.meta()
+	if !ok {
 		// A malformed body is reported by the per-method unmarshal, which
 		// produces a better error message.
 		return &RequestProtocolInfo{}, nil
 	}
 
-	meta := wrapper.Params.Meta
 	var version string
 	if len(meta.ProtocolVersion) > 0 {
 		_ = json.Unmarshal(meta.ProtocolVersion, &version)

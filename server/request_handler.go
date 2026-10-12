@@ -16,28 +16,43 @@ func (s *MCPServer) HandleMessage(
 	ctx context.Context,
 	message json.RawMessage,
 ) (resp mcp.JSONRPCMessage) {
-	// Add server to context
-	ctx = context.WithValue(ctx, serverKey{}, s)
-	var err *requestError
-
-	var baseMessage struct {
-		JSONRPC string        `json:"jsonrpc"`
-		Method  mcp.MCPMethod `json:"method"`
-		ID      any           `json:"id,omitempty"`
-		Result  any           `json:"result,omitempty"`
-		Error   any           `json:"error,omitempty"`
-	}
-
-	if err := json.Unmarshal(message, &baseMessage); err != nil {
+	envelope, ok := decodeEnvelope(message)
+	if !ok {
 		return createErrorResponse(
 			nil,
 			mcp.PARSE_ERROR,
 			"Failed to parse message",
 		)
 	}
+	return s.handleEnvelope(ctx, message, envelope)
+}
+
+// handleEnvelope is HandleMessage for a message whose envelope the caller
+// has already decoded, so that it is decoded once per message.
+func (s *MCPServer) handleEnvelope(
+	ctx context.Context,
+	message json.RawMessage,
+	envelope *requestEnvelope,
+) (resp mcp.JSONRPCMessage) {
+	// Add server to context
+	ctx = context.WithValue(ctx, serverKey{}, s)
+	var err *requestError
+
+	jsonrpc, ok := envelope.jsonrpcVersion()
+	if !ok {
+		return createErrorResponse(
+			nil,
+			mcp.PARSE_ERROR,
+			"Failed to parse message",
+		)
+	}
+	baseMessage := struct {
+		Method mcp.MCPMethod
+		ID     any
+	}{Method: envelope.Method, ID: envelope.id()}
 
 	// Check for valid JSONRPC version
-	if baseMessage.JSONRPC != mcp.JSONRPC_VERSION {
+	if jsonrpc != mcp.JSONRPC_VERSION {
 		return createErrorResponse(
 			baseMessage.ID,
 			mcp.INVALID_REQUEST,
@@ -58,7 +73,7 @@ func (s *MCPServer) HandleMessage(
 		return nil // Return nil for notifications
 	}
 
-	if baseMessage.Result != nil || baseMessage.Error != nil {
+	if envelope.isResponse() {
 		// A response, success or error, to a request the server sent, such as
 		// a keep-alive ping: nothing waits for it, and a response is never
 		// answered.
@@ -86,7 +101,7 @@ func (s *MCPServer) HandleMessage(
 	// 2026-07-28 removed the initialize handshake: a modern request carries
 	// its protocol version, client identity, and client capabilities in _meta
 	// (SEP-2575). Anything else is served through the legacy path.
-	protocolInfo, protocolErr := extractRequestProtocolInfo(message)
+	protocolInfo, protocolErr := protocolInfoFromEnvelope(envelope)
 	if protocolErr != nil {
 		return errorResponseForProtocolError(baseMessage.ID, protocolErr)
 	}
@@ -99,7 +114,7 @@ func (s *MCPServer) HandleMessage(
 				Supported: SupportedProtocolVersionsFromContext(ctx),
 			})
 		}
-		if err := s.validateStandardHeadersForMessage(ctx, headers, protocolInfo.ProtocolVersion, baseMessage.Method, message); err != nil {
+		if err := s.validateStandardHeadersForEnvelope(ctx, headers, protocolInfo.ProtocolVersion, envelope); err != nil {
 			return errorResponseForProtocolError(baseMessage.ID, err)
 		}
 		// Synthesize the session state the handshake used to establish, so
@@ -126,13 +141,11 @@ func (s *MCPServer) HandleMessage(
 	// inherits the correct parent (SEP-414, transport-agnostic propagation).
 	// Only a server with a meta propagator pays the decode.
 	if s.metaPropagator != nil {
-		var metaWrapper struct {
-			Params struct {
-				Meta *mcp.Meta `json:"_meta"`
-			} `json:"params"`
-		}
-		if json.Unmarshal(message, &metaWrapper) == nil {
-			ctx = s.extractMeta(ctx, metaWrapper.Params.Meta)
+		if view, ok := envelope.view(); ok || len(envelope.Params) == 0 {
+			var meta *mcp.Meta
+			if len(view.Meta) == 0 || json.Unmarshal(view.Meta, &meta) == nil {
+				ctx = s.extractMeta(ctx, meta)
+			}
 		}
 	}
 
