@@ -610,8 +610,9 @@ func (c *StreamableHTTP) SendRequest(
 			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
 
-		// should not be a notification
-		if response.ID.IsNil() {
+		// should not be a notification; an error with a null id is the server
+		// saying it could not read this request's id, and so its answer
+		if response.ID.IsNil() && response.Error == nil {
 			return nil, fmt.Errorf("response should contain RPC id: %v", response)
 		}
 
@@ -620,7 +621,7 @@ func (c *StreamableHTTP) SendRequest(
 
 	case "text/event-stream":
 		// Server is using SSE for streaming responses
-		sseResponse, err := c.handleSSEResponse(ctx, resp.Body, false)
+		sseResponse, err := c.handleSSEResponse(ctx, resp.Body, &request.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -740,8 +741,11 @@ func (c *StreamableHTTP) sendHTTP(
 
 // handleSSEResponse processes an SSE stream for a specific request.
 // It returns the final result for the request once received, or an error.
-// If ignoreResponse is true, it won't return when a response messge is received. This is for continuous listening.
-func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCloser, ignoreResponse bool) (*JSONRPCResponse, error) {
+// want is the id of the request the stream answers; the response to it, or
+// an error with a null id, ends the stream. A nil want is a listening stream,
+// which returns no response.
+func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCloser, want *mcp.RequestId) (*JSONRPCResponse, error) {
+	ignoreResponse := want == nil
 	// Create a channel for this specific request
 	responseChan := make(chan *JSONRPCResponse, 1)
 
@@ -765,15 +769,19 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 		var cursor sseCursor
 		delivered := false
 		handle := func(event, data string) {
-			// Try to unmarshal as a response first
-			var message JSONRPCResponse
-			if err := json.Unmarshal([]byte(data), &message); err != nil {
+			var envelope struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 				c.logger.Info("failed to unmarshal message (non-fatal)", "err", err, "message_len", len(data))
 				return
 			}
+			var id mcp.RequestId
+			readableID := len(envelope.ID) > 0 && json.Unmarshal(envelope.ID, &id) == nil && !id.IsNil()
 
-			// Handle notification
-			if message.ID.IsNil() {
+			switch {
+			case envelope.Method != "" && len(envelope.ID) == 0:
 				var notification mcp.JSONRPCNotification
 				if err := json.Unmarshal([]byte(data), &notification); err != nil {
 					c.logger.Error("failed to unmarshal notification", "err", err)
@@ -784,23 +792,31 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 					c.notificationHandler(notification)
 				}
 				c.notifyMu.RUnlock()
-				return
-			}
-
-			// Check if this is actually a request from the server by looking for method field
-			var rawMessage map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(data), &rawMessage); err == nil {
-				if _, hasMethod := rawMessage["method"]; hasMethod && !message.ID.IsNil() {
-					var request JSONRPCRequest
-					if err := json.Unmarshal([]byte(data), &request); err == nil {
-						// This is a request from the server
-						c.handleIncomingRequest(ctx, request)
-						return
-					}
+			case envelope.Method != "" && !readableID:
+				// A request id is a string or an integer and never null: a
+				// server request whose id cannot be read is answered as invalid.
+				c.sendResponseToServer(ctx, NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
+			case envelope.Method != "":
+				var request JSONRPCRequest
+				if err := json.Unmarshal([]byte(data), &request); err != nil {
+					c.logger.Error("failed to unmarshal server request", "err", err)
+					return
 				}
-			}
-
-			if !ignoreResponse {
+				c.handleIncomingRequest(ctx, request)
+			default:
+				var message JSONRPCResponse
+				if err := json.Unmarshal([]byte(data), &message); err != nil {
+					c.logger.Info("failed to unmarshal response (non-fatal)", "err", err, "message_len", len(data))
+					return
+				}
+				// The stream answers one request: its response, or an error with
+				// a null id, the server saying it could not read that id.
+				answers := !ignoreResponse && !delivered &&
+					((readableID && id.String() == want.String()) || (message.ID.IsNil() && message.Error != nil))
+				if !answers {
+					c.logger.Error("Dropping a response that answers no request on this stream", "id", string(envelope.ID))
+					return
+				}
 				delivered = true
 				responseChan <- &message
 			}
@@ -1166,7 +1182,7 @@ func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) (opene
 	// messages. To be more compatible, we should handle this response, however, as the transport layer is message-based,
 	// currently, there is no convenient way to handle this response.
 	// So we ignore the response here. It's not a bug, but may be not compatible with other SDKs.
-	_, err = c.handleSSEResponse(ctx, resp.Body, true)
+	_, err = c.handleSSEResponse(ctx, resp.Body, nil)
 	if err != nil {
 		return true, fmt.Errorf("failed to handle SSE response: %w", err)
 	}
