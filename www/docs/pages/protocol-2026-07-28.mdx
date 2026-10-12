@@ -213,7 +213,9 @@ removed.
 
 Nothing is required to adopt the new revision. A few client APIs and
 behaviours did change along the way; see [Client changes](#client-changes)
-before upgrading a client. When you are ready to adopt the new capabilities:
+before upgrading a client, and
+[Request ids and progress tokens](#request-ids-and-progress-tokens) before
+upgrading either side. When you are ready to adopt the new capabilities:
 
 1. **Rewrite server-initiated requests as multi round-trip handlers.** Replace
    `RequestSampling`, `RequestElicitation`, and `RequestRoots` calls with
@@ -322,6 +324,26 @@ need code are marked **(code)**.
   session.
 - A failed `initialize` establishes no session, and a `4xx` to it with a
   JSON-RPC body is that error, not a sign of an HTTP+SSE server.
+- A request the server sends over SSE is not taken for the response to a
+  client request with the same id; the SSE transport serves no server
+  requests and drops it.
+
+## Request ids and progress tokens
+
+These apply to servers and clients alike, whichever revision they speak.
+
+- **(code)** A numeric request id reaches your code as an `int64`, or a
+  `json.Number` for an integer past int64, where it was a `float64`: the `id`
+  passed to hooks, `RequestId.Value()`, `SubscriptionStream.ID` and
+  `WithSubscriptionID`. A numeric `progressToken` (`Meta.ProgressToken`,
+  `ProgressNotificationParams.ProgressToken`) arrives the same way, and a
+  fractional token stays a `float64`. A type switch or assertion on
+  `float64` no longer matches.
+- A request id is a string or a plain integer literal, never `null`. Any other
+  id, `1.0`, `1e3`, `1.5`, `true` or an object, is refused with `-32600` and a
+  null id; a client drops a message whose id it cannot read. A message with
+  `"id": null` and a method is an invalid request, not a notification.
+- A response the server receives is never answered, whatever its id.
 
 ## Reference
 
