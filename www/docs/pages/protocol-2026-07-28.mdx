@@ -261,8 +261,12 @@ need code are marked **(code)**.
 - **(code)** Authorization server endpoints are HTTPS only: metadata fetched
   over `http`, or naming an `http` issuer or endpoint, is refused
   (`ErrInsecureAuthorizationServer`), a local authorization server included.
-  Discovery follows a redirect only while it stays on `https`; a token,
-  refresh or registration request follows none.
+  Discovery follows a redirect only while the URL it reaches, after the
+  HTTP client's own redirect policy, stays on `https`; a token, refresh or
+  registration request follows none.
+- **(code)** An access token goes only to its own server: with OAuth
+  configured, a Streamable HTTP or SSE request follows a redirect only while
+  its scheme, host and port stay the same (`ErrRedirectLeavesOrigin`).
 - Discovery that gets no answer (a failed or cancelled request, a `5xx` or
   `429`) returns the error and tries again on the next call; the default
   endpoints stand in only for metadata that is not there. Without protected

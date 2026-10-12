@@ -642,8 +642,11 @@ Tool calls run on a pool of workers (`WithWorkerPoolSize`, default 5) fed by
 a queue (`WithQueueSize`, default 100); other requests run on their own
 goroutines. A tool call that finds the queue full is refused at once with a
 JSON-RPC internal error whose message starts with `server busy`, so the
-client can retry it later. The read loop never runs a call itself: it keeps
-reading, so closing stdin always shuts the server down. A tool call still
+client can retry it later; a tool call sent as a notification, without an
+id, is dropped without a reply. The read loop never runs a tool call itself:
+it keeps reading, so closing stdin shuts the server down, provided stdout is
+being drained (a reply blocks while the client does not read it) and
+notification handlers return, since they run on the read loop. A tool call still
 queued when stdin closes, or cancelled by the client while queued, is dropped
 without being started.
 
