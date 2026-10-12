@@ -62,7 +62,7 @@ type cancelledRequests struct {
 // key that is not comparable would panic.
 func comparableID(id any) bool {
 	switch id.(type) {
-	case int64, float64, string:
+	case int64, json.Number, float64, string:
 		return true
 	}
 	return false

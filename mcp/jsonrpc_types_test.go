@@ -21,6 +21,8 @@ func TestRequestIdRoundTrip(t *testing.T) {
 		{"integral float", NewRequestId(float64(3)), `3`, int64(3), "int64:3"},
 		{"integer past 2^53", NewRequestId(int64(9007199254740993)), `9007199254740993`, int64(9007199254740993), "int64:9007199254740993"},
 		{"negative past 2^53", NewRequestId(int64(-9007199254740993)), `-9007199254740993`, int64(-9007199254740993), "int64:-9007199254740993"},
+		{"integer past int64", NewRequestId(json.Number("9223372036854775808")), `9223372036854775808`, json.Number("9223372036854775808"), "number:9223372036854775808"},
+		{"negative past int64", NewRequestId(json.Number("-9223372036854775809")), `-9223372036854775809`, json.Number("-9223372036854775809"), "number:-9223372036854775809"},
 		{"fraction", NewRequestId(1.5), `1.5`, 1.5, "float64:1.5"},
 		{"null", NewRequestId(nil), `null`, nil, "<nil>"},
 	}
@@ -31,6 +33,7 @@ func TestRequestIdRoundTrip(t *testing.T) {
 			encoded, err := json.Marshal(request)
 			require.NoError(t, err)
 			assert.JSONEq(t, `{"jsonrpc":"2.0","id":`+tt.wire+`,"method":"ping"}`, string(encoded))
+			assert.Contains(t, string(encoded), `"id":`+tt.wire+`,`, "JSONEq compares numbers as float64")
 
 			var decoded JSONRPCRequest
 			require.NoError(t, json.Unmarshal(encoded, &decoded))
@@ -38,6 +41,26 @@ func TestRequestIdRoundTrip(t *testing.T) {
 			assert.Equal(t, tt.text, decoded.ID.String())
 			assert.Equal(t, tt.value == nil, decoded.ID.IsNil())
 		})
+	}
+}
+
+// A number past int64 that is integral is still an integer id, kept as the
+// literal; one with a fraction or exponent is a float64 id, an int64 only
+// when it is integral and inside the int64 range.
+func TestRequestIdDecodesNumbersPastInt64(t *testing.T) {
+	tests := []struct {
+		wire  string
+		value any
+	}{
+		{`18446744073709551616`, json.Number("18446744073709551616")},
+		{`9.223372036854775808e18`, 9.223372036854775808e18},
+		{`-9.223372036854775808e18`, int64(-9223372036854775808)},
+		{`1e19`, 1e19},
+	}
+	for _, tt := range tests {
+		var id RequestId
+		require.NoError(t, json.Unmarshal([]byte(tt.wire), &id))
+		assert.Equal(t, tt.value, id.Value(), tt.wire)
 	}
 }
 

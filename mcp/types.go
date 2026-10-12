@@ -4,8 +4,10 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -345,6 +347,8 @@ type Result struct {
 
 // RequestId is a uniquely identifying ID for a request in JSON-RPC.
 // It can be any JSON-serializable value, typically a number or string.
+// Decoded from the wire, its value is a string, an int64 for a whole number
+// inside the int64 range, a json.Number for an integer past it, or a float64.
 type RequestId struct {
 	value any
 }
@@ -366,9 +370,11 @@ func (r RequestId) String() string {
 		return "string:" + v
 	case int64:
 		return "int64:" + strconv.FormatInt(v, 10)
+	case json.Number:
+		return "number:" + string(v)
 	case float64:
-		if v == float64(int64(v)) {
-			return "int64:" + strconv.FormatInt(int64(v), 10)
+		if i, ok := integralInt64(v); ok {
+			return "int64:" + strconv.FormatInt(i, 10)
 		}
 		return "float64:" + strconv.FormatFloat(v, 'f', -1, 64)
 	case nil:
@@ -401,17 +407,23 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 	}
 
 	// An integer is kept exact: through a float64, one past 2^53 would lose
-	// its last digits and no longer match the request it answers.
-	if i, err := strconv.ParseInt(string(data), 10, 64); err == nil {
+	// its last digits and no longer match the request it answers. One past
+	// int64 is kept as its literal.
+	i, err := strconv.ParseInt(string(data), 10, 64)
+	if err == nil {
 		r.value = i
+		return nil
+	}
+	if errors.Is(err, strconv.ErrRange) {
+		r.value = json.Number(data)
 		return nil
 	}
 
 	// Any other JSON number, such as 1.5 or 1e3, goes through a float64
 	var f float64
 	if err := json.Unmarshal(data, &f); err == nil {
-		if f == float64(int64(f)) {
-			r.value = int64(f)
+		if i, ok := integralInt64(f); ok {
+			r.value = i
 		} else {
 			r.value = f
 		}
@@ -419,6 +431,15 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 	}
 
 	return fmt.Errorf("invalid request id: %s", string(data))
+}
+
+// integralInt64 returns f as an int64 when it is a whole number inside the
+// int64 range; Go leaves a conversion outside that range to the platform.
+func integralInt64(f float64) (int64, bool) {
+	if f != math.Trunc(f) || f < -(1<<63) || f >= 1<<63 {
+		return 0, false
+	}
+	return int64(f), true
 }
 
 // JSONRPCRequest represents a request that expects a response.

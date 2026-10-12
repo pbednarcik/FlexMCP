@@ -25,6 +25,7 @@ import (
 const (
 	idTwoTo53     = "9007199254740992"
 	idTwoTo53Plus = "9007199254740993"
+	idTwoTo63     = "9223372036854775808"
 )
 
 // A response carries its request's id exactly as sent (JSON-RPC 2.0, section
@@ -32,13 +33,19 @@ const (
 func TestHandleMessage_EchoesALargeIntegerIDExactly(t *testing.T) {
 	srv := NewMCPServer("test", "1.0.0")
 	for name, message := range map[string]string{
-		"result": `{"jsonrpc":"2.0","id":` + idTwoTo53Plus + `,"method":"ping"}`,
-		"error":  `{"jsonrpc":"1.0","id":` + idTwoTo53Plus + `,"method":"ping"}`,
+		"result":            `{"jsonrpc":"2.0","id":` + idTwoTo53Plus + `,"method":"ping"}`,
+		"error":             `{"jsonrpc":"1.0","id":` + idTwoTo53Plus + `,"method":"ping"}`,
+		"result past int64": `{"jsonrpc":"2.0","id":` + idTwoTo63 + `,"method":"ping"}`,
+		"error past int64":  `{"jsonrpc":"1.0","id":` + idTwoTo63 + `,"method":"ping"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			response, err := json.Marshal(srv.HandleMessage(t.Context(), json.RawMessage(message)))
 			require.NoError(t, err)
-			assert.Contains(t, string(response), `"id":`+idTwoTo53Plus)
+			sent := struct {
+				ID json.RawMessage `json:"id"`
+			}{}
+			require.NoError(t, json.Unmarshal([]byte(message), &sent))
+			assert.Contains(t, string(response), `"id":`+string(sent.ID)+`,`)
 		})
 	}
 }
@@ -187,4 +194,15 @@ func TestAnUnrepresentableIDIsRefused(t *testing.T) {
 			assert.Contains(t, string(body), `"code":-32600`)
 		})
 	}
+}
+
+// The stdio server tracks a request whose id is past int64 like any other, so
+// a cancel for it is honoured.
+func TestStdioCancelsAnIDPastInt64(t *testing.T) {
+	var requests cancelledRequests
+	id, ok := requestIDValue(json.RawMessage(idTwoTo63))
+	require.True(t, ok)
+	requests.start(id)
+	requests.cancel(id)
+	assert.True(t, requests.finish(id))
 }
