@@ -25,8 +25,8 @@ func (s *MCPServer) HandleMessage(
 		Method  mcp.MCPMethod `json:"method"`
 		RawID   json.RawMessage `json:"id,omitempty"`
 		ID      any             `json:"-"`
-		Result  any             `json:"result,omitempty"`
-		Error   any             `json:"error,omitempty"`
+		Result  json.RawMessage `json:"result,omitempty"`
+		Error   json.RawMessage `json:"error,omitempty"`
 	}
 
 	if err := json.Unmarshal(message, &baseMessage); err != nil {
@@ -45,8 +45,8 @@ func (s *MCPServer) HandleMessage(
 	}
 	// A response, success or error, to a request the server sent, such as a
 	// keep-alive ping: nothing waits for it, and a response is never answered,
-	// whatever its id.
-	if len(baseMessage.RawID) > 0 && (baseMessage.Result != nil || baseMessage.Error != nil) {
+	// whatever its id, and a null result or error still makes one.
+	if len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
 		return nil
 	}
 	var validID bool
@@ -75,6 +75,12 @@ func (s *MCPServer) HandleMessage(
 		}
 		s.handleNotification(ctx, notification, message)
 		return nil // Return nil for notifications
+	}
+
+	// An id with no method, result or error is neither a request nor a
+	// response.
+	if baseMessage.Method == "" {
+		return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "Invalid request: no method")
 	}
 
 	handleErr := s.hooks.onRequestInitialization(ctx, baseMessage.ID, message)

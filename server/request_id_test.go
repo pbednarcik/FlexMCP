@@ -213,7 +213,7 @@ func TestStdioCancelsAnIDPastInt64(t *testing.T) {
 // invalid one is still no request to refuse.
 func TestAResponseIsNeverAnswered(t *testing.T) {
 	for _, id := range []string{"1", "null", "1.5", "true", "{}"} {
-		for _, body := range []string{`"result":{}`, `"error":{"code":-32600,"message":"Invalid request id"}`} {
+		for _, body := range []string{`"result":{}`, `"error":{"code":-32600,"message":"Invalid request id"}`, `"result":null`, `"error":null`} {
 			message := `{"jsonrpc":"2.0","id":` + id + `,` + body + `}`
 			t.Run("handle message "+message, func(t *testing.T) {
 				assert.Nil(t, NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
@@ -322,6 +322,26 @@ func TestOnlyTextThatIsNotJSONIsAParseError(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "%s", body)
 			assert.Contains(t, string(body), `"id":`+want.id)
 			assert.Contains(t, string(body), `"code":`+code)
+		})
+	}
+}
+
+// A message with an id and no method is no request, and with no result or
+// error no response either: an invalid request, answered with its id (JSON-RPC
+// 2.0, section 5.1), not a method that was not found.
+func TestAMessageWithoutAMethodIsAnInvalidRequest(t *testing.T) {
+	for _, message := range []string{`{"jsonrpc":"2.0","id":3}`, `{"jsonrpc":"2.0","id":3,"method":null}`} {
+		t.Run("handle message "+message, func(t *testing.T) {
+			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"Invalid request: no method"}}`, string(response))
+		})
+		t.Run("stdio "+message, func(t *testing.T) {
+			stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+			stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+			var output bytes.Buffer
+			require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+			assert.JSONEq(t, `{"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"Invalid request: no method"}}`, output.String())
 		})
 	}
 }
