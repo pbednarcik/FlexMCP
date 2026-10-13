@@ -16,6 +16,16 @@ import (
 func (s *MCPServer) HandleMessage(
 	ctx context.Context,
 	message json.RawMessage,
+) mcp.JSONRPCMessage {
+	return s.handleMessageRead(ctx, message, readByTransport(ctx, message))
+}
+
+// handleMessageRead handles message; envelope is the transport's read of it,
+// or nil when there is none.
+func (s *MCPServer) handleMessageRead(
+	ctx context.Context,
+	message json.RawMessage,
+	envelope *requestEnvelope,
 ) (resp mcp.JSONRPCMessage) {
 	// Add server to context
 	ctx = context.WithValue(ctx, serverKey{}, s)
@@ -26,7 +36,6 @@ func (s *MCPServer) HandleMessage(
 	// members alone are read and those checks read the body on their own, as
 	// they always did, so a malformed request gets the same answer.
 	// A transport that read the message already hands its read over.
-	envelope := readByTransport(ctx, message)
 	readOnce := envelope != nil
 	if envelope == nil {
 		envelope = new(requestEnvelope)

@@ -123,6 +123,7 @@ type toolCallWork struct {
 	ctx     context.Context
 	id      any // JSON-RPC id, so a recovered panic stays correlatable
 	message json.RawMessage
+	read    *requestEnvelope // the message read for the core, or nil
 	writer  io.Writer
 }
 
@@ -327,7 +328,7 @@ func (s *StdioServer) toolCallWorker(ctx context.Context) {
 						resp = createErrorResponse(work.id, mcp.INTERNAL_ERROR, fmt.Sprintf("internal panic: %v", r))
 					}
 				}()
-				return s.server.HandleMessage(work.ctx, work.message)
+				return s.server.handleMessageRead(work.ctx, work.message, work.read)
 			}()
 			s.answer(work.id, response, work.writer)
 		case <-ctx.Done():
@@ -420,38 +421,28 @@ func (s *StdioServer) processMessage(
 	}
 
 	// Tool calls go to the worker pool, so a slow one never blocks the read loop.
-	var baseMessage struct {
-		Method string          `json:"method"`
-		RawID  json.RawMessage `json:"id,omitempty"`
-		ID     any             `json:"-"`
-		Result json.RawMessage `json:"result,omitempty"`
-		Error  json.RawMessage `json:"error,omitempty"`
-		Params struct {
-			RequestID json.RawMessage `json:"requestId"`
-		} `json:"params"`
-	}
-	parsed := json.Unmarshal(rawMessage, &baseMessage) == nil
+	baseMessage, read, parsed := readStdioMessage(rawMessage)
 	// A response is never answered, whatever its id, and the stdio server sends
 	// no request for one to answer: it is dropped before any id bookkeeping. A
 	// message with a method member is a request, whatever it carries besides.
 	if parsed && !jsonrpc.MethodOf(baseMessage.Method, rawMessage).Present && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
 		return nil
 	}
-	var validID bool
-	baseMessage.ID, validID = requestIDValue(baseMessage.RawID)
+	id, validID := requestIDValue(baseMessage.RawID)
 	if parsed && !validID {
 		return s.writeResponse(createErrorResponse(nil, mcp.INVALID_REQUEST, "Invalid request id"), writer)
 	}
-	if parsed && baseMessage.ID != nil {
-		s.cancelled.start(baseMessage.ID)
+	if parsed && id != nil {
+		s.cancelled.start(id)
 	}
 	if parsed && baseMessage.Method == string(mcp.MethodToolsCall) {
 		// Queue tool calls for processing by workers
 		select {
 		case s.toolCallQueue <- &toolCallWork{
 			ctx:     ctx,
-			id:      baseMessage.ID,
+			id:      id,
 			message: rawMessage,
+			read:    read,
 			writer:  writer,
 		}:
 			return nil
@@ -464,8 +455,8 @@ func (s *StdioServer) processMessage(
 			// The pool and the queue bound the tool calls in flight. A call
 			// without an id is a notification, dropped without a reply.
 			s.errLogger.Printf("Tool call queue full, refusing the call")
-			if baseMessage.ID != nil {
-				s.answer(baseMessage.ID, createErrorResponse(baseMessage.ID, mcp.INTERNAL_ERROR,
+			if id != nil {
+				s.answer(id, createErrorResponse(id, mcp.INTERNAL_ERROR,
 					"server busy: the tool call queue is full, retry later"), writer)
 			}
 			return nil
@@ -474,9 +465,9 @@ func (s *StdioServer) processMessage(
 
 	// Serve requests off the read loop: a handler that blocks, such as
 	// subscriptions/listen, must not stall it. writeMu serialises the writes.
-	if parsed && baseMessage.ID != nil {
+	if parsed && id != nil {
 		s.requestWg.Go(func() {
-			s.handleRequest(ctx, baseMessage.ID, rawMessage, writer)
+			s.handleRequest(ctx, id, rawMessage, read, writer)
 		})
 		return nil
 	}
@@ -484,12 +475,12 @@ func (s *StdioServer) processMessage(
 	// A cancellation is noted before the core acts on it, so the cancelled
 	// request's response is dropped whenever its handler returns.
 	if parsed && baseMessage.Method == string(mcp.MethodNotificationCancelled) {
-		id, _ := requestIDValue(baseMessage.Params.RequestID)
-		s.cancelled.cancel(id)
+		cancelled, _ := requestIDValue(baseMessage.Params.RequestID)
+		s.cancelled.cancel(cancelled)
 	}
 
 	// Notifications carry no response and must not queue behind a request.
-	response := s.handleMessage(ctx, baseMessage.ID, rawMessage)
+	response := s.handleMessage(ctx, id, rawMessage, read)
 
 	// Only write response if there is one (not for notifications)
 	if response != nil {
@@ -499,6 +490,41 @@ func (s *StdioServer) processMessage(
 	}
 
 	return nil
+}
+
+// stdioMembers is what the read loop needs of a message before it hands it
+// over.
+type stdioMembers struct {
+	Method string          `json:"method"`
+	RawID  json.RawMessage `json:"id,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  json.RawMessage `json:"error,omitempty"`
+	Params struct {
+		RequestID json.RawMessage `json:"requestId"`
+	} `json:"params"`
+}
+
+// readStdioMessage reads a message once, for the read loop and the core; ok
+// is false when not even the members the loop needs can be read. read is the
+// read the core takes over; when the message does not read whole (params or
+// _meta not an object, a member named twice), it is nil, and the members are
+// decoded on their own, as they always were.
+func readStdioMessage(message json.RawMessage) (members stdioMembers, read *requestEnvelope, ok bool) {
+	read = new(requestEnvelope)
+	if readEnvelope(message, read) != nil {
+		return readStdioMembers(message)
+	}
+	members.Method = string(read.Method)
+	members.RawID, members.Result, members.Error = read.RawID, read.Result, read.Error
+	members.Params.RequestID = read.Params.RequestID
+	return members, read, true
+}
+
+// readStdioMembers decodes the members on their own.
+func readStdioMembers(message json.RawMessage) (stdioMembers, *requestEnvelope, bool) {
+	var members stdioMembers
+	ok := json.Unmarshal(message, &members) == nil
+	return members, nil, ok
 }
 
 // stdioMessage is the JSON-RPC message a line holds, or false when the line
@@ -516,7 +542,7 @@ func stdioMessage(line string) (json.RawMessage, bool) {
 // handleMessage runs HandleMessage, recovering a panicking handler so that
 // it can't end the process. A request gets an INTERNAL_ERROR response
 // carrying its id; a notification (nil id) gets no response at all.
-func (s *StdioServer) handleMessage(ctx context.Context, id any, rawMessage json.RawMessage) (response mcp.JSONRPCMessage) {
+func (s *StdioServer) handleMessage(ctx context.Context, id any, rawMessage json.RawMessage, read *requestEnvelope) (response mcp.JSONRPCMessage) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.errLogger.Printf("panic recovered in stdio message handler: %v", r)
@@ -525,13 +551,13 @@ func (s *StdioServer) handleMessage(ctx context.Context, id any, rawMessage json
 			}
 		}
 	}()
-	return s.server.HandleMessage(ctx, rawMessage)
+	return s.server.handleMessageRead(ctx, rawMessage, read)
 }
 
 // handleRequest serves one JSON-RPC request and writes its response. id is the
 // request's JSON-RPC id, so a recovered panic stays correlatable by the client.
-func (s *StdioServer) handleRequest(ctx context.Context, id any, rawMessage json.RawMessage, writer io.Writer) {
-	s.answer(id, s.handleMessage(ctx, id, rawMessage), writer)
+func (s *StdioServer) handleRequest(ctx context.Context, id any, rawMessage json.RawMessage, read *requestEnvelope, writer io.Writer) {
+	s.answer(id, s.handleMessage(ctx, id, rawMessage, read), writer)
 }
 
 // writeResponse marshals and writes a JSON-RPC response message followed by a newline.

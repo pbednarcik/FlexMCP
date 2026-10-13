@@ -37,11 +37,13 @@ type requestEnvelope struct {
 }
 
 // paramsPeek is what the checks before dispatch read from params: the
-// protocol keys of _meta, and the name or uri the Mcp-Name header carries.
+// protocol keys of _meta, the name or uri the Mcp-Name header carries, and
+// the request a cancellation names, which the stdio transport acts on.
 type paramsPeek struct {
-	Meta requestMeta `json:"_meta"`
-	Name string      `json:"name"`
-	URI  string      `json:"uri"`
+	Meta      requestMeta     `json:"_meta"`
+	Name      string          `json:"name"`
+	URI       string          `json:"uri"`
+	RequestID json.RawMessage `json:"requestId"`
 }
 
 // headerName reports what [mcp.ExtractHeaderName] finds in params for
