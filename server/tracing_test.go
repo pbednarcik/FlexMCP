@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -93,4 +94,43 @@ func TestWithTracer_RegistersToolMiddleware(t *testing.T) {
 
 	assert.Contains(t, tr.spans, "mcp.tools/call")
 	assert.Contains(t, tr.spans, "tool.echo")
+}
+
+// A server with no tracer starts no span, so dispatching a message costs no
+// allocation for tracing; WithTracer(nil) installs the no-op tracer, the same.
+func TestMessageSpanWithoutTracerAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's instrumentation allocates")
+	}
+	headers := http.Header{}
+	headers.Set(HeaderKeyProtocolVersion, mcp.LATEST_PROTOCOL_VERSION)
+	for name, s := range map[string]*MCPServer{
+		"no tracer":  NewMCPServer("trace-srv", "1.0"),
+		"nil tracer": NewMCPServer("trace-srv", "1.0", WithTracer(nil)),
+	} {
+		ctx := t.Context()
+		allocs := testing.AllocsPerRun(1000, func() {
+			_, end := s.startMessageSpan(ctx, headers, "tools/call")
+			end(nil)
+		})
+		assert.Zero(t, allocs, name)
+	}
+}
+
+type propagatedKey struct{}
+
+type stubPropagator struct{}
+
+func (stubPropagator) Inject(context.Context, http.Header) {}
+func (stubPropagator) Extract(ctx context.Context, _ http.Header) context.Context {
+	return context.WithValue(ctx, propagatedKey{}, "remote")
+}
+
+// The trace context of the request reaches the handlers even when the server
+// records no spans of its own.
+func TestMessageSpanWithoutTracerStillExtracts(t *testing.T) {
+	s := NewMCPServer("trace-srv", "1.0", WithPropagator(stubPropagator{}))
+	ctx, end := s.startMessageSpan(t.Context(), http.Header{}, "tools/call")
+	end(nil)
+	assert.Equal(t, "remote", ctx.Value(propagatedKey{}))
 }

@@ -90,7 +90,8 @@ func TestStreamableHTTPReadsOnceWithTheSameAnswers(t *testing.T) {
 
 // A modern tools/call over HTTP is read once: the transport's read serves the
 // core, which no longer reads it again. 97 allocations in the server when
-// the transport and the core each read it, 93 read once.
+// the transport and the core each read it, 93 read once, 82 with no span
+// started for a server without a tracer.
 func TestStreamableHTTPModernToolCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -105,5 +106,5 @@ func TestStreamableHTTPModernToolCallAllocations(t *testing.T) {
 	}
 	harness := testing.AllocsPerRun(1000, func() { _, _ = request(), httptest.NewRecorder() })
 	total := testing.AllocsPerRun(1000, func() { h.ServeHTTP(httptest.NewRecorder(), request()) })
-	assert.LessOrEqual(t, total-harness, 93.0, "allocations in the server per modern tools/call over HTTP")
+	assert.LessOrEqual(t, total-harness, 82.0, "allocations in the server per modern tools/call over HTTP")
 }

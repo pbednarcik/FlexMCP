@@ -65,7 +65,8 @@ func TestHandleMessageReadsOnceWithTheSameAnswers(t *testing.T) {
 // A modern tools/call reads its body once before dispatch: the protocol
 // info, the standard headers and the header bindings no longer decode it again
 // each: 66 allocations when each read it on its own, 57 read once, 56 with
-// the server identity boxed once.
+// the server identity boxed once, 52 with no span started for a server
+// without a tracer.
 func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -73,7 +74,7 @@ func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	srv, ctx := readOnceServer(t)
 	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},` + readOnceMeta + `}}`)
 	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
-	assert.LessOrEqual(t, allocs, 56.0, "allocations per modern tools/call through HandleMessage")
+	assert.LessOrEqual(t, allocs, 52.0, "allocations per modern tools/call through HandleMessage")
 }
 
 // Read once, a request's _meta gives the protocol info that reading each key

@@ -72,17 +72,31 @@ func (s *MCPServer) extractMeta(ctx context.Context, meta *mcp.Meta) context.Con
 	return p.ExtractMeta(ctx, meta)
 }
 
+// noSpan ends a message span that was never started.
+func noSpan(mcp.JSONRPCMessage) {}
+
+// startMessageSpan extracts the request's trace context and, when a tracer
+// records spans, starts the message's span. With no tracer it returns noSpan
+// and allocates nothing.
 func (s *MCPServer) startMessageSpan(
 	ctx context.Context,
 	headers http.Header,
 	method string,
 ) (context.Context, func(mcp.JSONRPCMessage)) {
-	propagator := s.propagator
-	if propagator == nil {
-		propagator = tracing.NoopPropagator()
+	if s.propagator != nil {
+		ctx = s.propagator.Extract(ctx, headers)
 	}
-	ctx = propagator.Extract(ctx, headers)
+	if s.tracer == nil || s.tracer == tracing.NoopTracer() {
+		return ctx, noSpan
+	}
+	return s.startTracedMessageSpan(ctx, headers, method)
+}
 
+func (s *MCPServer) startTracedMessageSpan(
+	ctx context.Context,
+	headers http.Header,
+	method string,
+) (context.Context, func(mcp.JSONRPCMessage)) {
 	attrs := []tracing.Attribute{tracing.String(attrMethod, method)}
 	if session := ClientSessionFromContext(ctx); session != nil {
 		if id := session.SessionID(); id != "" {
@@ -93,11 +107,7 @@ func (s *MCPServer) startMessageSpan(
 		attrs = append(attrs, tracing.String(attrProtocolVersion, v))
 	}
 
-	tracer := s.tracer
-	if tracer == nil {
-		tracer = tracing.NoopTracer()
-	}
-	ctx, span := tracer.Start(ctx, "mcp."+method, tracing.SpanKindServer, attrs...)
+	ctx, span := s.tracer.Start(ctx, "mcp."+method, tracing.SpanKindServer, attrs...)
 
 	return ctx, func(resp mcp.JSONRPCMessage) {
 		if e, ok := resp.(mcp.JSONRPCError); ok {
