@@ -85,7 +85,7 @@ func TestStreamableHTTPForwarderEndsWithItsRequest(t *testing.T) {
 func TestStreamableHTTPSessionNotificationAfterForwardingStops(t *testing.T) {
 	s := newStreamableHttpSession()
 	starts := 0
-	s.forwardWith(func(<-chan mcp.JSONRPCNotification) { starts++ })
+	s.forwardWith(forwarderFunc(func(<-chan mcp.JSONRPCNotification) { starts++ }))
 	assert.False(t, s.stopForwarding(), "nothing was sent, so no forwarder ran")
 
 	s.NotificationChannel() <- mcp.JSONRPCNotification{Method: "late"}
@@ -104,7 +104,7 @@ func TestStreamableHTTPSessionNotificationAfterForwardingStops(t *testing.T) {
 func TestStreamableHTTPSessionStartsItsForwarderOnce(t *testing.T) {
 	s := newStreamableHttpSession()
 	var forwarded []<-chan mcp.JSONRPCNotification
-	s.forwardWith(func(ch <-chan mcp.JSONRPCNotification) { forwarded = append(forwarded, ch) })
+	s.forwardWith(forwarderFunc(func(ch <-chan mcp.JSONRPCNotification) { forwarded = append(forwarded, ch) }))
 	s.NotificationChannel() <- mcp.JSONRPCNotification{Method: "first"}
 	s.NotificationChannel() <- mcp.JSONRPCNotification{Method: "second"}
 	require.Len(t, forwarded, 1, "the forwarder starts once")
@@ -114,6 +114,37 @@ func TestStreamableHTTPSessionStartsItsForwarderOnce(t *testing.T) {
 	early := newStreamableHttpSession()
 	early.NotificationChannel() <- mcp.JSONRPCNotification{Method: "early"}
 	starts := 0
-	early.forwardWith(func(<-chan mcp.JSONRPCNotification) { starts++ })
+	early.forwardWith(forwarderFunc(func(<-chan mcp.JSONRPCNotification) { starts++ }))
 	assert.Equal(t, 1, starts, "a notification queued before forwarding was armed starts the forwarder when armed")
+}
+
+// forwarderFunc forwards by calling itself.
+type forwarderFunc func(<-chan mcp.JSONRPCNotification)
+
+func (f forwarderFunc) forward(notifications <-chan mcp.JSONRPCNotification) { f(notifications) }
+
+type parentKey struct{}
+
+// A request's context holds the transport's values in one layer: the session,
+// the versions and the header are its own, every other value and the
+// cancellation its parent's, and a context made from it is canceled with the
+// parent.
+func TestPostContextHoldsTheTransportValues(t *testing.T) {
+	parent, cancel := context.WithCancel(context.WithValue(t.Context(), parentKey{}, "parent"))
+	session := newStreamableHttpSession()
+	header := http.Header{"X-Test": {"1"}}
+	versions := []string{mcp.ProtocolVersion20260728}
+	ctx := &postContext{Context: parent, session: session, versions: any(versions), header: header}
+
+	assert.Same(t, session, ClientSessionFromContext(ctx))
+	assert.Equal(t, versions, SupportedProtocolVersionsFromContext(ctx))
+	assert.Equal(t, header, ctx.Value(requestHeader))
+	assert.Equal(t, "parent", ctx.Value(parentKey{}))
+	assert.Nil(t, ctx.Value(struct{ unknown int }{}))
+
+	child, stop := context.WithCancel(ctx)
+	defer stop()
+	cancel()
+	<-child.Done()
+	assert.ErrorIs(t, ctx.Err(), context.Canceled)
 }

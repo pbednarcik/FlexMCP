@@ -207,6 +207,9 @@ type StreamableHTTPServer struct {
 	// protocolVersions restricts the protocol versions advertised through
 	// server/discover. Empty means every version this SDK implements.
 	protocolVersions []string
+	// supportedVersions is supportedProtocolVersions, boxed once for the
+	// context of every request.
+	supportedVersions any
 
 	// shutdown is cancelled by Shutdown, which is how an open
 	// subscriptions/listen stream learns to end: net/http's Shutdown waits
@@ -230,6 +233,7 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.supportedVersions = s.supportedProtocolVersions()
 
 	return s
 }
@@ -386,26 +390,21 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// Body has already been buffered by the caller (ServeHTTP or Handle).
 	rawData := r.Body
-	// The envelope: a client's response carries an id and no method.
-	var jsonMessage struct {
-		ID     json.RawMessage `json:"id"`
-		Result json.RawMessage `json:"result,omitempty"`
-		Error  json.RawMessage `json:"error,omitempty"`
-		Method mcp.MCPMethod   `json:"method"`
-	}
+	x := new(postExchange)
+	jsonMessage := &x.message
 	// The message is read once, here, for the transport's checks and the
 	// core's, which takes the read from the request's session. Should it not
 	// read (params or _meta not an object, a member of the wrong type), the
 	// envelope alone is read and the era and the core read the body on their
 	// own, as they always did.
-	envelope := new(requestEnvelope)
+	envelope := &x.envelope
 	readErr := readEnvelope(rawData, envelope)
 	if readErr == nil {
 		jsonMessage.ID, jsonMessage.Result, jsonMessage.Error, jsonMessage.Method =
 			envelope.RawID, envelope.Result, envelope.Error, envelope.Method
 	} else {
 		envelope = nil
-		readErr = json.Unmarshal(rawData, &jsonMessage)
+		readErr = json.Unmarshal(rawData, jsonMessage)
 	}
 	if readErr != nil {
 		if json.Valid(rawData) {
@@ -502,7 +501,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		// notifications/tools/list_changed.
 		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil
 	}
-	session := newStreamableHttpSession()
+	session := &x.session
 	// The core takes the transport's read only of a body the transport read
 	// itself: a body handed to Handle is its caller's, who may change it
 	// while the request is handled.
@@ -521,23 +520,11 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	}
 
 	// Set the client context before handling the message
-	ctx := s.server.WithContext(r.ctx(), session)
-	ctx = WithSupportedProtocolVersions(ctx, s.supportedProtocolVersions())
+	x.base = postContext{Context: r.ctx(), session: session, versions: s.supportedVersions, header: r.header()}
+	var ctx context.Context = &x.base
 	if s.contextFunc != nil {
 		ctx = s.contextFunc(ctx, r.asHTTPRequest())
 	}
-
-	// handle potential notifications
-	mu := sync.Mutex{}
-	upgradedHeader := false
-	// upgrade commits the response as SSE once; every later message rides it.
-	upgrade := func() {
-		if !upgradedHeader {
-			startSSEResponse(w)
-			upgradedHeader = true
-		}
-	}
-	ctx = context.WithValue(ctx, requestHeader, r.header())
 
 	// A listen stream ends when Shutdown says so; see Shutdown.
 	if listening && s.shutdown != nil {
@@ -555,52 +542,9 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// The forwarder starts with the first notification the request sends:
 	// most requests send none, and a goroutine per request costs a thread
-	// wakeup each. done stops it; forwarderExited lets
-	// the response path wait until it can no longer be holding an
-	// undelivered notification.
-	var done, forwarderExited chan struct{}
-	session.forwardWith(func(notifications <-chan mcp.JSONRPCNotification) {
-		done = make(chan struct{})
-		forwarderExited = make(chan struct{})
-		go func() {
-			defer close(forwarderExited)
-			defer func() {
-				if r := recover(); r != nil {
-					s.logger.Error("panic in notification forwarder", "panic", r)
-				}
-			}()
-			for {
-				select {
-				case nt := <-notifications:
-					if listening {
-						nt = tagSubscription(nt, requestID)
-					}
-					func() {
-						mu.Lock()
-						defer mu.Unlock()
-						if !canStream {
-							// Without streaming we can't deliver notifications mid-flight;
-							// they will be dropped on the floor here. The final response
-							// path remains the buffered JSON reply below.
-							return
-						}
-						defer w.Flush()
-
-						upgrade()
-						err := writeSSEEvent(w, nt)
-						if err != nil {
-							s.logger.Error("Failed to write SSE event", "err", err)
-							return
-						}
-					}()
-				case <-done:
-					return
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	})
+	// wakeup each.
+	x.server, x.w, x.ctx, x.canStream, x.listening, x.requestID = s, w, ctx, canStream, listening, requestID
+	session.forwardWith(x)
 
 	response := s.server.HandleMessage(ctx, rawData)
 	if listening {
@@ -613,18 +557,18 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// notification the handler sent must reach the client, in order, ahead of
 	// the response. From here on this goroutine is the only writer.
 	if session.stopForwarding() {
-		close(done)
-		<-forwarderExited
+		close(x.done)
+		<-x.forwarderExited
 	}
 
 	if response == nil {
-		if !upgradedHeader {
+		if !x.upgraded {
 			w.WriteHeader(http.StatusAccepted)
 		}
 		return
 	}
 
-	mu.Lock()
+	x.mu.Lock()
 
 	notifications := session.pending()
 drainLoop:
@@ -637,7 +581,7 @@ drainLoop:
 			if listening {
 				nt = tagSubscription(nt, requestID)
 			}
-			upgrade()
+			x.upgrade()
 			if err := writeSSEEvent(w, nt); err != nil {
 				s.logger.Error("Failed to write SSE event during drain", "err", err)
 			}
@@ -647,7 +591,7 @@ drainLoop:
 		}
 	}
 
-	mu.Unlock()
+	x.mu.Unlock()
 	if ctx.Err() != nil {
 		// The connection is gone; there is nobody to answer.
 		return
@@ -656,8 +600,8 @@ drainLoop:
 	// Also check upgradedHeader: a notification during HandleMessage processing
 	// may have already written SSE headers on this response, so we must continue
 	// in SSE mode to avoid writing JSON on top of SSE data.
-	if (session.upgradeToSSE.Load() && canStream) || upgradedHeader {
-		upgrade()
+	if (session.upgradeToSSE.Load() && canStream) || x.upgraded {
+		x.upgrade()
 		if err := writeSSEEvent(w, response); err != nil {
 			s.logger.Error("Failed to write final SSE response event", "err", err)
 		}
@@ -679,6 +623,112 @@ drainLoop:
 			s.logger.Error("Failed to write response", "err", err)
 		}
 	}
+}
+
+// postExchange is what handling one POST needs, made in one allocation: the
+// read of its body, its session, its context and the response its
+// notifications ride on.
+type postExchange struct {
+	// The envelope: a client's response carries an id and no method.
+	message struct {
+		ID     json.RawMessage `json:"id"`
+		Result json.RawMessage `json:"result,omitempty"`
+		Error  json.RawMessage `json:"error,omitempty"`
+		Method mcp.MCPMethod   `json:"method"`
+	}
+	envelope requestEnvelope
+	session  streamableHttpSession
+	base     postContext     // the transport's values
+	ctx      context.Context // base, with what the context func added
+
+	server    *StreamableHTTPServer
+	w         HTTPResponseWriter
+	canStream bool
+	listening bool
+	requestID any
+
+	mu       sync.Mutex // held while a message is written to the response
+	upgraded bool       // the response is committed as SSE
+
+	// done stops the forwarder; forwarderExited lets the response path wait
+	// until it can no longer be holding an undelivered notification.
+	done, forwarderExited chan struct{}
+}
+
+// upgrade commits the response as SSE once; every later message rides it.
+func (x *postExchange) upgrade() {
+	if !x.upgraded {
+		startSSEResponse(x.w)
+		x.upgraded = true
+	}
+}
+
+// forward starts the goroutine that writes the request's notifications to the
+// response while the request is handled.
+func (x *postExchange) forward(notifications <-chan mcp.JSONRPCNotification) {
+	x.done = make(chan struct{})
+	x.forwarderExited = make(chan struct{})
+	go func() {
+		defer close(x.forwarderExited)
+		defer func() {
+			if r := recover(); r != nil {
+				x.server.logger.Error("panic in notification forwarder", "panic", r)
+			}
+		}()
+		for {
+			select {
+			case nt := <-notifications:
+				if x.listening {
+					nt = tagSubscription(nt, x.requestID)
+				}
+				x.write(nt)
+			case <-x.done:
+				return
+			case <-x.ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// write writes one notification to the response, as SSE.
+func (x *postExchange) write(nt mcp.JSONRPCNotification) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if !x.canStream {
+		// Without streaming we can't deliver notifications mid-flight;
+		// they will be dropped on the floor here. The final response
+		// path remains the buffered JSON reply below.
+		return
+	}
+	defer x.w.Flush()
+
+	x.upgrade()
+	if err := writeSSEEvent(x.w, nt); err != nil {
+		x.server.logger.Error("Failed to write SSE event", "err", err)
+	}
+}
+
+// postContext holds the values the transport gives a request - its session,
+// the protocol versions it serves and its HTTP header - as one context
+// layer. Every other value, and the cancellation, are its parent's.
+type postContext struct {
+	context.Context
+	session  ClientSession
+	versions any
+	header   http.Header
+}
+
+func (c *postContext) Value(key any) any {
+	switch key {
+	case clientSessionKey{}:
+		return c.session
+	case supportedProtocolVersionsKey{}:
+		return c.versions
+	case requestHeader:
+		return c.header
+	}
+	return c.Context.Value(key)
 }
 
 // handleGet answers 405 in both eras: protocol version 2026-07-28 removed the
@@ -759,9 +809,9 @@ type streamableHttpSession struct {
 	// notifyMu guards the channel and the forwarder's start; it is never held
 	// across a send or a write.
 	notifyMu            sync.Mutex
-	notificationChannel chan mcp.JSONRPCNotification         // server -> client notifications, made on first use
-	startForwarder      func(<-chan mcp.JSONRPCNotification) // armed by handlePost while it handles the request
-	forwarding          bool                                 // the forwarder was started
+	notificationChannel chan mcp.JSONRPCNotification // server -> client notifications, made on first use
+	startForwarder      notificationForwarder        // armed by handlePost while it handles the request
+	forwarding          bool                         // the forwarder was started
 	upgradeToSSE        atomic.Bool
 
 	// Whether the session serves a subscriptions/listen stream, and the
@@ -807,9 +857,15 @@ func (s *streamableHttpSession) NotificationChannel() chan<- mcp.JSONRPCNotifica
 	return s.notificationChannel
 }
 
+// notificationForwarder forwards a request's notifications from the channel
+// they are queued on.
+type notificationForwarder interface {
+	forward(<-chan mcp.JSONRPCNotification)
+}
+
 // forwardWith arms start to run once, with the channel, when the first
 // notification is queued; at once when one is queued already.
-func (s *streamableHttpSession) forwardWith(start func(<-chan mcp.JSONRPCNotification)) {
+func (s *streamableHttpSession) forwardWith(start notificationForwarder) {
 	s.notifyMu.Lock()
 	defer s.notifyMu.Unlock()
 	s.startForwarder = start
@@ -822,7 +878,7 @@ func (s *streamableHttpSession) forwardWith(start func(<-chan mcp.JSONRPCNotific
 func (s *streamableHttpSession) startForwarding() {
 	if s.startForwarder != nil && !s.forwarding {
 		s.forwarding = true
-		s.startForwarder(s.notificationChannel)
+		s.startForwarder.forward(s.notificationChannel)
 	}
 }
 
