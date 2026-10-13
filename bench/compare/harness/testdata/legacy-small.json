@@ -1,0 +1,1 @@
+{"id":1,"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"region":"us-east-1"},"name":"echo"}}
