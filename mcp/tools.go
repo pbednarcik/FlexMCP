@@ -591,7 +591,10 @@ func (r CallToolResult) MarshalJSON() ([]byte, error) {
 
 // MarshalJSONTo writes the result into enc as MarshalJSON writes it. When
 // enc encodes as json.Marshal does, as the server's encoders do, the result
-// is written straight in rather than encoded on its own and copied in.
+// is written straight in rather than encoded on its own and copied in; a
+// member that cannot be encoded then fails the write with the encoder left
+// within the object, as encoding/json/v2's own types leave it. json.Marshal
+// and json.Encoder write nothing of a value that failed.
 func (r *CallToolResult) MarshalJSONTo(enc *jsontext.Encoder) error {
 	if r.Task != nil || !encodesAsMarshal(enc) {
 		encoded, err := r.MarshalJSON()
@@ -600,47 +603,54 @@ func (r *CallToolResult) MarshalJSONTo(enc *jsontext.Encoder) error {
 		}
 		return enc.WriteValue(encoded)
 	}
+	// The members are read before the content is written, as MarshalJSON's
+	// copy of the result is taken before it writes: content that changes the
+	// result while it is encoded does not change what is written.
+	meta, content, inputs := r.Meta, &r.Content, r.InputRequests
+	if r.Content == nil {
+		content = &noContent
+	}
+	isError, state, resultType := r.IsError, r.RequestState, r.ResultType
+	var structured any
+	if len(r.RawStructuredContent) > 0 {
+		structured = r.RawStructuredContent
+	} else {
+		structured = r.StructuredContent
+	}
+
 	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
 		return err
 	}
-	if r.Meta != nil {
-		if err := writeMember(enc, "_meta", r.Meta); err != nil {
+	if meta != nil {
+		if err := writeMember(enc, "_meta", meta); err != nil {
 			return err
 		}
-	}
-	content := &r.Content
-	if r.Content == nil {
-		content = &noContent
 	}
 	if err := writeMember(enc, "content", content); err != nil {
 		return err
 	}
-	if len(r.InputRequests) > 0 {
-		if err := writeMember(enc, "inputRequests", &r.InputRequests); err != nil {
+	if len(inputs) > 0 {
+		if err := writeMember(enc, "inputRequests", inputs); err != nil {
 			return err
 		}
 	}
-	if r.IsError {
-		if err := writeMember(enc, "isError", &r.IsError); err != nil {
+	if isError {
+		if err := writeTokens(enc, "isError", jsontext.True); err != nil {
 			return err
 		}
 	}
-	if r.RequestState != "" {
-		if err := writeMember(enc, "requestState", &r.RequestState); err != nil {
+	if state != "" {
+		if err := writeTokens(enc, "requestState", jsontext.String(state)); err != nil {
 			return err
 		}
 	}
-	if r.ResultType != "" {
-		if err := writeMember(enc, "resultType", &r.ResultType); err != nil {
+	if resultType != "" {
+		if err := writeTokens(enc, "resultType", jsontext.String(string(resultType))); err != nil {
 			return err
 		}
 	}
-	if len(r.RawStructuredContent) > 0 {
-		if err := writeMember(enc, "structuredContent", &r.RawStructuredContent); err != nil {
-			return err
-		}
-	} else if r.StructuredContent != nil {
-		if err := writeMember(enc, "structuredContent", r.StructuredContent); err != nil {
+	if structured != nil {
+		if err := writeMember(enc, "structuredContent", structured); err != nil {
 			return err
 		}
 	}
@@ -649,6 +659,14 @@ func (r *CallToolResult) MarshalJSONTo(enc *jsontext.Encoder) error {
 
 // noContent is the content of a result that has none: an empty array.
 var noContent = []Content{}
+
+// writeTokens writes a member named name whose value is the token value.
+func writeTokens(enc *jsontext.Encoder, name string, value jsontext.Token) error {
+	if err := enc.WriteToken(jsontext.String(name)); err != nil {
+		return err
+	}
+	return enc.WriteToken(value)
+}
 
 // writeMember writes a member named name whose value is v, by enc's options.
 func writeMember(enc *jsontext.Encoder, name string, v any) error {

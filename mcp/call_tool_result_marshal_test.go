@@ -91,6 +91,7 @@ func TestCallToolResultIsWrittenAsMarshalJSONWroteIt(t *testing.T) {
 			ResultType:    ResultTypeInputRequired,
 		}},
 		{"task", &CallToolResult{Task: &ExtensionTask{TaskId: "t", Status: TaskStatusWorking, TTLMs: &ttl}}},
+		{"odd strings", &CallToolResult{RequestState: "<\xff> ", ResultType: "a&b"}},
 		{"unencodable structured", &CallToolResult{StructuredContent: func() {}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) { assertWrittenAsMarshalJSONWrote(t, tc.result) })
@@ -122,4 +123,30 @@ func TestCallToolResultMarshalAllocations(t *testing.T) {
 	response := JSONRPCResponse{JSONRPC: JSONRPC_VERSION, ID: NewRequestId(int64(1)), Result: NewToolResultText("ok")}
 	allocs := testing.AllocsPerRun(1000, func() { _ = enc.Encode(response) })
 	assert.LessOrEqual(t, allocs, 5.0, "allocations per tools/call response written")
+}
+
+// flaggingContent sets its result's error flag while it is encoded.
+type flaggingContent struct {
+	TextContent
+	result *CallToolResult
+}
+
+func (c flaggingContent) MarshalJSON() ([]byte, error) {
+	c.result.IsError = true
+	return json.Marshal(c.TextContent)
+}
+
+// A result is written as it was when its encoding began, as MarshalJSON's
+// copy of it was: content that changes the result while it is encoded does
+// not change what is written.
+func TestCallToolResultIsWrittenAsItWasWhenEncodingBegan(t *testing.T) {
+	result := &CallToolResult{}
+	result.Content = []Content{flaggingContent{NewTextContent("x"), result}}
+	want, err := json.Marshal(resultByMarshalJSON{result})
+	require.NoError(t, err)
+	result.IsError = false
+	got, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Equal(t, string(want), string(got))
+	assert.NotContains(t, string(got), "isError")
 }

@@ -236,7 +236,10 @@ var metaJSONOptions = json.DefaultOptionsV1()
 // being marshaled, keys in the order json.Marshal gives a map's, with
 // progressToken among them unless a field of that name overrides it. Written
 // straight out, a _meta needs no merged copy of its map and no buffer of its
-// own; json.Marshal calls it in preference to MarshalJSON.
+// own; json.Marshal calls it in preference to MarshalJSON. A value that cannot
+// be encoded fails the write with the encoder left within the object, as
+// encoding/json/v2's own types leave it; json.Marshal and json.Encoder write
+// nothing of a value that failed.
 func (m *Meta) MarshalJSONTo(enc *jsontext.Encoder) error {
 	_, overridden := m.AdditionalFields["progressToken"]
 	withToken := m.ProgressToken != nil && !overridden
@@ -521,10 +524,13 @@ func (r RequestId) MarshalJSON() ([]byte, error) {
 }
 
 // MarshalJSONTo writes an integer id straight into the encoder; any other
-// value as MarshalJSON writes it, whatever the encoder's options.
+// value, or any id for an encoder that canonicalizes raw integers, as
+// MarshalJSON writes it.
 func (r RequestId) MarshalJSONTo(enc *jsontext.Encoder) error {
 	if i, ok := r.value.(int64); ok {
-		return enc.WriteToken(jsontext.Int(i))
+		if canonical, _ := jsonv2.GetOption(enc.Options(), jsontext.CanonicalizeRawInts); !canonical {
+			return enc.WriteToken(jsontext.Int(i))
+		}
 	}
 	encoded, err := r.MarshalJSON()
 	if err != nil {

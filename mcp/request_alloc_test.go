@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"math"
 	"testing"
@@ -28,6 +29,8 @@ func encodeWith(value any, encoder string) ([]byte, error) {
 		return bytes.TrimSuffix(out.Bytes(), []byte("\n")), err
 	case "v2":
 		return jsonv2.Marshal(value)
+	case "v1 canonical ints":
+		return jsonv2.Marshal(value, json.DefaultOptionsV1(), jsontext.CanonicalizeRawInts(true))
 	}
 	return json.Marshal(value)
 }
@@ -41,7 +44,7 @@ func TestRequestIdMarshalsAsItsValueDid(t *testing.T) {
 		7, uint64(math.MaxUint64), 2.0,
 	} {
 		id := NewRequestId(value)
-		for _, encoder := range encoders {
+		for _, encoder := range append(encoders, "v1 canonical ints") {
 			want, err := encodeWith(struct {
 				ID   requestIDByValue `json:"id"`
 				Text string           `json:"text"`
