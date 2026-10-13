@@ -3,6 +3,8 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -586,6 +588,127 @@ func (r CallToolResult) MarshalJSON() ([]byte, error) {
 		StructuredContent any           `json:"structuredContent,omitempty"`
 	}{r.Meta, content, r.InputRequests, r.IsError, r.RequestState, r.ResultType, structured})
 }
+
+// MarshalJSONTo writes the result into enc as MarshalJSON writes it. When
+// enc encodes as json.Marshal does, as the server's encoders do, the result
+// is written straight in rather than encoded on its own and copied in.
+func (r *CallToolResult) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if r.Task != nil || !encodesAsMarshal(enc) {
+		encoded, err := r.MarshalJSON()
+		if err != nil {
+			return err
+		}
+		return enc.WriteValue(encoded)
+	}
+	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+		return err
+	}
+	if r.Meta != nil {
+		if err := writeMember(enc, "_meta", r.Meta); err != nil {
+			return err
+		}
+	}
+	content := &r.Content
+	if r.Content == nil {
+		content = &noContent
+	}
+	if err := writeMember(enc, "content", content); err != nil {
+		return err
+	}
+	if len(r.InputRequests) > 0 {
+		if err := writeMember(enc, "inputRequests", &r.InputRequests); err != nil {
+			return err
+		}
+	}
+	if r.IsError {
+		if err := writeMember(enc, "isError", &r.IsError); err != nil {
+			return err
+		}
+	}
+	if r.RequestState != "" {
+		if err := writeMember(enc, "requestState", &r.RequestState); err != nil {
+			return err
+		}
+	}
+	if r.ResultType != "" {
+		if err := writeMember(enc, "resultType", &r.ResultType); err != nil {
+			return err
+		}
+	}
+	if len(r.RawStructuredContent) > 0 {
+		if err := writeMember(enc, "structuredContent", &r.RawStructuredContent); err != nil {
+			return err
+		}
+	} else if r.StructuredContent != nil {
+		if err := writeMember(enc, "structuredContent", r.StructuredContent); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(jsontext.EndObject)
+}
+
+// noContent is the content of a result that has none: an empty array.
+var noContent = []Content{}
+
+// writeMember writes a member named name whose value is v, by enc's options.
+func writeMember(enc *jsontext.Encoder, name string, v any) error {
+	if err := enc.WriteToken(jsontext.String(name)); err != nil {
+		return err
+	}
+	return jsonv2.MarshalEncode(enc, v)
+}
+
+// encodesAsMarshal reports whether enc encodes as json.Marshal does: every
+// option at v1's value, compact, with no marshalers of its own. A value
+// written into such an encoder is written as json.Marshal would write it.
+func encodesAsMarshal(enc *jsontext.Encoder) bool {
+	opts := enc.Options()
+	for _, option := range v1Options {
+		if on, _ := jsonv2.GetOption(opts, option); !on {
+			return false
+		}
+	}
+	for _, option := range notV1Options {
+		if on, _ := jsonv2.GetOption(opts, option); on {
+			return false
+		}
+	}
+	marshalers, _ := jsonv2.GetOption(opts, jsonv2.WithMarshalers)
+	return marshalers == nil
+}
+
+var (
+	// v1Options are the options that json.Marshal turns on and that bear on
+	// what it writes.
+	v1Options = []func(bool) jsonv2.Options{
+		jsontext.AllowDuplicateNames,
+		jsontext.AllowInvalidUTF8,
+		jsontext.EscapeForHTML,
+		jsontext.EscapeForJS,
+		jsontext.PreserveRawStrings,
+		jsonv2.Deterministic,
+		jsonv2.FormatNilMapAsNull,
+		jsonv2.FormatNilSliceAsNull,
+		json.CallMethodsWithLegacySemantics,
+		json.FormatByteArrayAsArray,
+		json.FormatBytesWithLegacySemantics,
+		json.FormatDurationAsNano,
+		json.OmitEmptyWithLegacySemantics,
+		json.StringifyWithLegacySemantics,
+	}
+	// notV1Options are the options that json.Marshal leaves off and that
+	// bear on what it writes.
+	notV1Options = []func(bool) jsonv2.Options{
+		jsontext.Multiline,
+		jsontext.SpaceAfterColon,
+		jsontext.SpaceAfterComma,
+		jsontext.CanonicalizeRawInts,
+		jsontext.CanonicalizeRawFloats,
+		jsontext.ReorderRawObjects,
+		jsonv2.StringifyNumbers,
+		jsonv2.OmitZeroStructFields,
+	}
+)
 
 // UnmarshalJSON implements custom JSON unmarshaling for CallToolResult
 func (r *CallToolResult) UnmarshalJSON(data []byte) error {
