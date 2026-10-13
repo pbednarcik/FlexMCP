@@ -48,8 +48,11 @@ type SSE struct {
 	// shutdown with a live request context.
 	lifecycleMu sync.Mutex
 
-	started          atomic.Bool
-	closed           atomic.Bool
+	started atomic.Bool
+	closed  atomic.Bool
+	// answers bounds the answers to server requests; Close cancels it.
+	answers          context.Context
+	stopAnswers      context.CancelFunc
 	cancelSSEStream  context.CancelFunc
 	protocolVersion  atomic.Value // string
 	onConnectionLost func(error)
@@ -156,6 +159,7 @@ func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 		endpointTimeout: 30 * time.Second,
 		responseTimeout: 60 * time.Second,
 	}
+	smc.answers, smc.stopAnswers = context.WithCancel(context.Background())
 
 	for _, opt := range options {
 		opt(smc)
@@ -709,6 +713,9 @@ func (c *SSE) Close() error {
 		// Also, it could quit start() immediately if not receiving the endpoint
 		cancelSSEStream()
 	}
+	if c.stopAnswers != nil {
+		c.stopAnswers()
+	}
 
 	// Clean up any pending responses
 	c.mu.Lock()
@@ -743,14 +750,14 @@ func (c *SSE) SendNotification(ctx context.Context, notification mcp.JSONRPCNoti
 
 // answer sends the client's response to a server request. It runs on the
 // stream's reader, as the Streamable HTTP transport's answers do, bounded by
-// the time a server request may take there.
+// the time a server request may take there, and Close abandons it.
 func (c *SSE) answer(response *JSONRPCResponse) {
 	body, err := json.Marshal(response)
 	if err != nil {
 		c.logger.Error("Error marshaling response", "err", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(c.answers, 30*time.Second)
 	defer cancel()
 	if err := c.post(ctx, body, "response"); err != nil {
 		c.logger.Error("Error answering a server request", "err", err)

@@ -21,12 +21,14 @@ import (
 // deterministically.
 func newBareSSE() *SSE {
 	baseURL, _ := url.Parse("http://127.0.0.1:1/")
-	return &SSE{
+	sse := &SSE{
 		baseURL:    baseURL,
 		httpClient: http.DefaultClient,
 		responses:  make(map[string]chan *JSONRPCResponse),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+	sse.answers, sse.stopAnswers = context.WithCancel(context.Background())
+	return sse
 }
 
 // TestSSE_Accessors verifies the no-connection accessors: session ID, OAuth

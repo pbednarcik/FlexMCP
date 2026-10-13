@@ -3,6 +3,7 @@ package transport
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -135,5 +136,90 @@ func TestSSE_AServerRequestIsAnswered(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("no answer posted; want %s", answer)
 		}
+	}
+}
+
+// An answer to a server request is posted on the stream's reader, so Close
+// abandons one still in flight rather than leave it posting after the
+// transport is shut down.
+func TestSSE_AnAnswerDoesNotOutliveClose(t *testing.T) {
+	arrived := make(chan struct{})
+	abandoned := make(chan struct{})
+	release := make(chan struct{})
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/message" {
+			// The server sees the client go only once the body is read.
+			_, _ = io.Copy(io.Discard, r.Body)
+			close(arrived)
+			select {
+			case <-r.Context().Done():
+				close(abandoned)
+			case <-release:
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s/message\n\n", server.URL)
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	trans, err := NewSSE(server.URL + "/sse")
+	require.NoError(t, err)
+	require.NoError(t, trans.Start(t.Context()))
+
+	select {
+	case <-arrived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the ping was not answered")
+	}
+	require.NoError(t, trans.Close())
+	select {
+	case <-abandoned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the answer was still being posted after Close")
+	}
+}
+
+// An answer the server refuses is logged and the stream goes on: a later
+// message still reaches the client.
+func TestSSE_AFailedAnswerLeavesTheStreamReading(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/message" {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s/message\n\n", server.URL)
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	trans, err := NewSSE(server.URL+"/sse", WithSSELogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	require.NoError(t, err)
+	notifications := make(chan string, 1)
+	trans.SetNotificationHandler(func(notification mcp.JSONRPCNotification) {
+		notifications <- notification.Method
+	})
+	require.NoError(t, trans.Start(t.Context()))
+	t.Cleanup(func() { _ = trans.Close() })
+
+	select {
+	case method := <-notifications:
+		assert.Equal(t, "notifications/message", method)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream stopped after a failed answer")
 	}
 }
