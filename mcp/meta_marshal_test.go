@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"maps"
 	"testing"
 
@@ -39,6 +41,8 @@ func TestMetaMarshalJSONWritesWhatTheMapCopyWrote(t *testing.T) {
 		{"a field overrides the token", Meta{ProgressToken: "p-1", AdditionalFields: map[string]any{"progressToken": "field"}},
 			`{"progressToken":"field"}`},
 		{"html and unicode", Meta{AdditionalFields: map[string]any{"<k>": "a&b", "é": " ", "\U0001F600": "x", "�": 1.5}}, ""},
+		{"nil slice", Meta{AdditionalFields: map[string]any{"nil": []string(nil), "map": map[string]any(nil)}}, `{"map":null,"nil":null}`},
+		{"html in a key and a value", Meta{AdditionalFields: map[string]any{"<k>": "<>&"}}, ""},
 		{"nested", Meta{AdditionalFields: map[string]any{"n": map[string]any{"b": []any{1, "x"}, "a": map[string]any{}}}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,11 +54,13 @@ func TestMetaMarshalJSONWritesWhatTheMapCopyWrote(t *testing.T) {
 			got, err := tc.meta.MarshalJSON()
 			require.NoError(t, err)
 			assert.Equal(t, string(want), string(got))
-			wantEnclosed, err := enclosed(&tc.meta, true)
-			require.NoError(t, err)
-			gotEnclosed, err := enclosed(&tc.meta, false)
-			require.NoError(t, err)
-			assert.Equal(t, string(wantEnclosed), string(gotEnclosed), "inside an enclosing json.Marshal")
+			for _, encoder := range encoders {
+				wantEnclosed, err := enclosed(&tc.meta, true, encoder)
+				require.NoError(t, err)
+				gotEnclosed, err := enclosed(&tc.meta, false, encoder)
+				require.NoError(t, err)
+				assert.Equal(t, string(wantEnclosed), string(gotEnclosed), "inside %s", encoder)
+			}
 		})
 	}
 }
@@ -82,13 +88,15 @@ func FuzzMetaMarshalJSON(f *testing.F) {
 		if wantErr == nil && string(want) != string(got) {
 			t.Fatalf("bytes differ:\n map copy %q\n new      %q", want, got)
 		}
-		wantEnclosed, wantErr := enclosed(&meta, true)
-		gotEnclosed, gotErr := enclosed(&meta, false)
-		if (wantErr != nil) != (gotErr != nil) {
-			t.Fatalf("enclosed errors differ: map copy %v, new %v", wantErr, gotErr)
-		}
-		if wantErr == nil && string(wantEnclosed) != string(gotEnclosed) {
-			t.Fatalf("enclosed bytes differ:\n map copy %q\n new      %q", wantEnclosed, gotEnclosed)
+		for _, encoder := range encoders {
+			wantEnclosed, wantErr := enclosed(&meta, true, encoder)
+			gotEnclosed, gotErr := enclosed(&meta, false, encoder)
+			if (wantErr != nil) != (gotErr != nil) {
+				t.Fatalf("%s: errors differ: map copy %v, new %v", encoder, wantErr, gotErr)
+			}
+			if wantErr == nil && string(wantEnclosed) != string(gotEnclosed) {
+				t.Fatalf("%s: bytes differ:\n map copy %q\n new      %q", encoder, wantEnclosed, gotEnclosed)
+			}
 		}
 	})
 }
@@ -127,17 +135,37 @@ type metaByMapCopy Meta
 
 func (m *metaByMapCopy) MarshalJSON() ([]byte, error) { return metaMarshalJSONByMapCopy((*Meta)(m)) }
 
+// encoders are the ways a _meta is carried: inside encoding/json's Marshal,
+// inside a v1 Encoder that does not escape HTML, and inside encoding/json/v2
+// with its own defaults. A _meta must read as it did inside each.
+var encoders = []string{"v1", "v1 unescaped", "v2"}
+
 // enclosed marshals a _meta the way a result carries it, by the map copy or
-// by Meta itself.
-func enclosed(m *Meta, byMapCopy bool) ([]byte, error) {
-	if byMapCopy {
-		return json.Marshal(struct {
-			Meta *metaByMapCopy `json:"_meta,omitempty"`
-			Text string         `json:"text"`
-		}{(*metaByMapCopy)(m), "x"})
-	}
-	return json.Marshal(struct {
+// by Meta itself, with one of the encoders.
+func enclosed(m *Meta, byMapCopy bool, encoder ...string) ([]byte, error) {
+	var value any = struct {
 		Meta *Meta  `json:"_meta,omitempty"`
 		Text string `json:"text"`
-	}{m, "x"})
+	}{m, "x"}
+	if byMapCopy {
+		value = struct {
+			Meta *metaByMapCopy `json:"_meta,omitempty"`
+			Text string         `json:"text"`
+		}{(*metaByMapCopy)(m), "x"}
+	}
+	kind := "v1"
+	if len(encoder) > 0 {
+		kind = encoder[0]
+	}
+	switch kind {
+	case "v1 unescaped":
+		var out bytes.Buffer
+		enc := json.NewEncoder(&out)
+		enc.SetEscapeHTML(false)
+		err := enc.Encode(value)
+		return out.Bytes(), err
+	case "v2":
+		return jsonv2.Marshal(value)
+	}
+	return json.Marshal(value)
 }

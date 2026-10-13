@@ -261,14 +261,46 @@ func (m *Meta) MarshalJSONTo(enc *jsontext.Encoder) error {
 		if withToken && key == "progressToken" {
 			value = m.ProgressToken
 		}
-		if err := enc.WriteToken(jsontext.String(key)); err != nil {
+		if err := writeMetaName(enc, key); err != nil {
 			return err
 		}
-		if err := jsonv2.MarshalEncode(enc, value); err != nil {
+		// A value is written by encoding/json's own rules, whatever the
+		// enclosing encoder's options, as MarshalJSON's output always was.
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		if err := enc.WriteValue(jsontext.Value(encoded)); err != nil {
 			return err
 		}
 	}
 	return enc.WriteToken(jsontext.EndObject)
+}
+
+// writeMetaName writes a key as json.Marshal writes a map's: a key no encoder
+// escapes goes straight in; any other is encoded by encoding/json first, so
+// the enclosing encoder's options do not change it.
+func writeMetaName(enc *jsontext.Encoder, key string) error {
+	if plainMetaName(key) {
+		return enc.WriteToken(jsontext.String(key))
+	}
+	encoded, err := json.Marshal(key)
+	if err != nil {
+		return err
+	}
+	return enc.WriteValue(jsontext.Value(encoded))
+}
+
+// plainMetaName reports whether every encoder writes key as it is: printable
+// ASCII with no quote, backslash or HTML-sensitive character.
+func plainMetaName(key string) bool {
+	for i := 0; i < len(key); i++ {
+		switch c := key[i]; {
+		case c < 0x20, c >= 0x7f, c == '"', c == '\\', c == '<', c == '>', c == '&':
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Meta) UnmarshalJSON(data []byte) error {
