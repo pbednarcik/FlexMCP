@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,6 +79,33 @@ func TestStreamableHTTP_TheAnswerToAPostIsItsOwn(t *testing.T) {
 		response, err := trans.SendRequest(t.Context(), request)
 		require.NoError(t, err)
 		assert.JSONEq(t, `{"answer":42}`, string(response.Result))
+	})
+	t.Run("a stream server request with an empty or non-string method", func(t *testing.T) {
+		trans, posted := serve(t, "text/event-stream",
+			`{"jsonrpc":"2.0","id":1,"method":""}`,
+			`{"jsonrpc":"2.0","id":1,"method":null,"result":{}}`,
+			`{"jsonrpc":"2.0","id":1,"result":{"answer":42}}`)
+		response, err := trans.SendRequest(t.Context(), request)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"answer":42}`, string(response.Result))
+		codes := map[string]bool{}
+		for range 2 {
+			select {
+			case reply := <-posted:
+				var answer struct {
+					ID    json.RawMessage `json:"id"`
+					Error struct {
+						Code int `json:"code"`
+					} `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(reply), &answer), reply)
+				assert.Equal(t, "1", string(answer.ID), reply)
+				codes[fmt.Sprint(answer.Error.Code)] = true
+			case <-time.After(2 * time.Second):
+				t.Fatal("a server request was not answered")
+			}
+		}
+		assert.Equal(t, map[string]bool{"-32601": true, "-32600": true}, codes)
 	})
 	t.Run("a stream server request with an unreadable id", func(t *testing.T) {
 		trans, posted := serve(t, "text/event-stream",

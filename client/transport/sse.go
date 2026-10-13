@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mark3labs/mcp-go/internal/jsonrpc"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -461,7 +462,7 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 	case "message":
 		var envelope struct {
 			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
+			Method jsonrpc.Method  `json:"method"`
 		}
 		if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 			c.logger.Error("Error unmarshaling message", "err", err)
@@ -470,8 +471,17 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 		var id mcp.RequestId
 		readableID := len(envelope.ID) > 0 && json.Unmarshal(envelope.ID, &id) == nil && !id.IsNil()
 
+		// A message with a method member is a request or a notification,
+		// whatever its value; only one without is a response.
 		switch {
-		case envelope.Method != "" && len(envelope.ID) == 0:
+		case envelope.Method.Present && !envelope.Method.IsString:
+			answerID := mcp.NewRequestId(nil)
+			if readableID {
+				answerID = id
+			}
+			c.answer(NewJSONRPCErrorResponse(answerID, mcp.INVALID_REQUEST, "Invalid request: method must be a string", nil))
+			return
+		case envelope.Method.Present && len(envelope.ID) == 0:
 			var notification mcp.JSONRPCNotification
 			if err := json.Unmarshal([]byte(data), &notification); err != nil {
 				return
@@ -482,19 +492,19 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			}
 			c.notifyMu.RUnlock()
 			return
-		case envelope.Method != "" && !readableID:
+		case envelope.Method.Present && !readableID:
 			// A request id is a string or an integer and never null.
 			c.answer(NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
 			return
-		case envelope.Method == string(mcp.MethodPing):
+		case envelope.Method.Name == string(mcp.MethodPing):
 			// The receiver of a ping MUST answer it on the earlier revisions.
 			c.answer(NewJSONRPCResultResponse(id, json.RawMessage(`{}`)))
 			return
-		case envelope.Method != "":
+		case envelope.Method.Present:
 			// A request from the server is never a response, even when it
 			// carries the id of one the client is waiting on: request ids are
 			// per sender. This transport serves no other server request.
-			c.logger.Debug("Refusing a server request: the SSE transport serves none", "method", envelope.Method)
+			c.logger.Debug("Refusing a server request: the SSE transport serves none", "method", envelope.Method.Name)
 			c.answer(NewJSONRPCErrorResponse(id, mcp.METHOD_NOT_FOUND, "Method not found: the SSE transport serves no server requests", nil))
 			return
 		case !readableID:

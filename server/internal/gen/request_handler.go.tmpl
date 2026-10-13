@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/mark3labs/mcp-go/internal/jsonrpc"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -46,8 +47,9 @@ func (s *MCPServer) HandleMessage(
 	// A response, success or error, to a request the server sent, such as a
 	// keep-alive ping: nothing waits for it, and a response is never answered,
 	// whatever its id, and a null result or error still makes one. A message
-	// with a method is a request, whatever it carries besides.
-	if baseMessage.Method == "" && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
+	// with a method member is a request, whatever it carries besides.
+	method := jsonrpc.MethodOf(string(baseMessage.Method), message)
+	if !method.Present && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
 		return nil
 	}
 	var validID bool
@@ -66,10 +68,14 @@ func (s *MCPServer) HandleMessage(
 	}
 
 	// A message with no method and no result or error is neither a request, a
-	// notification nor a response: an invalid request, whose error repeats the
-	// id if it has one (JSON-RPC 2.0, section 5.1).
-	if baseMessage.Method == "" {
+	// notification nor a response, and one whose method is not a string is no
+	// request: an invalid request, whose error repeats the id if it has one
+	// (JSON-RPC 2.0, section 5.1). A method named "" is a method all the same.
+	if !method.Present {
 		return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "Invalid request: no method")
+	}
+	if !method.IsString {
+		return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "Invalid request: method must be a string")
 	}
 
 	if baseMessage.ID == nil {

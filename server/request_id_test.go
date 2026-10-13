@@ -331,7 +331,7 @@ func TestOnlyTextThatIsNotJSONIsAParseError(t *testing.T) {
 // error no response either: an invalid request, answered with its id (JSON-RPC
 // 2.0, section 5.1), not a method that was not found.
 func TestAMessageWithoutAMethodIsAnInvalidRequest(t *testing.T) {
-	for _, message := range []string{`{"jsonrpc":"2.0","id":3}`, `{"jsonrpc":"2.0","id":3,"method":null}`} {
+	for _, message := range []string{`{"jsonrpc":"2.0","id":3}`} {
 		t.Run("handle message "+message, func(t *testing.T) {
 			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
 			require.NoError(t, err)
@@ -402,7 +402,7 @@ func TestARequestWithANullResultIsStillARequest(t *testing.T) {
 // with 400 over Streamable HTTP.
 func TestAMessageWithNeitherIDNorMethodIsAnInvalidRequest(t *testing.T) {
 	const want = `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request: no method"}}`
-	for _, message := range []string{`{"jsonrpc":"2.0"}`, `{"jsonrpc":"2.0","method":null}`, `{"jsonrpc":"2.0","params":{}}`} {
+	for _, message := range []string{`{"jsonrpc":"2.0"}`, `{"jsonrpc":"2.0","params":{}}`} {
 		t.Run("handle message "+message, func(t *testing.T) {
 			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
 			require.NoError(t, err)
@@ -472,4 +472,68 @@ func TestAnIDAloneIsRefusedOnlyOnTheModernRevision(t *testing.T) {
 		status, body := postRaw(t, server.URL, message, mcp.LATEST_LEGACY_PROTOCOL_VERSION)
 		assert.Equal(t, http.StatusAccepted, status, "%s", body)
 	})
+}
+
+// Whether a message is a request is a matter of its method member being
+// there, not of its value (JSON-RPC 2.0, sections 4 and 5): "method":"" asks
+// for a method named "", which is not found, and a method that is not a string
+// makes an invalid request, not a response, whatever else the message carries.
+func TestAMethodIsTakenByItsPresence(t *testing.T) {
+	type answer struct{ id, code, message string }
+	notFound := func(id string) answer { return answer{id, "-32601", ""} }
+	notAString := func(id string) answer { return answer{id, "-32600", "Invalid request: method must be a string"} }
+	for message, want := range map[string]answer{
+		`{"jsonrpc":"2.0","id":1,"method":""}`:               notFound("1"),
+		`{"jsonrpc":"2.0","id":1,"method":"","result":null}`: notFound("1"),
+		`{"jsonrpc":"2.0","id":1,"method":null,"result":{}}`: notAString("1"),
+		`{"jsonrpc":"2.0","id":1,"method":5,"error":{}}`:     {"1", "-32600", ""},
+		`{"jsonrpc":"2.0","method":null}`:                    notAString("null"),
+	} {
+		check := func(t *testing.T, got string) {
+			t.Helper()
+			var reply struct {
+				ID    json.RawMessage `json:"id"`
+				Error struct {
+					Code    json.Number `json:"code"`
+					Message string      `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(got), &reply), got)
+			assert.Equal(t, want.id, string(reply.ID), got)
+			assert.Equal(t, want.code, string(reply.Error.Code), got)
+			if want.message != "" {
+				assert.Equal(t, want.message, reply.Error.Message, got)
+			}
+		}
+		t.Run("handle message "+message, func(t *testing.T) {
+			response, err := json.Marshal(NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+			require.NoError(t, err)
+			check(t, string(response))
+		})
+		t.Run("stdio "+message, func(t *testing.T) {
+			stdioServer := NewStdioServer(NewMCPServer("test", "1.0.0"))
+			stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+			var output bytes.Buffer
+			require.NoError(t, stdioServer.Listen(t.Context(), strings.NewReader(message+"\n"), &output))
+			check(t, output.String())
+		})
+		t.Run("streamable http "+message, func(t *testing.T) {
+			server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+			t.Cleanup(server.Close)
+			status, body := postRaw(t, server.URL, message, mcp.LATEST_LEGACY_PROTOCOL_VERSION)
+			assert.NotEqual(t, http.StatusAccepted, status, "%s", body)
+			check(t, body)
+		})
+	}
+}
+
+// A notification for a method named "" is still a notification: never
+// answered, and accepted with 202 over Streamable HTTP.
+func TestANotificationWithAnEmptyMethodIsNotAnswered(t *testing.T) {
+	const message = `{"jsonrpc":"2.0","method":""}`
+	assert.Nil(t, NewMCPServer("test", "1.0.0").HandleMessage(t.Context(), json.RawMessage(message)))
+	server := httptest.NewServer(NewStreamableHTTPServer(NewMCPServer("test", "1.0.0")))
+	t.Cleanup(server.Close)
+	status, body := postRaw(t, server.URL, message, mcp.LATEST_LEGACY_PROTOCOL_VERSION)
+	assert.Equal(t, http.StatusAccepted, status, "%s", body)
 }

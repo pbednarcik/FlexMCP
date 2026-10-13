@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"unicode"
 
+	"github.com/mark3labs/mcp-go/internal/jsonrpc"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -390,7 +391,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		ID     json.RawMessage `json:"id"`
 		Result json.RawMessage `json:"result,omitempty"`
 		Error  json.RawMessage `json:"error,omitempty"`
-		Method mcp.MCPMethod   `json:"method,omitempty"`
+		Method mcp.MCPMethod   `json:"method"`
 	}
 	if err := json.Unmarshal(rawData, &jsonMessage); err != nil {
 		if json.Valid(rawData) {
@@ -402,10 +403,11 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		return
 	}
 
+	method := jsonrpc.MethodOf(string(jsonMessage.Method), rawData)
 	isInitializeRequest := jsonMessage.Method == mcp.MethodInitialize
 
 	requestID, validID := requestIDValue(jsonMessage.ID)
-	isResponse := jsonMessage.Method == "" && (len(jsonMessage.Result) > 0 || len(jsonMessage.Error) > 0)
+	isResponse := !method.Present && (len(jsonMessage.Result) > 0 || len(jsonMessage.Error) > 0)
 	if !validID && !isResponse {
 		s.writeJSONRPCError(w, nil, mcp.INVALID_REQUEST, "invalid request id")
 		return
@@ -426,13 +428,18 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// A message with no method that is no response is an invalid request.
 	// Earlier revisions still take an id alone as an empty response, the way a
 	// lax client answers a ping.
-	if jsonMessage.Method == "" && !isResponse && (len(jsonMessage.ID) == 0 || era.modern) {
+	if !method.Present && !isResponse && (len(jsonMessage.ID) == 0 || era.modern) {
 		s.writeJSONRPCError(w, requestID, mcp.INVALID_REQUEST, "Invalid request: no method")
+		return
+	}
+	// A method that is not a string makes no request, nor a response.
+	if method.Present && !method.IsString {
+		s.writeJSONRPCError(w, requestID, mcp.INVALID_REQUEST, "Invalid request: method must be a string")
 		return
 	}
 	// A notification is never answered, so one the server cannot read is
 	// refused here, as input it cannot accept (rule 4), not accepted with 202.
-	if jsonMessage.Method != "" && len(jsonMessage.ID) == 0 && json.Unmarshal(rawData, new(mcp.JSONRPCNotification)) != nil {
+	if method.Present && len(jsonMessage.ID) == 0 && json.Unmarshal(rawData, new(mcp.JSONRPCNotification)) != nil {
 		s.writeJSONRPCError(w, nil, mcp.INVALID_REQUEST, "notification could not be read")
 		return
 	}
@@ -445,9 +452,9 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	// A client's answer to a server ping, or any empty response, is accepted
 	// without being dispatched.
-	isEmptyResponse := jsonMessage.Method == "" && jsonMessage.ID != nil &&
+	isEmptyResponse := !method.Present && jsonMessage.ID != nil &&
 		(isJSONEmpty(jsonMessage.Result) && isJSONEmpty(jsonMessage.Error))
-	isPingResponse := jsonMessage.Method == "" && jsonMessage.ID != nil &&
+	isPingResponse := !method.Present && jsonMessage.ID != nil &&
 		isExplicitEmptyObject(jsonMessage.Result) && len(bytes.TrimSpace(jsonMessage.Error)) == 0
 
 	if isPingResponse {

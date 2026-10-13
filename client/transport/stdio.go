@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mark3labs/mcp-go/internal/jsonrpc"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -552,7 +553,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			var baseMessage struct {
 				JSONRPC string          `json:"jsonrpc"`
 				ID      json.RawMessage `json:"id,omitempty"`
-				Method  string          `json:"method,omitempty"`
+				Method  jsonrpc.Method  `json:"method"`
 				Error   json.RawMessage `json:"error,omitempty"`
 			}
 			if err := json.Unmarshal([]byte(line), &baseMessage); err != nil {
@@ -566,7 +567,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			// null id, and a response without one cannot be matched to a
 			// request, so it is logged.
 			if len(baseMessage.ID) > 0 && !readableID {
-				if baseMessage.Method != "" {
+				if baseMessage.Method.Present {
 					c.sendResponse(*NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
 				} else {
 					c.logger.Error("Dropping a response without a readable id", "id", string(baseMessage.ID), "error", string(baseMessage.Error))
@@ -574,8 +575,20 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				continue
 			}
 
+			// A message with a method member is a request or a notification,
+			// whatever its value; only one without is a response. A method that
+			// is not a string makes an invalid request.
+			if baseMessage.Method.Present && !baseMessage.Method.IsString {
+				answerID := mcp.NewRequestId(nil)
+				if readableID {
+					answerID = id
+				}
+				c.sendResponse(*NewJSONRPCErrorResponse(answerID, mcp.INVALID_REQUEST, "Invalid request: method must be a string", nil))
+				continue
+			}
+
 			// If it has a method but no ID, it's a notification
-			if baseMessage.Method != "" && len(baseMessage.ID) == 0 {
+			if baseMessage.Method.Present && len(baseMessage.ID) == 0 {
 				var notification mcp.JSONRPCNotification
 				if err := json.Unmarshal([]byte(line), &notification); err != nil {
 					continue
@@ -588,13 +601,16 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				continue
 			}
 
-			// If it has a method and an ID, it's an incoming request
-			if baseMessage.Method != "" {
+			// If it has a method and an ID, it's an incoming request, and never
+			// a response, even when it cannot be decoded.
+			if baseMessage.Method.Present {
 				var request JSONRPCRequest
-				if err := json.Unmarshal([]byte(line), &request); err == nil {
-					c.handleIncomingRequest(request)
+				if err := json.Unmarshal([]byte(line), &request); err != nil {
+					c.logger.Error("Dropping a server request that cannot be decoded", "err", err)
 					continue
 				}
+				c.handleIncomingRequest(request)
+				continue
 			}
 
 			// Otherwise, it's a response to our request

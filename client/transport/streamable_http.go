@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mark3labs/mcp-go/internal/jsonrpc"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -775,7 +776,7 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 		handle := func(event, data string) {
 			var envelope struct {
 				ID     json.RawMessage `json:"id"`
-				Method string          `json:"method"`
+				Method jsonrpc.Method  `json:"method"`
 			}
 			if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 				c.logger.Info("failed to unmarshal message (non-fatal)", "err", err, "message_len", len(data))
@@ -784,8 +785,16 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 			var id mcp.RequestId
 			readableID := len(envelope.ID) > 0 && json.Unmarshal(envelope.ID, &id) == nil && !id.IsNil()
 
+			// A message with a method member is a request or a notification,
+			// whatever its value; only one without is a response.
 			switch {
-			case envelope.Method != "" && len(envelope.ID) == 0:
+			case envelope.Method.Present && !envelope.Method.IsString:
+				answerID := mcp.NewRequestId(nil)
+				if readableID {
+					answerID = id
+				}
+				c.sendResponseToServer(ctx, NewJSONRPCErrorResponse(answerID, mcp.INVALID_REQUEST, "Invalid request: method must be a string", nil))
+			case envelope.Method.Present && len(envelope.ID) == 0:
 				var notification mcp.JSONRPCNotification
 				if err := json.Unmarshal([]byte(data), &notification); err != nil {
 					c.logger.Error("failed to unmarshal notification", "err", err)
@@ -796,11 +805,11 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 					c.notificationHandler(notification)
 				}
 				c.notifyMu.RUnlock()
-			case envelope.Method != "" && !readableID:
+			case envelope.Method.Present && !readableID:
 				// A request id is a string or an integer and never null: a
 				// server request whose id cannot be read is answered as invalid.
 				c.sendResponseToServer(ctx, NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
-			case envelope.Method != "":
+			case envelope.Method.Present:
 				var request JSONRPCRequest
 				if err := json.Unmarshal([]byte(data), &request); err != nil {
 					c.logger.Error("failed to unmarshal server request", "err", err)
