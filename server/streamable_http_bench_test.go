@@ -40,9 +40,8 @@ func toolCallRequest(b *testing.B, legacy bool) (body []byte, header http.Header
 
 // BenchmarkStreamableHTTPToolCall drives ServeHTTP with one tools/call per
 // iteration, no network: the whole per-request cost of the transport and the
-// core, which is what Reflex's door pays. Legs: the modern request against a
-// small schema; the same with input validation on and an 8 KB schema, the
-// door's shape; a legacy request in stateless mode.
+// core. Legs: the modern request against a small schema; the same with
+// input validation on and an 8 KB schema; a legacy request in stateless mode.
 func BenchmarkStreamableHTTPToolCall(b *testing.B) {
 	echo := func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return mcp.NewToolResultText(request.GetString("region", "")), nil

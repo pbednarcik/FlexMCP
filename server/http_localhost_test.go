@@ -226,7 +226,7 @@ func TestStreamableHTTP_LocalhostProtection_Origin(t *testing.T) {
 }
 
 // BenchmarkRejectDNSRebinding measures the per-request cost of the loopback
-// protection on the door's shape: a loopback connection, a loopback Host, and
+// protection for a local server: a loopback connection, a loopback Host, and
 // either no Origin (every non-browser client) or a loopback Origin.
 func BenchmarkRejectDNSRebinding(b *testing.B) {
 	for _, leg := range []struct {
