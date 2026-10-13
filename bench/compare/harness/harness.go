@@ -96,14 +96,9 @@ func Verify(t *testing.T, newHandler NewHandler) {
 			})
 			if p == Complex {
 				t.Run(string(e)+"/complex/invalid-region", func(t *testing.T) {
-					invalid := bytes.Replace(Body(e, p), []byte(`"region":"`+Region+`"`), []byte(`"region":5`), 1)
-					w := serve(h, invalid, Header(e))
-					body := w.Body.Bytes()
-					if bytes.Contains(body, []byte(filler[:64])) {
-						t.Fatalf("an invalid region was answered as a success: %.200s", body)
-					}
-					if !bytes.Contains(body, []byte(`"isError":true`)) && !bytes.Contains(body, []byte(`"error":`)) {
-						t.Fatalf("an invalid region got neither a tool error nor a JSON-RPC error: %d %.200s", w.Code, body)
+					w := serve(h, invalidBody(e), Header(e))
+					if err := checkRefused(w.Code, w.Body.Bytes()); err != nil {
+						t.Fatal(err)
 					}
 				})
 			}
@@ -118,9 +113,8 @@ func Bench(b *testing.B, newHandler NewHandler) {
 		for _, p := range payloads {
 			h := newHandler(p)
 			body, hdr := Body(e, p), Header(e)
-			w := serve(h, body, hdr)
-			if err := check(w.Code, w.Header(), w.Body.Bytes(), p); err != nil {
-				b.Fatalf("%s/%s answered wrong, not timing it: %v", e, p, err)
+			if err := preflight(h, e, p); err != nil {
+				b.Fatalf("not timing it: %v", err)
 			}
 			b.Run(string(e)+"/"+string(p)+"/serial", func(b *testing.B) {
 				b.ReportAllocs()
@@ -138,7 +132,7 @@ func Bench(b *testing.B, newHandler NewHandler) {
 			})
 		}
 		b.Run(string(e)+"/small/loopback", func(b *testing.B) {
-			benchLoopback(b, newHandler(Small), Body(e, Small), Header(e))
+			benchLoopback(b, newHandler(Small), e)
 		})
 	}
 }
@@ -151,6 +145,62 @@ func serve(h http.Handler, body []byte, hdr http.Header) *httptest.ResponseRecor
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
+}
+
+// preflight proves a leg before it is timed: it answers the tool's result,
+// and a Complex leg refuses an invalid argument, so its validation is on and
+// it does the work the others do.
+func preflight(h http.Handler, e Era, p Payload) error {
+	w := serve(h, Body(e, p), Header(e))
+	if err := check(w.Code, w.Header(), w.Body.Bytes(), p); err != nil {
+		return fmt.Errorf("%s/%s: %w", e, p, err)
+	}
+	if p == Complex {
+		w := serve(h, invalidBody(e), Header(e))
+		if err := checkRefused(w.Code, w.Body.Bytes()); err != nil {
+			return fmt.Errorf("%s/%s with an invalid region: %w", e, p, err)
+		}
+	}
+	return nil
+}
+
+// invalidBody is the Complex request with a region of the wrong type.
+func invalidBody(e Era) []byte {
+	return bytes.Replace(Body(e, Complex), []byte(`"region":"`+Region+`"`), []byte(`"region":5`), 1)
+}
+
+// checkRefused accepts a tool error or a JSON-RPC error, never the result.
+func checkRefused(code int, body []byte) error {
+	if bytes.Contains(body, []byte(filler[:64])) {
+		return fmt.Errorf("an invalid region was answered as a success: %.200s", body)
+	}
+	if !bytes.Contains(body, []byte(`"isError":true`)) && !bytes.Contains(body, []byte(`"error":`)) {
+		return fmt.Errorf("an invalid region got neither a tool error nor a JSON-RPC error: %d %.200s", code, body)
+	}
+	return nil
+}
+
+// preflightLoopback proves the loopback leg before it is timed: its answer
+// over the network is the tool's result, not merely a 200.
+func preflightLoopback(c *http.Client, url string, e Era) error {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(Body(e, Small)))
+	if err != nil {
+		return err
+	}
+	req.Header = Header(e)
+	resp, err := c.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if err := check(resp.StatusCode, resp.Header, body, Small); err != nil {
+		return fmt.Errorf("%s/small over the network: %w", e, err)
+	}
+	return nil
 }
 
 // check accepts only a 200 JSON answer carrying the tool's result text.
@@ -167,15 +217,16 @@ func check(code int, hdr http.Header, body []byte, p Payload) error {
 	return nil
 }
 
-func benchLoopback(b *testing.B, h http.Handler, body []byte, hdr http.Header) {
+func benchLoopback(b *testing.B, h http.Handler, e Era) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 	client := loopbackClient()
 	defer client.CloseIdleConnections()
 	url := srv.URL + "/mcp"
-	if err := postLoopback(client, url, body, hdr); err != nil {
-		b.Fatal(err)
+	if err := preflightLoopback(client, url, e); err != nil {
+		b.Fatalf("not timing it: %v", err)
 	}
+	body, hdr := Body(e, Small), Header(e)
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {

@@ -89,3 +89,48 @@ func TestLoopbackReusesOneConnection(t *testing.T) {
 		t.Errorf("100 sequential calls opened %d connections, want 1", n)
 	}
 }
+
+// echoAnyway answers the tool's result to any request, so it serves a leg
+// with validation off.
+func echoAnyway(p Payload) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": ResultText(Region, p)}},
+		}})
+		_, _ = w.Write(body)
+	})
+}
+
+// A Complex leg is timed only once it has refused an invalid argument: a
+// handler with validation off does less work and must not be timed as if it
+// did the same.
+func TestPreflightRefusesAComplexLegWithoutValidation(t *testing.T) {
+	if err := preflight(echoAnyway(Small), Modern, Small); err != nil {
+		t.Fatalf("a small leg is not validated, yet preflight refused it: %v", err)
+	}
+	if preflight(echoAnyway(Complex), Modern, Complex) == nil {
+		t.Error("a complex leg that accepts an invalid argument passed preflight")
+	}
+}
+
+// The loopback leg is timed only once its answer over the network is the
+// tool's result, not merely a 200.
+func TestLoopbackPreflightChecksTheAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}`))
+	}))
+	defer srv.Close()
+	client := loopbackClient()
+	defer client.CloseIdleConnections()
+	if preflightLoopback(client, srv.URL+"/mcp", Legacy) == nil {
+		t.Error("a JSON-RPC error over the network passed preflight")
+	}
+
+	good := httptest.NewServer(echoAnyway(Small))
+	defer good.Close()
+	if err := preflightLoopback(client, good.URL+"/mcp", Legacy); err != nil {
+		t.Errorf("the tool's result over the network failed preflight: %v", err)
+	}
+}
