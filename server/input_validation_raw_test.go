@@ -28,7 +28,7 @@ func rawValidationServer(t testing.TB, hooks *Hooks) *MCPServer {
 
 func callLimited(t testing.TB, srv *MCPServer, arguments string) string {
 	t.Helper()
-	out, err := json.Marshal(srv.HandleMessage(context.Background(), json.RawMessage(
+	out, err := json.Marshal(srv.HandleMessage(t.Context(), json.RawMessage(
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"limited","arguments":`+arguments+`}}`)))
 	require.NoError(t, err)
 	return string(out)
@@ -84,6 +84,7 @@ func TestInputValidationAllocations(t *testing.T) {
 	}
 	srv := rawValidationServer(t, nil)
 	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"limited","arguments":{"limit":5}}}`)
-	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(context.Background(), msg) })
+	ctx := t.Context()
+	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
 	assert.LessOrEqual(t, allocs, 73.0, "allocations per validated tools/call")
 }

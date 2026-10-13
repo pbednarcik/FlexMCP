@@ -88,7 +88,7 @@ func TestStreamableHTTPSessionNotificationAfterForwardingStops(t *testing.T) {
 	s.forwardWith(func(<-chan mcp.JSONRPCNotification) { starts++ })
 	assert.False(t, s.stopForwarding(), "nothing was sent, so no forwarder ran")
 
-	s.NotificationChannel() <- mcp.JSONRPCNotification{Notification: mcp.Notification{Method: "late"}}
+	s.NotificationChannel() <- mcp.JSONRPCNotification{Method: "late"}
 	assert.Equal(t, 0, starts, "a notification after forwarding stopped started a forwarder")
 	select {
 	case n := <-s.pending():
@@ -105,14 +105,14 @@ func TestStreamableHTTPSessionStartsItsForwarderOnce(t *testing.T) {
 	s := newStreamableHttpSession()
 	var forwarded []<-chan mcp.JSONRPCNotification
 	s.forwardWith(func(ch <-chan mcp.JSONRPCNotification) { forwarded = append(forwarded, ch) })
-	s.NotificationChannel() <- mcp.JSONRPCNotification{Notification: mcp.Notification{Method: "first"}}
-	s.NotificationChannel() <- mcp.JSONRPCNotification{Notification: mcp.Notification{Method: "second"}}
+	s.NotificationChannel() <- mcp.JSONRPCNotification{Method: "first"}
+	s.NotificationChannel() <- mcp.JSONRPCNotification{Method: "second"}
 	require.Len(t, forwarded, 1, "the forwarder starts once")
 	assert.Equal(t, "first", (<-forwarded[0]).Method)
 	assert.True(t, s.stopForwarding(), "a forwarder ran")
 
 	early := newStreamableHttpSession()
-	early.NotificationChannel() <- mcp.JSONRPCNotification{Notification: mcp.Notification{Method: "early"}}
+	early.NotificationChannel() <- mcp.JSONRPCNotification{Method: "early"}
 	starts := 0
 	early.forwardWith(func(<-chan mcp.JSONRPCNotification) { starts++ })
 	assert.Equal(t, 1, starts, "a notification queued before forwarding was armed starts the forwarder when armed")

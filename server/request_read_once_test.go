@@ -22,7 +22,7 @@ func readOnceServer(t testing.TB) (*MCPServer, context.Context) {
 	})
 	name, _ := mcp.EncodeHeaderValue("echo")
 	hdr := http.Header{"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/call"}, "Mcp-Name": {name}}
-	return srv, context.WithValue(context.Background(), requestHeader, hdr)
+	return srv, context.WithValue(t.Context(), requestHeader, hdr)
 }
 
 const readOnceMeta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}`
