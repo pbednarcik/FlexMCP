@@ -351,14 +351,18 @@ These apply to servers and clients alike, whichever revision they speak.
   `"id": null` and a method is such a request, not a notification. A response
   whose id a client cannot read answers nothing it can name and is dropped.
 - A message that is neither a request, a notification nor a response, such
-  as one with no method, gets `-32600`, carrying its id when that could be
-  read, and over Streamable HTTP a `400`; `-32700` is only for text that is
-  not JSON.
+  as one with no method or one whose method is not a string (`null`, `5`),
+  gets `-32600`, carrying its id when that could be read, and over Streamable
+  HTTP a `400`; `-32700` is only for text that is not JSON.
+- A message is a request or a notification by its `method` member being
+  there, not by its value: `"method": ""` asks for a method named `""`, which
+  is not found (`-32601`), on the server and on a client alike, and is never
+  taken for a response.
 - A notification is never answered, not even one whose params cannot be read;
   over Streamable HTTP such a notification is refused with `400`.
 - A response the server receives is never answered, whatever its id, and a
-  `null` result or error still makes one; a message with a method is a
-  request, whatever it carries besides. Over Streamable HTTP on this revision,
+  `null` result or error still makes one; a message with a method member is
+  a request, whatever it carries besides. Over Streamable HTTP on this revision,
   where the server sends no requests, a POSTed response, or an id alone, is
   refused with `400`; earlier revisions accept an id alone with `202`, as an
   empty response.
