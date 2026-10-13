@@ -520,11 +520,15 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	}
 
 	// Set the client context before handling the message
-	x.base = postContext{Context: r.ctx(), session: session, versions: s.supportedVersions, header: r.header()}
+	x.base = postContext{Context: r.ctx(), session: session, versions: s.supportedVersions}
 	var ctx context.Context = &x.base
 	if s.contextFunc != nil {
 		ctx = s.contextFunc(ctx, r.asHTTPRequest())
 	}
+	// The header goes on top of what the context func returned, so the
+	// checks that read it run whatever context the func made.
+	x.header = headerContext{Context: ctx, header: r.header()}
+	ctx = &x.header
 
 	// A listen stream ends when Shutdown says so; see Shutdown.
 	if listening && s.shutdown != nil {
@@ -544,6 +548,9 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// most requests send none, and a goroutine per request costs a thread
 	// wakeup each.
 	x.server, x.w, x.ctx, x.canStream, x.listening, x.requestID = s, w, ctx, canStream, listening, requestID
+	// A handler may keep its context, and with it the exchange, after the
+	// request; the response writer is let go when the request is done.
+	defer func() { x.w = nil }()
 	session.forwardWith(x)
 
 	response := s.server.HandleMessage(ctx, rawData)
@@ -638,8 +645,9 @@ type postExchange struct {
 	}
 	envelope requestEnvelope
 	session  streamableHttpSession
-	base     postContext     // the transport's values
-	ctx      context.Context // base, with what the context func added
+	base     postContext     // the session and the versions
+	header   headerContext   // the header, on top of what the context func returned
+	ctx      context.Context // header, and everything below it
 
 	server    *StreamableHTTPServer
 	w         HTTPResponseWriter
@@ -709,14 +717,14 @@ func (x *postExchange) write(nt mcp.JSONRPCNotification) {
 	}
 }
 
-// postContext holds the values the transport gives a request - its session,
-// the protocol versions it serves and its HTTP header - as one context
-// layer. Every other value, and the cancellation, are its parent's.
+// postContext holds the values the transport gives a request before the
+// context func runs - its session and the protocol versions it serves - as
+// one context layer. Every other value, and the cancellation, are its
+// parent's.
 type postContext struct {
 	context.Context
 	session  ClientSession
 	versions any
-	header   http.Header
 }
 
 func (c *postContext) Value(key any) any {
@@ -725,7 +733,19 @@ func (c *postContext) Value(key any) any {
 		return c.session
 	case supportedProtocolVersionsKey{}:
 		return c.versions
-	case requestHeader:
+	}
+	return c.Context.Value(key)
+}
+
+// headerContext holds a request's HTTP header; every other value, and the
+// cancellation, are its parent's.
+type headerContext struct {
+	context.Context
+	header http.Header
+}
+
+func (c *headerContext) Value(key any) any {
+	if key == requestHeader {
 		return c.header
 	}
 	return c.Context.Value(key)

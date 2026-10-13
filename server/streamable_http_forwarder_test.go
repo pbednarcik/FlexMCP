@@ -125,16 +125,16 @@ func (f forwarderFunc) forward(notifications <-chan mcp.JSONRPCNotification) { f
 
 type parentKey struct{}
 
-// A request's context holds the transport's values in one layer: the session,
-// the versions and the header are its own, every other value and the
-// cancellation its parent's, and a context made from it is canceled with the
-// parent.
+// A request's context holds the transport's values in its own layers: the
+// session, the versions and the header are theirs, every other value and the
+// cancellation their parent's, and a context made from them is canceled with
+// the parent.
 func TestPostContextHoldsTheTransportValues(t *testing.T) {
 	parent, cancel := context.WithCancel(context.WithValue(t.Context(), parentKey{}, "parent"))
 	session := newStreamableHttpSession()
 	header := http.Header{"X-Test": {"1"}}
 	versions := []string{mcp.ProtocolVersion20260728}
-	ctx := &postContext{Context: parent, session: session, versions: any(versions), header: header}
+	ctx := &headerContext{Context: &postContext{Context: parent, session: session, versions: any(versions)}, header: header}
 
 	assert.Same(t, session, ClientSessionFromContext(ctx))
 	assert.Equal(t, versions, SupportedProtocolVersionsFromContext(ctx))

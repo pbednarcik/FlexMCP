@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"slices"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -40,12 +41,12 @@ func WithSupportedProtocolVersions(ctx context.Context, versions []string) conte
 
 // SupportedProtocolVersionsFromContext returns the protocol versions the
 // current transport can serve, defaulting to every version this SDK
-// implements.
+// implements. The slice is the caller's own to change.
 func SupportedProtocolVersionsFromContext(ctx context.Context) []string {
 	if versions, ok := ctx.Value(supportedProtocolVersionsKey{}).([]string); ok && len(versions) > 0 {
-		return versions
+		return slices.Clone(versions)
 	}
-	return mcp.ValidProtocolVersions
+	return slices.Clone(mcp.ValidProtocolVersions)
 }
 
 // FilterSupportedVersions returns the subset of [mcp.ValidProtocolVersions]
