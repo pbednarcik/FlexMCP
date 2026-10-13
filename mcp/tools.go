@@ -156,7 +156,8 @@ func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	p.RawArguments = append(json.RawMessage(nil), raw.Arguments...)
+	// The decoder gave raw.Arguments its own copy of the bytes.
+	p.RawArguments = raw.Arguments
 	return json.Unmarshal(raw.Arguments, &p.Arguments)
 }
 

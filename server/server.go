@@ -2390,8 +2390,11 @@ func requestIDValue(raw json.RawMessage) (id any, ok bool) {
 	if len(raw) == 0 {
 		return nil, true
 	}
+	// raw is a value as a decoder gave it, so it is read by the id's own
+	// UnmarshalJSON, called directly: through json.Unmarshal the id would be
+	// made on the heap.
 	var requestID mcp.RequestId
-	if json.Unmarshal(raw, &requestID) != nil {
+	if requestID.UnmarshalJSON(raw) != nil {
 		return nil, false
 	}
 	switch value := requestID.Value(); value.(type) {

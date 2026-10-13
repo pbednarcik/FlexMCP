@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -327,12 +328,14 @@ func (c *Hooks) AddOnRequestInitialization(hook OnRequestInitializationFunc) {
 	c.OnRequestInitialization = append(c.OnRequestInitialization, hook)
 }
 
-func (c *Hooks) onRequestInitialization(ctx context.Context, id any, message any) error {
-	if c == nil {
+// onRequestInitialization boxes the message only when a hook takes it.
+func (c *Hooks) onRequestInitialization(ctx context.Context, id any, message json.RawMessage) error {
+	if c == nil || len(c.OnRequestInitialization) == 0 {
 		return nil
 	}
+	var boxed any = message
 	for _, hook := range c.OnRequestInitialization {
-		err := hook(ctx, id, message)
+		err := hook(ctx, id, boxed)
 		if err != nil {
 			return err
 		}

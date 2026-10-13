@@ -520,6 +520,19 @@ func (r RequestId) MarshalJSON() ([]byte, error) {
 	return json.Marshal(r.value)
 }
 
+// MarshalJSONTo writes an integer id straight into the encoder; any other
+// value as MarshalJSON writes it, whatever the encoder's options.
+func (r RequestId) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if i, ok := r.value.(int64); ok {
+		return enc.WriteToken(jsontext.Int(i))
+	}
+	encoded, err := r.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	return enc.WriteValue(jsontext.Value(encoded))
+}
+
 func (r *RequestId) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
 		r.value = nil
