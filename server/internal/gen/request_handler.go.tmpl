@@ -97,6 +97,9 @@ func (s *MCPServer) HandleMessage(
 		return nil
 	}
 
+	// Whether a hook holds the message is decided before the hooks run: one
+	// may remove itself while it changes the message.
+	heldByHook := hooksHoldTheMessage(s.hooks)
 	handleErr := s.hooks.onRequestInitialization(ctx, baseMessage.ID, message)
     if handleErr != nil {
     	return createErrorResponse(
@@ -105,9 +108,9 @@ func (s *MCPServer) HandleMessage(
     		handleErr.Error(),
     	)
     }
-	// A hook that holds the message may have changed it, so the checks below
+	// A hook that held the message may have changed it, so the checks below
 	// read the message it left, as they did before the single read.
-	if hooksHoldTheMessage(s.hooks) {
+	if heldByHook {
 		readOnce = false
 	}
 

@@ -63,3 +63,33 @@ func TestReadOnceHandleReadsTheBodyAsItIsWhenTheCoreRuns(t *testing.T) {
 	})
 	assert.Contains(t, w.Body.String(), `"code":-32601`, "the body names noop by the time the core reads it: %s", w.Body.String())
 }
+
+// A hook that removes itself while it changes the message still held it: the
+// checks read the message it left, though no hook is registered by then.
+func TestReadOnceChecksReadWhatASelfRemovingHookLeft(t *testing.T) {
+	hooks := &Hooks{}
+	hooks.AddOnRequestInitialization(func(_ context.Context, _ any, message any) error {
+		hooks.OnRequestInitialization = nil
+		if raw, ok := message.(json.RawMessage); ok {
+			if i := bytes.Index(raw, []byte(`"name":"echo"`)); i >= 0 {
+				copy(raw[i:], `"name":"evil"`)
+			}
+		}
+		return nil
+	})
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithHooks(hooks))
+	for _, name := range []string{"echo", "evil"} {
+		srv.AddTool(mcp.NewTool(name), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("ran " + name), nil
+		})
+	}
+	header, _ := mcp.EncodeHeaderValue("echo")
+	ctx := context.WithValue(t.Context(), requestHeader, http.Header{
+		"Mcp-Protocol-Version": {"2026-07-28"}, "Mcp-Method": {"tools/call"}, "Mcp-Name": {header},
+	})
+	message := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo",` + readOnceMeta + `}}`)
+	out, err := json.Marshal(srv.HandleMessage(ctx, message))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"code":-32020`, "the header names echo, the body now evil: %s", out)
+	assert.NotContains(t, string(out), "ran evil")
+}
