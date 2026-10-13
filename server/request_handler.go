@@ -28,7 +28,9 @@ func (s *MCPServer) handleMessageRead(
 	envelope *requestEnvelope,
 ) (resp mcp.JSONRPCMessage) {
 	// Add server to context
-	ctx = context.WithValue(ctx, serverKey{}, s)
+	layers := new(messageContext)
+	layers.server = serverContext{Context: ctx, srv: s}
+	ctx = &layers.server
 	var err *requestError
 
 	// The message is read once, with what the checks before dispatch need
@@ -138,14 +140,16 @@ func (s *MCPServer) handleMessageRead(
 	var protocolInfo *RequestProtocolInfo
 	var protocolErr error
 	if readOnce {
-		protocolInfo, protocolErr = protocolInfoFromMeta(envelope.Params.Meta)
+		protocolInfo = &layers.info
+		protocolErr = readProtocolInfo(envelope.Params.Meta, protocolInfo)
 	} else {
 		protocolInfo, protocolErr = extractRequestProtocolInfo(message)
 	}
 	if protocolErr != nil {
 		return errorResponseForProtocolError(baseMessage.ID, protocolErr)
 	}
-	ctx = WithRequestProtocolInfo(ctx, protocolInfo)
+	layers.protocol = protocolContext{Context: ctx, info: protocolInfo}
+	ctx = &layers.protocol
 
 	if protocolInfo.Modern {
 		if !mcp.IsValidProtocolVersion(protocolInfo.ProtocolVersion) {

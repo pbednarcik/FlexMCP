@@ -163,13 +163,24 @@ func (c *metaClientInfo) UnmarshalJSON(data []byte) error {
 // protocolInfoFromMeta reports the era and protocol info of a request from
 // its _meta keys.
 func protocolInfoFromMeta(meta requestMeta) (*RequestProtocolInfo, error) {
+	info := new(RequestProtocolInfo)
+	if err := readProtocolInfo(meta, info); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// readProtocolInfo reads the era and protocol info of a request from its
+// _meta keys into info.
+func readProtocolInfo(meta requestMeta, info *RequestProtocolInfo) error {
 	version := meta.ProtocolVersion
 	if !mcp.IsModernProtocol(version) {
 		// Either no version at all, or an older one: legacy era.
-		return &RequestProtocolInfo{ProtocolVersion: version}, nil
+		*info = RequestProtocolInfo{ProtocolVersion: version}
+		return nil
 	}
 
-	info := &RequestProtocolInfo{
+	*info = RequestProtocolInfo{
 		Modern:          true,
 		ProtocolVersion: version,
 	}
@@ -178,7 +189,7 @@ func protocolInfoFromMeta(meta requestMeta) (*RequestProtocolInfo, error) {
 	// invalid params error (Utilities.md row 11), not a silent no-op.
 	if len(meta.LogLevel) > 0 {
 		if json.Unmarshal(meta.LogLevel, &info.LogLevel) != nil || !info.LogLevel.IsValid() {
-			return nil, errors.New("invalid _meta field " + mcp.MetaKeyLogLevel)
+			return errors.New("invalid _meta field " + mcp.MetaKeyLogLevel)
 		}
 	}
 
@@ -189,9 +200,9 @@ func protocolInfoFromMeta(meta requestMeta) (*RequestProtocolInfo, error) {
 	// MissingRequiredClientCapabilityError is for a request that needs a
 	// capability the client did not declare.
 	if meta.ClientCapabilities == nil {
-		return nil, errors.New("missing or invalid _meta field " + mcp.MetaKeyClientCapabilities)
+		return errors.New("missing or invalid _meta field " + mcp.MetaKeyClientCapabilities)
 	}
 	info.ClientCapabilities = meta.ClientCapabilities
 
-	return info, nil
+	return nil
 }

@@ -67,7 +67,7 @@ func TestHandleMessageReadsOnceWithTheSameAnswers(t *testing.T) {
 // each: 66 allocations when each read it on its own, 57 read once, 56 with
 // the server identity boxed once, 52 with no span started for a server
 // without a tracer, 49 with the id read on the stack and the message boxed
-// only for a hook.
+// only for a hook, 47 with the context layers made in one allocation.
 func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -75,7 +75,7 @@ func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	srv, ctx := readOnceServer(t)
 	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},` + readOnceMeta + `}}`)
 	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
-	assert.LessOrEqual(t, allocs, 49.0, "allocations per modern tools/call through HandleMessage")
+	assert.LessOrEqual(t, allocs, 47.0, "allocations per modern tools/call through HandleMessage")
 }
 
 // Read once, a request's _meta gives the protocol info that reading each key

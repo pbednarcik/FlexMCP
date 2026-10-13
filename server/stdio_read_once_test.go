@@ -85,7 +85,8 @@ func TestStdioReadOnceChecksReadWhatAnInitializationHookLeft(t *testing.T) {
 }
 
 // A request over stdio is read once: the core takes the read loop's read. 30
-// allocations when the core read it again, 28 read once.
+// allocations when the core read it again, 28 read once, 26 with the core's
+// context layers made in one allocation.
 func TestStdioReadOnceAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -98,5 +99,5 @@ func TestStdioReadOnceAllocations(t *testing.T) {
 		_ = s.processMessage(ctx, line, io.Discard)
 		s.requestWg.Wait()
 	})
-	assert.LessOrEqual(t, allocs, 28.0, "allocations per modern ping over stdio")
+	assert.LessOrEqual(t, allocs, 26.0, "allocations per modern ping over stdio")
 }
