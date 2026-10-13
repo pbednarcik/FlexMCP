@@ -34,6 +34,23 @@ jobs:
       - run: go test ./... -race
         working-directory: otel
 
+  bench-compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [harness, flexmcp, mcpgo, gosdk, run]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: "bench/compare/${{ matrix.module }}/go.mod"
+      - run: go test ./... -race
+        working-directory: bench/compare/${{ matrix.module }}
+      - if: matrix.module != 'harness' && matrix.module != 'run'
+        run: go test -run '^$' -bench . -benchtime=1x ./...
+        working-directory: bench/compare/${{ matrix.module }}
+
   verify-codegen:
     runs-on: ubuntu-latest
     steps:
