@@ -503,7 +503,12 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil
 	}
 	session := newStreamableHttpSession()
-	session.requestBody, session.request = rawData, envelope
+	// The core takes the transport's read only of a body the transport read
+	// itself: a body handed to Handle is its caller's, who may change it
+	// while the request is handled.
+	if r.original != nil {
+		session.requestBody, session.request = rawData, envelope
+	}
 
 	// Broadcasts only reach sessions the server knows of, and a modern
 	// request's session is known nowhere else. A listen stream's session is

@@ -105,6 +105,11 @@ func (s *MCPServer) HandleMessage(
 			handleErr.Error(),
 		)
 	}
+	// A hook that holds the message may have changed it, so the checks below
+	// read the message it left, as they did before the single read.
+	if hooksHoldTheMessage(s.hooks) {
+		readOnce = false
+	}
 
 	// Get request header from ctx
 	h := ctx.Value(requestHeader)

@@ -59,3 +59,9 @@ func readByTransport(ctx context.Context, message json.RawMessage) *requestEnvel
 	}
 	return nil
 }
+
+// hooksHoldTheMessage reports whether a hook receives a request's message
+// itself before the checks that read it, and so could change it.
+func hooksHoldTheMessage(hooks *Hooks) bool {
+	return hooks != nil && len(hooks.OnRequestInitialization) > 0
+}
