@@ -821,3 +821,18 @@ func TestProgressNotificationKeepsAnIntegerTokenExact(t *testing.T) {
 		assert.InDelta(t, 1, params.Progress, 0)
 	}
 }
+
+// Only an integer literal is kept as an integer token; any other number is a
+// float64, however many digits come before its fraction or exponent.
+func TestProgressTokenIsAnIntegerOnlyWhenItsLiteralIsOne(t *testing.T) {
+	for wire, want := range map[string]any{
+		`7`:                       int64(7),
+		`92233720368547758080`:    json.Number("92233720368547758080"),
+		`92233720368547758080.5`:  float64(92233720368547758080.5),
+		`-92233720368547758080E2`: float64(-92233720368547758080e2),
+	} {
+		var params ProgressNotificationParams
+		require.NoError(t, json.Unmarshal([]byte(`{"progressToken":`+wire+`,"progress":1}`), &params), wire)
+		assert.Equal(t, want, params.ProgressToken, wire)
+	}
+}

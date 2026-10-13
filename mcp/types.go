@@ -259,15 +259,15 @@ func (m *Meta) UnmarshalJSON(data []byte) error {
 // so the token comes back on its notifications as the request sent it. Any
 // other number is a float64.
 func decodeProgressToken(data []byte) (ProgressToken, error) {
-	i, err := strconv.ParseInt(string(data), 10, 64)
-	if err == nil {
-		return i, nil
-	}
-	if errors.Is(err, strconv.ErrRange) {
+	if isIntegerLiteral(data) {
+		i, err := strconv.ParseInt(string(data), 10, 64)
+		if err == nil {
+			return i, nil
+		}
 		return json.Number(data), nil
 	}
 	var token any
-	err = json.Unmarshal(data, &token)
+	err := json.Unmarshal(data, &token)
 	return token, err
 }
 
@@ -466,7 +466,12 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 	// integer is a plain literal: one with a fraction or an exponent is
 	// refused, whole or not, so no id passes through a float64 and none
 	// depends on its spelling or its size. One past int64 is kept as its
-	// literal.
+	// literal. The whole literal is checked first: ParseInt reports a range
+	// error as soon as the digits overflow, before it reaches a fraction or an
+	// exponent.
+	if !isIntegerLiteral(data) {
+		return fmt.Errorf("invalid request id: %s", string(data))
+	}
 	i, err := strconv.ParseInt(string(data), 10, 64)
 	if err == nil {
 		r.value = i
@@ -477,6 +482,23 @@ func (r *RequestId) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	return fmt.Errorf("invalid request id: %s", string(data))
+}
+
+// isIntegerLiteral reports whether data is a JSON integer: an optional minus,
+// then 0 or digits that do not start with 0.
+func isIntegerLiteral(data []byte) bool {
+	if len(data) > 0 && data[0] == '-' {
+		data = data[1:]
+	}
+	if len(data) == 0 || (data[0] == '0' && len(data) > 1) {
+		return false
+	}
+	for _, c := range data {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // unsignedIDString is String's form of an unsigned integer id: an int64's

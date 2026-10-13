@@ -59,7 +59,8 @@ func TestRequestIdDecodesOnlyIntegerLiterals(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(wire), &id), wire)
 		assert.Equal(t, value, id.Value(), wire)
 	}
-	for _, wire := range []string{`1.5`, `1.0`, `1e3`, `1E3`, `-0.0`, `9.223372036854775808e18`, `1e19`, `1e400`} {
+	for _, wire := range []string{`1.5`, `1.0`, `1e3`, `1E3`, `-0.0`, `9.223372036854775808e18`, `1e19`, `1e400`,
+		`92233720368547758080.5`, `-92233720368547758080.5`, `92233720368547758080e400`, `-92233720368547758080E2`} {
 		var id RequestId
 		require.EqualError(t, json.Unmarshal([]byte(wire), &id), "invalid request id: "+wire)
 	}
