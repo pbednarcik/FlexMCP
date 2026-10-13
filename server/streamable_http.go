@@ -763,14 +763,22 @@ func (s *StreamableHTTPServer) methodNotAllowed(w HTTPResponseWriter, r *HTTPReq
 	writeHTTPError(w, reason, http.StatusMethodNotAllowed)
 }
 
+var (
+	sseEventData = []byte("event: message\ndata: ")
+	sseEventEnd  = []byte("\n\n")
+)
+
 func writeSSEEvent(w io.Writer, data any) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("failed to marshal data: %w", err)
 	}
-	_, err = fmt.Fprintf(w, "event: message\ndata: %s\n\n", jsonData)
-	if err != nil {
-		return fmt.Errorf("failed to write SSE event: %w", err)
+	// Encoded first, so an event that cannot be encoded writes nothing; the
+	// caller holds the response while the parts are written.
+	for _, part := range [][]byte{sseEventData, jsonData, sseEventEnd} {
+		if _, err := w.Write(part); err != nil {
+			return fmt.Errorf("failed to write SSE event: %w", err)
+		}
 	}
 	return nil
 }

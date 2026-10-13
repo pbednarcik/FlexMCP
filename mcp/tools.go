@@ -634,7 +634,8 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	r.RawStructuredContent = nil
 	r.StructuredContent = nil
 	if len(raw.StructuredContent) > 0 {
-		r.RawStructuredContent = append(json.RawMessage(nil), raw.StructuredContent...)
+		// The decoder gave raw.StructuredContent its own copy of the bytes.
+		r.RawStructuredContent = raw.StructuredContent
 		if err := json.Unmarshal(raw.StructuredContent, &r.StructuredContent); err != nil {
 			return err
 		}

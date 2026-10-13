@@ -549,6 +549,8 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			}
 
 			line = strings.TrimRight(line, "\r\n")
+			// Every decode below reads these bytes, and none keeps them.
+			encoded := []byte(line)
 			// First try to parse as a generic message to check for ID field
 			var baseMessage struct {
 				JSONRPC string          `json:"jsonrpc"`
@@ -556,7 +558,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				Method  jsonrpc.Method  `json:"method"`
 				Error   json.RawMessage `json:"error,omitempty"`
 			}
-			if err := json.Unmarshal([]byte(line), &baseMessage); err != nil {
+			if err := json.Unmarshal(encoded, &baseMessage); err != nil {
 				continue
 			}
 			var id mcp.RequestId
@@ -590,7 +592,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			// If it has a method but no ID, it's a notification
 			if baseMessage.Method.Present && len(baseMessage.ID) == 0 {
 				var notification mcp.JSONRPCNotification
-				if err := json.Unmarshal([]byte(line), &notification); err != nil {
+				if err := json.Unmarshal(encoded, &notification); err != nil {
 					continue
 				}
 				c.notifyMu.RLock()
@@ -605,7 +607,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			// a response, even when it cannot be decoded.
 			if baseMessage.Method.Present {
 				var request JSONRPCRequest
-				if err := json.Unmarshal([]byte(line), &request); err != nil {
+				if err := json.Unmarshal(encoded, &request); err != nil {
 					c.logger.Error("Dropping a server request that cannot be decoded", "err", err)
 					continue
 				}
@@ -615,7 +617,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 
 			// Otherwise, it's a response to our request
 			var response JSONRPCResponse
-			if err := json.Unmarshal([]byte(line), &response); err != nil {
+			if err := json.Unmarshal(encoded, &response); err != nil {
 				continue
 			}
 

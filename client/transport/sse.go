@@ -460,11 +460,13 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			close(endpointChan)
 		})
 	case "message":
+		// Every decode below reads these bytes, and none keeps them.
+		encoded := []byte(data)
 		var envelope struct {
 			ID     json.RawMessage `json:"id"`
 			Method jsonrpc.Method  `json:"method"`
 		}
-		if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+		if err := json.Unmarshal(encoded, &envelope); err != nil {
 			c.logger.Error("Error unmarshaling message", "err", err)
 			return
 		}
@@ -483,7 +485,7 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			return
 		case envelope.Method.Present && len(envelope.ID) == 0:
 			var notification mcp.JSONRPCNotification
-			if err := json.Unmarshal([]byte(data), &notification); err != nil {
+			if err := json.Unmarshal(encoded, &notification); err != nil {
 				return
 			}
 			c.notifyMu.RLock()
@@ -516,7 +518,7 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 		}
 
 		var baseMessage JSONRPCResponse
-		if err := json.Unmarshal([]byte(data), &baseMessage); err != nil {
+		if err := json.Unmarshal(encoded, &baseMessage); err != nil {
 			c.logger.Error("Error unmarshaling response", "err", err)
 			return
 		}

@@ -1678,7 +1678,8 @@ func (t *ToolResultContent) UnmarshalJSON(data []byte) error {
 	t.RawStructuredContent = nil
 	t.StructuredContent = nil
 	if len(raw.StructuredContent) > 0 {
-		t.RawStructuredContent = append(json.RawMessage(nil), raw.StructuredContent...)
+		// The decoder gave raw.StructuredContent its own copy of the bytes.
+		t.RawStructuredContent = raw.StructuredContent
 		if err := json.Unmarshal(raw.StructuredContent, &t.StructuredContent); err != nil {
 			return fmt.Errorf("unmarshaling tool result structured content: %w", err)
 		}

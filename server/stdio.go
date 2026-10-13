@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -412,9 +413,8 @@ func (s *StdioServer) processMessage(
 		return nil
 	}
 
-	// Parse the message as raw JSON
-	var rawMessage json.RawMessage
-	if err := json.Unmarshal([]byte(line), &rawMessage); err != nil {
+	rawMessage, ok := stdioMessage(line)
+	if !ok {
 		response := createErrorResponse(nil, mcp.PARSE_ERROR, "Parse error")
 		return s.writeResponse(response, writer)
 	}
@@ -501,6 +501,18 @@ func (s *StdioServer) processMessage(
 	return nil
 }
 
+// stdioMessage is the JSON-RPC message a line holds, or false when the line
+// is not JSON.
+func stdioMessage(line string) (json.RawMessage, bool) {
+	// The line is checked, not decoded: its copy is the message, without the
+	// JSON whitespace around it, as a json.RawMessage decoded from it was.
+	message := []byte(line)
+	if !json.Valid(message) {
+		return nil, false
+	}
+	return bytes.Trim(message, " \t\r\n"), true
+}
+
 // handleMessage runs HandleMessage, recovering a panicking handler so that
 // it can't end the process. A request gets an INTERNAL_ERROR response
 // carrying its id; a notification (nil id) gets no response at all.
@@ -537,8 +549,8 @@ func (s *StdioServer) writeResponse(
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	// Write response followed by newline
-	if _, err := fmt.Fprintf(writer, "%s\n", responseBytes); err != nil {
+	// One write: lines from concurrent requests must not interleave.
+	if _, err := writer.Write(append(responseBytes, '\n')); err != nil {
 		return err
 	}
 

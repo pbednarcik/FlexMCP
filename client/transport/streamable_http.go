@@ -774,11 +774,13 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 		var cursor sseCursor
 		delivered := false
 		handle := func(event, data string) {
+			// Every decode below reads these bytes, and none keeps them.
+			encoded := []byte(data)
 			var envelope struct {
 				ID     json.RawMessage `json:"id"`
 				Method jsonrpc.Method  `json:"method"`
 			}
-			if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+			if err := json.Unmarshal(encoded, &envelope); err != nil {
 				c.logger.Info("failed to unmarshal message (non-fatal)", "err", err, "message_len", len(data))
 				return
 			}
@@ -796,7 +798,7 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 				c.sendResponseToServer(ctx, NewJSONRPCErrorResponse(answerID, mcp.INVALID_REQUEST, "Invalid request: method must be a string", nil))
 			case envelope.Method.Present && len(envelope.ID) == 0:
 				var notification mcp.JSONRPCNotification
-				if err := json.Unmarshal([]byte(data), &notification); err != nil {
+				if err := json.Unmarshal(encoded, &notification); err != nil {
 					c.logger.Error("failed to unmarshal notification", "err", err)
 					return
 				}
@@ -811,14 +813,14 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 				c.sendResponseToServer(ctx, NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
 			case envelope.Method.Present:
 				var request JSONRPCRequest
-				if err := json.Unmarshal([]byte(data), &request); err != nil {
+				if err := json.Unmarshal(encoded, &request); err != nil {
 					c.logger.Error("failed to unmarshal server request", "err", err)
 					return
 				}
 				c.handleIncomingRequest(ctx, request)
 			default:
 				var message JSONRPCResponse
-				if err := json.Unmarshal([]byte(data), &message); err != nil {
+				if err := json.Unmarshal(encoded, &message); err != nil {
 					c.logger.Info("failed to unmarshal response (non-fatal)", "err", err, "message_len", len(data))
 					return
 				}

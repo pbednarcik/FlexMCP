@@ -99,3 +99,19 @@ func TestCallToolParamsUnmarshalAllocations(t *testing.T) {
 	})
 	assert.LessOrEqual(t, allocs, 12.0, "allocations per tools/call params read")
 }
+
+// The raw structured content of a result is the result's own: changing the
+// message it was read from leaves it as it was.
+func TestResultRawStructuredContentIsItsOwn(t *testing.T) {
+	data := []byte(`{"content":[],"structuredContent":{"n":1}}`)
+	var result CallToolResult
+	require.NoError(t, json.Unmarshal(data, &result))
+	copy(data, bytes.Repeat([]byte("x"), len(data)))
+	assert.Equal(t, `{"n":1}`, string(result.RawStructuredContent), "tool result")
+
+	data = []byte(`{"type":"tool_result","toolUseId":"u","content":[],"structuredContent":{"n":1}}`)
+	var content ToolResultContent
+	require.NoError(t, json.Unmarshal(data, &content))
+	copy(data, bytes.Repeat([]byte("x"), len(data)))
+	assert.Equal(t, `{"n":1}`, string(content.RawStructuredContent), "tool result content")
+}
