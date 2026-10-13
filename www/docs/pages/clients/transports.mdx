@@ -411,7 +411,7 @@ func createAuthenticatedStreamableHTTPClient() error {
 }
 ```
 
-PKCE is always on, as the MCP authorization rules require of a client: `GetAuthorizationURL` needs the S256 challenge of a code verifier (`GenerateCodeVerifier`, `GenerateCodeChallenge`) and refuses an authorization server whose metadata does not list `S256` in `code_challenge_methods_supported`; `ProcessAuthorizationResponse` needs the verifier back. `OAuthConfig.PKCEDisabled` switches all of that off for an authorization server known to lack PKCE, at the cost of the protection; `PKCEEnabled` is deprecated and has no effect.
+PKCE is on by default, as the MCP authorization rules require of a client: `GetAuthorizationURL` needs the S256 challenge of a code verifier (`GenerateCodeVerifier`, `GenerateCodeChallenge`) and refuses an authorization server whose metadata does not list `S256` in `code_challenge_methods_supported`; `ProcessAuthorizationResponse` needs the verifier back. `OAuthConfig.PKCEDisabled` switches all of that off for an authorization server known to lack PKCE, at the cost of the protection; `PKCEEnabled` is deprecated and has no effect.
 
 Hand the callback's query to `ProcessAuthorizationCallback`: it checks the state, validates the `iss` parameter against the issuer the user was sent to (RFC 9207), rejects a response without `iss` from an authorization server that advertises it, returns the server's error response as an `OAuthError`, and then exchanges the code. `ProcessAuthorizationResponse` is the same flow for a response that carries no `iss`. When the callback is handled by another handler instance, carry the issuer over with `GetExpectedIssuer` and `SetExpectedIssuer`, as you carry the state with `SetExpectedState`.
 

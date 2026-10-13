@@ -246,7 +246,7 @@ need code are marked **(code)**.
 
 ### OAuth
 
-- **(code)** PKCE with S256 is always on, and an authorization server whose
+- **(code)** PKCE with S256 is on by default, and an authorization server whose
   metadata does not list S256 is refused. `PKCEEnabled` has no effect;
   `PKCEDisabled` turns PKCE off for a server known to lack it.
 - **(code)** Hand the redirect's query to `ProcessAuthorizationCallback`, which
@@ -327,9 +327,12 @@ need code are marked **(code)**.
 - A request the server sends over SSE is not taken for the response to a
   client request with the same id. The SSE transport serves no server
   requests: it answers `ping` with an empty result and any other method with
-  `-32601`.
+  `-32601`; `Close` abandons an answer still being posted.
 - Over Streamable HTTP, a POST's answer is the response carrying its request's
-  id, or an error with a null id; a response to another id is an error.
+  id, or an error with a null id, whatever the HTTP status. A JSON answer to
+  another id is an error; on a stream such a response is skipped, and the
+  stream is read on for the request's own. An `initialize` left without its
+  answer gives back the session ID its headers carried.
 
 ## Request ids and progress tokens
 
@@ -347,12 +350,18 @@ These apply to servers and clients alike, whichever revision they speak.
   `-32600` and a null id, by the server and by a client alike; a message with
   `"id": null` and a method is such a request, not a notification. A response
   whose id a client cannot read answers nothing it can name and is dropped.
-- A message that is not a request object gets `-32600`, carrying its id when
-  that could be read; `-32700` is only for text that is not JSON.
+- A message that is neither a request, a notification nor a response, such
+  as one with no method, gets `-32600`, carrying its id when that could be
+  read, and over Streamable HTTP a `400`; `-32700` is only for text that is
+  not JSON.
+- A notification is never answered, not even one whose params cannot be read;
+  over Streamable HTTP such a notification is refused with `400`.
 - A response the server receives is never answered, whatever its id, and a
-  `null` result or error still makes one. Over Streamable HTTP on this
-  revision, where the server sends no requests, a POSTed response is refused
-  with `400`.
+  `null` result or error still makes one; a message with a method is a
+  request, whatever it carries besides. Over Streamable HTTP on this revision,
+  where the server sends no requests, a POSTed response, or an id alone, is
+  refused with `400`; earlier revisions accept an id alone with `202`, as an
+  empty response.
 
 ## Reference
 
