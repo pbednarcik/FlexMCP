@@ -512,8 +512,6 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 			upgradedHeader = true
 		}
 	}
-	done := make(chan struct{})
-
 	ctx = context.WithValue(ctx, requestHeader, r.header())
 
 	// A listen stream ends when Shutdown says so; see Shutdown.
@@ -530,48 +528,54 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// application/json response (the upgrade simply won't fire).
 	canStream := w.CanStream()
 
-	// forwarderExited lets the response path wait until the forwarder can no
-	// longer be holding an undelivered notification.
-	forwarderExited := make(chan struct{})
+	// The forwarder starts with the first notification the request sends:
+	// most requests send none, and a goroutine per request costs a thread
+	// wakeup each. done stops it; forwarderExited lets
+	// the response path wait until it can no longer be holding an
+	// undelivered notification.
+	var done, forwarderExited chan struct{}
+	session.forwardWith(func(notifications <-chan mcp.JSONRPCNotification) {
+		done = make(chan struct{})
+		forwarderExited = make(chan struct{})
+		go func() {
+			defer close(forwarderExited)
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.Error("panic in notification forwarder", "panic", r)
+				}
+			}()
+			for {
+				select {
+				case nt := <-notifications:
+					if listening {
+						nt = tagSubscription(nt, requestID)
+					}
+					func() {
+						mu.Lock()
+						defer mu.Unlock()
+						if !canStream {
+							// Without streaming we can't deliver notifications mid-flight;
+							// they will be dropped on the floor here. The final response
+							// path remains the buffered JSON reply below.
+							return
+						}
+						defer w.Flush()
 
-	go func() {
-		defer close(forwarderExited)
-		defer func() {
-			if r := recover(); r != nil {
-				s.logger.Error("panic in notification forwarder", "panic", r)
+						upgrade()
+						err := writeSSEEvent(w, nt)
+						if err != nil {
+							s.logger.Error("Failed to write SSE event", "err", err)
+							return
+						}
+					}()
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				}
 			}
 		}()
-		for {
-			select {
-			case nt := <-session.notificationChannel:
-				if listening {
-					nt = tagSubscription(nt, requestID)
-				}
-				func() {
-					mu.Lock()
-					defer mu.Unlock()
-					if !canStream {
-						// Without streaming we can't deliver notifications mid-flight;
-						// they will be dropped on the floor here. The final response
-						// path remains the buffered JSON reply below.
-						return
-					}
-					defer w.Flush()
-
-					upgrade()
-					err := writeSSEEvent(w, nt)
-					if err != nil {
-						s.logger.Error("Failed to write SSE event", "err", err)
-						return
-					}
-				}()
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	})
 
 	response := s.server.HandleMessage(ctx, rawData)
 	if listening {
@@ -579,12 +583,14 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		s.server.unregisterListenSession(session)
 	}
 
-	// Stop the forwarder and wait for it before touching the response: it may
-	// hold a notification it has not written yet, and every notification the
-	// handler sent must reach the client, in order, ahead of the response.
-	// From here on this goroutine is the only writer.
-	close(done)
-	<-forwarderExited
+	// Stop the forwarder, if one started, and wait for it before touching the
+	// response: it may hold a notification it has not written yet, and every
+	// notification the handler sent must reach the client, in order, ahead of
+	// the response. From here on this goroutine is the only writer.
+	if session.stopForwarding() {
+		close(done)
+		<-forwarderExited
+	}
 
 	if response == nil {
 		if !upgradedHeader {
@@ -595,10 +601,11 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 
 	mu.Lock()
 
+	notifications := session.pending()
 drainLoop:
 	for {
 		select {
-		case nt := <-session.notificationChannel:
+		case nt := <-notifications:
 			if !canStream {
 				continue
 			}
@@ -724,7 +731,12 @@ func (s *StreamableHTTPServer) writeJSONRPCError(
 type streamableHttpSession struct {
 	clientInfoStore // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
 
-	notificationChannel chan mcp.JSONRPCNotification // server -> client notifications
+	// notifyMu guards the channel and the forwarder's start; it is never held
+	// across a send or a write.
+	notifyMu            sync.Mutex
+	notificationChannel chan mcp.JSONRPCNotification         // server -> client notifications, made on first use
+	startForwarder      func(<-chan mcp.JSONRPCNotification) // armed by handlePost while it handles the request
+	forwarding          bool                                 // the forwarder was started
 	upgradeToSSE        atomic.Bool
 
 	// Whether the session serves a subscriptions/listen stream, and the
@@ -735,9 +747,7 @@ type streamableHttpSession struct {
 }
 
 func newStreamableHttpSession() *streamableHttpSession {
-	return &streamableHttpSession{
-		notificationChannel: make(chan mcp.JSONRPCNotification, 100),
-	}
+	return &streamableHttpSession{}
 }
 
 // SessionID is empty: the session is the request's own, and no client holds
@@ -746,7 +756,51 @@ func (s *streamableHttpSession) SessionID() string {
 	return ""
 }
 
+// NotificationChannel makes the channel on first use and, while the request
+// is being handled, starts its forwarder with the first notification.
 func (s *streamableHttpSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	if s.notificationChannel == nil {
+		s.notificationChannel = make(chan mcp.JSONRPCNotification, 100)
+	}
+	s.startForwarding()
+	return s.notificationChannel
+}
+
+// forwardWith arms start to run once, with the channel, when the first
+// notification is queued; at once when one is queued already.
+func (s *streamableHttpSession) forwardWith(start func(<-chan mcp.JSONRPCNotification)) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	s.startForwarder = start
+	if s.notificationChannel != nil {
+		s.startForwarding()
+	}
+}
+
+// startForwarding runs the armed start once. notifyMu is held.
+func (s *streamableHttpSession) startForwarding() {
+	if s.startForwarder != nil && !s.forwarding {
+		s.forwarding = true
+		s.startForwarder(s.notificationChannel)
+	}
+}
+
+// stopForwarding disarms the start, so a later notification waits on the
+// channel for the drain, and reports whether a forwarder was started.
+func (s *streamableHttpSession) stopForwarding() bool {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	s.startForwarder = nil
+	return s.forwarding
+}
+
+// pending is the channel queued notifications wait on: nil when none was ever
+// queued, which a select never receives from.
+func (s *streamableHttpSession) pending() <-chan mcp.JSONRPCNotification {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
 	return s.notificationChannel
 }
 
