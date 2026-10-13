@@ -240,19 +240,66 @@ func (s *MCPServer) headerBindingsForCall(params json.RawMessage) ([]mcp.ParamHe
 	var call struct {
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(params, &call); err != nil || call.Name == "" {
+	if err := json.Unmarshal(params, &call); err != nil {
 		return nil, false
 	}
+	return s.headerBindingsForTool(call.Name)
+}
 
+// headerBindingsForTool is [MCPServer.headerBindingsForCall] for a tool name
+// already read from the request.
+func (s *MCPServer) headerBindingsForTool(name string) ([]mcp.ParamHeaderBinding, bool) {
+	if name == "" {
+		return nil, false
+	}
 	s.toolsMu.RLock()
 	defer s.toolsMu.RUnlock()
-	if tool, ok := s.tools[call.Name]; ok {
-		return s.cachedHeaderBindings(call.Name, &tool.Tool), true
+	if tool, ok := s.tools[name]; ok {
+		return s.cachedHeaderBindings(name, &tool.Tool), true
 	}
-	if taskTool, ok := s.taskTools[call.Name]; ok {
-		return s.cachedHeaderBindings(call.Name, &taskTool.Tool), true
+	if taskTool, ok := s.taskTools[name]; ok {
+		return s.cachedHeaderBindings(name, &taskTool.Tool), true
 	}
 	return nil, false
+}
+
+// validateStandardHeadersOfRequest is
+// [MCPServer.validateStandardHeadersForMessage] for a request already read
+// into its envelope: the name the Mcp-Name header carries comes from it, and
+// params is decoded again only for a tool that binds parameters to headers.
+func (s *MCPServer) validateStandardHeadersOfRequest(
+	headers http.Header,
+	protocolVersion string,
+	method mcp.MCPMethod,
+	params *paramsPeek,
+	message json.RawMessage,
+) error {
+	if len(headers) == 0 || headers.Get(mcp.HeaderProtocolVersion) == "" {
+		return nil
+	}
+	bodyName := func() (string, bool) { return params.headerName(method) }
+	if err := mcp.ValidateStandardHeadersWithName(headers.Get, protocolVersion, method, bodyName); err != nil {
+		return err
+	}
+
+	if method != mcp.MethodToolsCall {
+		return nil
+	}
+	name, ok := bodyName()
+	if !ok {
+		return nil
+	}
+	bindings, ok := s.headerBindingsForTool(name)
+	if !ok || len(bindings) == 0 {
+		return nil
+	}
+	var wrapper struct {
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(message, &wrapper); err != nil {
+		return nil
+	}
+	return mcp.ValidateParamHeadersWithBindings(lookupHeader(headers), bindings, wrapper.Params)
 }
 
 // cachedHeaderBindings returns the bindings registration extracted for name.

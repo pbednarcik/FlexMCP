@@ -21,16 +21,19 @@ func (s *MCPServer) HandleMessage(
 	ctx = context.WithValue(ctx, serverKey{}, s)
 	var err *requestError
 
-	var baseMessage struct {
-		JSONRPC string          `json:"jsonrpc"`
-		Method  mcp.MCPMethod   `json:"method"`
-		RawID   json.RawMessage `json:"id,omitempty"`
-		ID      any             `json:"-"`
-		Result  json.RawMessage `json:"result,omitempty"`
-		Error   json.RawMessage `json:"error,omitempty"`
+	// The message is read once, with what the checks before dispatch need
+	// from params. Should params or _meta not be an object, the JSON-RPC
+	// members alone are read and those checks read the body on their own, as
+	// they always did, so a malformed request gets the same answer.
+	var envelope requestEnvelope
+	readOnce := json.Unmarshal(message, &envelope) == nil
+	baseMessage := &envelope.jsonrpcEnvelope
+	var readErr error
+	if !readOnce {
+		envelope = requestEnvelope{}
+		readErr = json.Unmarshal(message, baseMessage)
 	}
-
-	if err := json.Unmarshal(message, &baseMessage); err != nil {
+	if readErr != nil {
 		// JSON that is not a request object is an invalid request; only
 		// text that is not JSON is a parse error (JSON-RPC 2.0, 5.1).
 		// The error repeats the id when it could still be read.
@@ -110,7 +113,13 @@ func (s *MCPServer) HandleMessage(
 	// 2026-07-28 removed the initialize handshake: a modern request carries
 	// its protocol version, client identity, and client capabilities in _meta
 	// (SEP-2575). Anything else is served through the legacy path.
-	protocolInfo, protocolErr := extractRequestProtocolInfo(message)
+	var protocolInfo *RequestProtocolInfo
+	var protocolErr error
+	if readOnce {
+		protocolInfo, protocolErr = protocolInfoFromMeta(envelope.Params.Meta)
+	} else {
+		protocolInfo, protocolErr = extractRequestProtocolInfo(message)
+	}
 	if protocolErr != nil {
 		return errorResponseForProtocolError(baseMessage.ID, protocolErr)
 	}
@@ -123,8 +132,14 @@ func (s *MCPServer) HandleMessage(
 				Supported: SupportedProtocolVersionsFromContext(ctx),
 			})
 		}
-		if err := s.validateStandardHeadersForMessage(ctx, headers, protocolInfo.ProtocolVersion, baseMessage.Method, message); err != nil {
-			return errorResponseForProtocolError(baseMessage.ID, err)
+		var headerErr error
+		if readOnce {
+			headerErr = s.validateStandardHeadersOfRequest(headers, protocolInfo.ProtocolVersion, baseMessage.Method, &envelope.Params, message)
+		} else {
+			headerErr = s.validateStandardHeadersForMessage(ctx, headers, protocolInfo.ProtocolVersion, baseMessage.Method, message)
+		}
+		if headerErr != nil {
+			return errorResponseForProtocolError(baseMessage.ID, headerErr)
 		}
 		// Synthesize the session state the handshake used to establish, so
 		// that hooks and handlers observing the session behave identically in
@@ -638,4 +653,42 @@ func (s *MCPServer) HandleMessage(
 			fmt.Sprintf("Method %s not found", baseMessage.Method),
 		)
 	}
+}
+
+// jsonrpcEnvelope is the JSON-RPC members of a message.
+type jsonrpcEnvelope struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  mcp.MCPMethod   `json:"method"`
+	RawID   json.RawMessage `json:"id,omitempty"`
+	ID      any             `json:"-"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+}
+
+// requestEnvelope is a message read once for every check before dispatch:
+// its JSON-RPC members and what those checks read from params.
+type requestEnvelope struct {
+	jsonrpcEnvelope
+	Params paramsPeek `json:"params"`
+}
+
+// paramsPeek is what the checks before dispatch read from params: the
+// protocol keys of _meta, and the name or uri the Mcp-Name header carries.
+type paramsPeek struct {
+	Meta requestMeta `json:"_meta"`
+	Name string      `json:"name"`
+	URI  string      `json:"uri"`
+}
+
+// headerName reports what [mcp.ExtractHeaderName] finds in params for
+// method: the name of a tools/call or prompts/get, the uri of a
+// resources/read.
+func (p *paramsPeek) headerName(method mcp.MCPMethod) (string, bool) {
+	switch method {
+	case mcp.MethodToolsCall, mcp.MethodPromptsGet:
+		return p.Name, true
+	case mcp.MethodResourcesRead:
+		return p.URI, true
+	}
+	return "", false
 }
