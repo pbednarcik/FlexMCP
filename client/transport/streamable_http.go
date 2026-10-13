@@ -571,10 +571,11 @@ func (c *StreamableHTTP) SendRequest(
 			return nil, authorizationError(resp, c.oauthHandler, c.oauthRecipient)
 		}
 
-		// A JSON-RPC error in the body is the answer, whatever the status.
+		// A JSON-RPC error in the body is the answer, whatever the status, if
+		// it answers this request.
 		var errResponse JSONRPCResponse
 		body, _ := io.ReadAll(resp.Body)
-		if err := json.Unmarshal(body, &errResponse); err == nil && errResponse.Error != nil {
+		if err := json.Unmarshal(body, &errResponse); err == nil && errResponse.Error != nil && answers(request, &errResponse) == nil {
 			return &errResponse, nil
 		}
 		// Per the MCP spec's backwards compatibility section: a 4xx to an
@@ -599,6 +600,14 @@ func (c *StreamableHTTP) SendRequest(
 	// The session ID this response leaves in place, for markSessionStarted:
 	// read now, since the session may end while the body is still coming.
 	session, _ := c.sessionID.Load().(string)
+	// An initialize that gets no answer of its own gives back the session ID
+	// its headers carried, as a refused one does.
+	unanswered := func(err error) (*JSONRPCResponse, error) {
+		if sessionID != "" {
+			c.sessionID.CompareAndSwap(sessionID, "")
+		}
+		return nil, err
+	}
 
 	// Handle different response types
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
@@ -607,16 +616,10 @@ func (c *StreamableHTTP) SendRequest(
 		// Single response
 		var response JSONRPCResponse
 		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-			return nil, fmt.Errorf("failed to decode response: %w", err)
+			return unanswered(fmt.Errorf("failed to decode response: %w", err))
 		}
-
-		// should not be a notification; an error with a null id is the server
-		// saying it could not read this request's id, and so its answer
-		if response.ID.IsNil() && response.Error == nil {
-			return nil, fmt.Errorf("response should contain RPC id: %v", response)
-		}
-		if !response.ID.IsNil() && response.ID.String() != request.ID.String() {
-			return nil, fmt.Errorf("the response answers request %s, not %s", response.ID, request.ID)
+		if err := answers(request, &response); err != nil {
+			return unanswered(err)
 		}
 
 		c.markConnected(request, &response, sessionID, session)
@@ -625,12 +628,10 @@ func (c *StreamableHTTP) SendRequest(
 	case "text/event-stream":
 		// Server is using SSE for streaming responses
 		sseResponse, err := c.handleSSEResponse(ctx, resp.Body, &request.ID)
-		if err != nil {
-			return nil, err
+		if err != nil || sseResponse == nil {
+			return unanswered(err)
 		}
-		if sseResponse != nil {
-			c.markConnected(request, sseResponse, sessionID, session)
-		}
+		c.markConnected(request, sseResponse, sessionID, session)
 		return sseResponse, nil
 
 	default:
@@ -1325,4 +1326,22 @@ func (c *StreamableHTTP) contextAwareOfClientClose(ctx context.Context) (context
 		}
 	}()
 	return newCtx, cancel
+}
+
+// answers says whether response is request's answer: it carries the request's
+// id, or a null one on an error, the server saying it could not read the id
+// (JSON-RPC 2.0, section 5).
+func answers(request JSONRPCRequest, response *JSONRPCResponse) error {
+	if response.ID.IsNil() {
+		if response.Error == nil {
+			return fmt.Errorf("response should contain RPC id: %v", response)
+		}
+		return nil
+	}
+	if response.ID.String() != request.ID.String() {
+		got, _ := json.Marshal(response.ID)
+		want, _ := json.Marshal(request.ID)
+		return fmt.Errorf("the response answers request %s, not %s", got, want)
+	}
+	return nil
 }

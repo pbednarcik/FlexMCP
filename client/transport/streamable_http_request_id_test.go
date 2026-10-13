@@ -62,7 +62,7 @@ func TestStreamableHTTP_TheAnswerToAPostIsItsOwn(t *testing.T) {
 	t.Run("a json response to another id", func(t *testing.T) {
 		trans, _ := serve(t, "application/json", `{"jsonrpc":"2.0","id":2,"result":{"answer":0}}`)
 		_, err := trans.SendRequest(t.Context(), request)
-		require.ErrorContains(t, err, "answers request int64:2, not int64:1")
+		require.ErrorContains(t, err, "answers request 2, not 1")
 	})
 	t.Run("a stream error with a null id", func(t *testing.T) {
 		trans, _ := serve(t, "text/event-stream", refusal)
@@ -92,5 +92,62 @@ func TestStreamableHTTP_TheAnswerToAPostIsItsOwn(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("a server request with an unreadable id was not answered")
 		}
+	})
+}
+
+// An error answer on a failure status is still checked against its request: an
+// error to another id is no answer, and an initialize that gets none of its
+// own gives back the session ID its headers carried.
+func TestStreamableHTTP_AnErrorStatusAnswerIsCheckedToo(t *testing.T) {
+	serve := func(t *testing.T, status int, contentType, body string) *StreamableHTTP {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set(HeaderKeySessionID, "minted")
+			w.Header().Set("Content-Type", contentType)
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
+		}))
+		t.Cleanup(server.Close)
+		trans, err := NewStreamableHTTP(server.URL)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = trans.Close() })
+		return trans
+	}
+	list := JSONRPCRequest{JSONRPC: mcp.JSONRPC_VERSION, ID: mcp.NewRequestId(int64(1)), Method: "tools/list"}
+	initialize := JSONRPCRequest{JSONRPC: mcp.JSONRPC_VERSION, ID: mcp.NewRequestId(int64(1)), Method: string(mcp.MethodInitialize)}
+
+	t.Run("a failure status error to another id", func(t *testing.T) {
+		trans := serve(t, http.StatusBadRequest, "application/json", `{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"bad"}}`)
+		response, err := trans.SendRequest(t.Context(), list)
+		require.Error(t, err)
+		assert.Nil(t, response)
+	})
+	t.Run("a failure status error with a null id", func(t *testing.T) {
+		trans := serve(t, http.StatusBadRequest, "application/json", `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request id"}}`)
+		response, err := trans.SendRequest(t.Context(), list)
+		require.NoError(t, err)
+		require.NotNil(t, response.Error)
+		assert.Equal(t, mcp.INVALID_REQUEST, response.Error.Code)
+	})
+	t.Run("an initialize answered to another id", func(t *testing.T) {
+		trans := serve(t, http.StatusOK, "application/json", `{"jsonrpc":"2.0","id":2,"result":{}}`)
+		_, err := trans.SendRequest(t.Context(), initialize)
+		require.Error(t, err)
+		assert.Empty(t, trans.GetSessionId())
+	})
+	t.Run("an initialize answered with no json", func(t *testing.T) {
+		trans := serve(t, http.StatusOK, "application/json", `not json`)
+		_, err := trans.SendRequest(t.Context(), initialize)
+		require.Error(t, err)
+		assert.Empty(t, trans.GetSessionId())
+	})
+	t.Run("an initialize whose stream ends unanswered", func(t *testing.T) {
+		trans := serve(t, http.StatusOK, "text/event-stream", "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n")
+		_, _ = trans.SendRequest(t.Context(), initialize)
+		assert.Empty(t, trans.GetSessionId())
 	})
 }

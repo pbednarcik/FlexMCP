@@ -1529,7 +1529,7 @@ func TestContinuousListeningGoroutineExitsOnContextCancel(t *testing.T) {
 
 	// Server that always rejects requests, so Initialize never succeeds.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"jsonrpc":"2.0","id":"1","error":{"code":-32600,"message":"Bad Request"}}`, http.StatusBadRequest)
+		http.Error(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Bad Request"}}`, http.StatusBadRequest)
 	}))
 	defer srv.Close()
 
