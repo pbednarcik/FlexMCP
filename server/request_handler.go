@@ -25,12 +25,17 @@ func (s *MCPServer) HandleMessage(
 	// from params. Should params or _meta not be an object, the JSON-RPC
 	// members alone are read and those checks read the body on their own, as
 	// they always did, so a malformed request gets the same answer.
-	var envelope requestEnvelope
-	readOnce := json.Unmarshal(message, &envelope) == nil
+	// A transport that read the message already hands its read over.
+	envelope := readByTransport(ctx, message)
+	readOnce := envelope != nil
+	if envelope == nil {
+		envelope = new(requestEnvelope)
+		readOnce = json.Unmarshal(message, envelope) == nil
+	}
 	baseMessage := &envelope.jsonrpcEnvelope
 	var readErr error
 	if !readOnce {
-		envelope = requestEnvelope{}
+		*envelope = requestEnvelope{}
 		readErr = json.Unmarshal(message, baseMessage)
 	}
 	if readErr != nil {
@@ -691,4 +696,19 @@ func (p *paramsPeek) headerName(method mcp.MCPMethod) (string, bool) {
 		return p.URI, true
 	}
 	return "", false
+}
+
+// requestReader is a session whose transport read the request it serves
+// before dispatch.
+type requestReader interface {
+	readRequest(message json.RawMessage) *requestEnvelope
+}
+
+// readByTransport is the transport's read of message, when the request's
+// session kept one; nil otherwise.
+func readByTransport(ctx context.Context, message json.RawMessage) *requestEnvelope {
+	if reader, ok := ClientSessionFromContext(ctx).(requestReader); ok {
+		return reader.readRequest(message)
+	}
+	return nil
 }

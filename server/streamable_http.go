@@ -393,7 +393,21 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		Error  json.RawMessage `json:"error,omitempty"`
 		Method mcp.MCPMethod   `json:"method"`
 	}
-	if err := json.Unmarshal(rawData, &jsonMessage); err != nil {
+	// The message is read once, here, for the transport's checks and the
+	// core's, which takes the read from the request's session. Should it not
+	// read (params or _meta not an object, a member of the wrong type), the
+	// envelope alone is read and the era and the core read the body on their
+	// own, as they always did.
+	envelope := new(requestEnvelope)
+	readErr := json.Unmarshal(rawData, envelope)
+	if readErr == nil {
+		jsonMessage.ID, jsonMessage.Result, jsonMessage.Error, jsonMessage.Method =
+			envelope.RawID, envelope.Result, envelope.Error, envelope.Method
+	} else {
+		envelope = nil
+		readErr = json.Unmarshal(rawData, &jsonMessage)
+	}
+	if readErr != nil {
 		if json.Valid(rawData) {
 			id, _ := requestIDValue(jsonMessage.ID)
 			s.writeJSONRPCError(w, id, mcp.INVALID_REQUEST, "request body is not a JSON-RPC message")
@@ -416,7 +430,12 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// Decide which protocol era this message belongs to. Both eras run through
 	// the same stateless path below; the era only chooses the version check
 	// here, the modern header validation, and the HTTP status of an error.
-	era := detectRequestEra(r.header(), rawData)
+	var era requestEra
+	if envelope != nil {
+		era = eraOf(r.header().Get(mcp.HeaderProtocolVersion), envelope.Params.Meta.ProtocolVersion)
+	} else {
+		era = detectRequestEra(r.header(), rawData)
+	}
 
 	// On 2026-07-28 the server sends no requests, so a response from the client
 	// answers none: it is input the server cannot accept (rule 4), refused with
@@ -484,6 +503,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil
 	}
 	session := newStreamableHttpSession()
+	session.requestBody, session.request = rawData, envelope
 
 	// Broadcasts only reach sessions the server knows of, and a modern
 	// request's session is known nowhere else. A listen stream's session is
@@ -744,6 +764,20 @@ type streamableHttpSession struct {
 	subscriptionMu     sync.RWMutex
 	listening          bool
 	subscriptionFilter mcp.SubscriptionFilter
+
+	// The request the session serves, and its read, when the transport
+	// read it once.
+	requestBody []byte
+	request     *requestEnvelope
+}
+
+// readRequest is the transport's read of message, when message is the body
+// it read; nil otherwise.
+func (s *streamableHttpSession) readRequest(message json.RawMessage) *requestEnvelope {
+	if s.request == nil || len(message) == 0 || len(message) != len(s.requestBody) || &message[0] != &s.requestBody[0] {
+		return nil
+	}
+	return s.request
 }
 
 func newStreamableHttpSession() *streamableHttpSession {

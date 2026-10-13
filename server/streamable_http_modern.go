@@ -73,8 +73,6 @@ type requestEra struct {
 // in only one of the two is a header mismatch, reported separately by
 // [StreamableHTTPServer.validateModernRequest].
 func detectRequestEra(header http.Header, body []byte) requestEra {
-	era := requestEra{headerVersion: header.Get(mcp.HeaderProtocolVersion)}
-
 	// Only the version is read, typed, so no generic _meta map is built for
 	// a decision that needs one string. The tag spells mcp.MetaKeyProtocolVersion.
 	var wrapper struct {
@@ -84,12 +82,21 @@ func detectRequestEra(header http.Header, body []byte) requestEra {
 			} `json:"_meta"`
 		} `json:"params"`
 	}
+	var metaVersion string
 	if json.Unmarshal(body, &wrapper) == nil {
-		era.metaVersion = wrapper.Params.Meta.ProtocolVersion
+		metaVersion = wrapper.Params.Meta.ProtocolVersion
 	}
+	return eraOf(header.Get(mcp.HeaderProtocolVersion), metaVersion)
+}
 
-	era.modern = mcp.IsModernProtocol(era.metaVersion) || mcp.IsModernProtocol(era.headerVersion)
-	return era
+// eraOf is [detectRequestEra] for versions already read: from the
+// Mcp-Protocol-Version header and from the body's _meta.
+func eraOf(headerVersion, metaVersion string) requestEra {
+	return requestEra{
+		headerVersion: headerVersion,
+		metaVersion:   metaVersion,
+		modern:        mcp.IsModernProtocol(metaVersion) || mcp.IsModernProtocol(headerVersion),
+	}
 }
 
 // validateModernRequest applies the transport-level validation that protocol
