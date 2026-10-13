@@ -97,7 +97,7 @@ func TestProtocolInfoReadOnceMatchesEachKeyOnItsOwn(t *testing.T) {
 		t.Run(meta, func(t *testing.T) {
 			message := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":` + meta + `}}`)
 			var envelope requestEnvelope
-			require.NoError(t, json.Unmarshal(message, &envelope), "this request is read once")
+			require.NoError(t, readEnvelope(message, &envelope), "this request is read once")
 			once, onceErr := protocolInfoFromMeta(envelope.Params.Meta)
 			each, eachErr := extractRequestProtocolInfo(message)
 			assert.Equal(t, fmt.Sprint(eachErr), fmt.Sprint(onceErr))

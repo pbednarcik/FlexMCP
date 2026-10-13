@@ -399,7 +399,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// envelope alone is read and the era and the core read the body on their
 	// own, as they always did.
 	envelope := new(requestEnvelope)
-	readErr := json.Unmarshal(rawData, envelope)
+	readErr := readEnvelope(rawData, envelope)
 	if readErr == nil {
 		jsonMessage.ID, jsonMessage.Result, jsonMessage.Error, jsonMessage.Method =
 			envelope.RawID, envelope.Result, envelope.Error, envelope.Method

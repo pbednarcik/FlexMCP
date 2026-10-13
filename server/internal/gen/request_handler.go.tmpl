@@ -30,7 +30,7 @@ func (s *MCPServer) HandleMessage(
 	readOnce := envelope != nil
 	if envelope == nil {
 		envelope = new(requestEnvelope)
-		readOnce = json.Unmarshal(message, envelope) == nil
+		readOnce = readEnvelope(message, envelope) == nil
 	}
 	baseMessage := &envelope.jsonrpcEnvelope
 	var readErr error

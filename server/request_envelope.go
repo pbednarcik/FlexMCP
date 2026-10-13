@@ -3,9 +3,21 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
+
+// readEnvelope reads a message once, by encoding/json's own rules except that
+// a member named twice anywhere fails the read. Read into types, a duplicate
+// would merge into or keep the earlier value where the per-check reads kept
+// the last, so such a message takes those reads instead.
+func readEnvelope(message []byte, envelope *requestEnvelope) error {
+	return jsonv2.Unmarshal(message, envelope, envelopeOptions)
+}
+
+var envelopeOptions = jsonv2.JoinOptions(json.DefaultOptionsV1(), jsontext.AllowDuplicateNames(false))
 
 // jsonrpcEnvelope is the JSON-RPC members of a message.
 type jsonrpcEnvelope struct {
