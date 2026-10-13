@@ -235,6 +235,25 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 	return compiled, nil
 }
 
+// argumentsToValidate is what input validation reads of a call: the arguments
+// as the client sent them, which need no encoding again to be read and keep
+// their numbers exact, unless a hook that runs before the call holds the
+// request and could have changed them, or they are null, which validates as
+// an empty object.
+func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest) any {
+	raw := request.Params.RawArguments
+	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
+		return request.Params.Arguments
+	}
+	return raw
+}
+
+// hooksSeeCallArguments reports whether a hook runs before a tools/call with
+// the request in hand.
+func hooksSeeCallArguments(hooks *Hooks) bool {
+	return hooks != nil && (len(hooks.OnBeforeAny) > 0 || len(hooks.OnBeforeCallTool) > 0)
+}
+
 // normalizeArgumentsForValidation converts the raw arguments value (which may
 // be a json.RawMessage, a map, or already-decoded slice/scalars) into the
 // loosely-typed representation that the JSON Schema validator expects. Missing

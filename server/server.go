@@ -1959,7 +1959,7 @@ func (s *MCPServer) handleToolCall(
 	// validation failure is returned as a SEP-1303 tool execution error so the
 	// model receives feedback in its context window and can self-correct.
 	if s.inputValidator != nil {
-		if _, err := s.inputValidator.validate(tool.Tool, request.Params.Arguments); err != nil {
+		if _, err := s.inputValidator.validate(tool.Tool, s.argumentsToValidate(request)); err != nil {
 			return validationToolResult(err), nil
 		}
 	}
