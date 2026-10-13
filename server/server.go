@@ -203,6 +203,7 @@ type MCPServer struct {
 	name                       string
 	version                    string
 	implementation             mcp.Implementation
+	serverInfo                 any // serverImplementation boxed once, for result _meta
 	instructions               string
 	resources                  map[string]resourceEntry
 	resourceTemplates          map[string]resourceTemplateEntry
@@ -727,6 +728,10 @@ func NewMCPServer(
 	for _, opt := range opts {
 		opt(s)
 	}
+	// The identity is final once the options ran. Boxed here, every modern
+	// result carries it without boxing its own copy: a boxed struct is copied
+	// to the heap.
+	s.serverInfo = s.serverImplementation()
 
 	return s
 }

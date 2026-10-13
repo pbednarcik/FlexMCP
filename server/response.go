@@ -95,7 +95,7 @@ func (s *MCPServer) decorateResult(result any, method mcp.MCPMethod) (any, bool)
 
 	// Servers SHOULD identify themselves in every result.
 	if meta := metadata.EnsureResultMeta(); meta != nil && meta.ServerInfo() == nil {
-		meta.SetServerInfo(s.serverImplementation())
+		meta.SetMetaField(mcp.MetaKeyServerInfo, s.boxedServerInfo())
 	}
 
 	// ttlMs and cacheScope are required on list and read results.
@@ -109,6 +109,15 @@ func (s *MCPServer) decorateResult(result any, method mcp.MCPMethod) (any, bool)
 		return pointer.Elem().Interface(), true
 	}
 	return result, true
+}
+
+// boxedServerInfo is the server's identity as result _meta carries it: boxed
+// once by NewMCPServer, or now for a server it did not build.
+func (s *MCPServer) boxedServerInfo() any {
+	if s.serverInfo != nil {
+		return s.serverInfo
+	}
+	return s.serverImplementation()
 }
 
 // cacheHintsFor returns the caching hints configured for the given method,
