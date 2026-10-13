@@ -15,7 +15,12 @@
 
 ## What FlexMCP is
 
-FlexMCP is a fork of [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go), the Go library for building MCP servers and clients. It is aimed at projects on the newer protocol revisions that want closer compliance with the MCP specification and fewer allocations per call: complex clients, and busy servers that answer many complex calls. It speaks the 2026-07-28 revision first and the earlier ones a client may still ask for, and where mcp-go was lenient it keeps the specification's MUSTs, from request ids to OAuth (HTTPS-only authorization servers, PKCE on by default, a token sent only to its own server). Cutting allocations on the hot request path is the work in progress, and long-running tool calls through the Tasks extension come after.
+FlexMCP is a fork of [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go), the Go library for building MCP servers and clients. It is aimed at projects on the newer protocol revisions that want closer compliance with the MCP specification and fewer allocations per call: complex clients, and busy servers that answer many complex calls. It speaks the 2026-07-28 revision first and the earlier ones a client may still ask for, and where mcp-go was lenient it keeps the specification's MUSTs, from request ids to OAuth (HTTPS-only authorization servers, PKCE on by default, a token sent only to its own server). On the hot request path it is faster and allocates less than mcp-go and the official Go SDK on every leg of a three-way benchmark ([the numbers, and how to rerun them](www/docs/pages/performance.mdx)); long-running tool calls through the Tasks extension come next.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/benchmark-dark.svg">
+  <img alt="Time per tools/call, lower is better. Small call, modern: FlexMCP 7.7 µs, mcp-go 22 µs, go-sdk 86 µs. Small, legacy: 5.5, 10, 69 µs. Complex call, modern: 121, 252, 336 µs. Complex, legacy: 122, 155, 227 µs." src=".github/assets/benchmark-light.svg">
+</picture>
 
 ## Coming from mcp-go
 

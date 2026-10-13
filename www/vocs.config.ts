@@ -27,6 +27,10 @@ export default defineConfig({
       link: '/protocol-2026-07-28',
     },
     {
+      text: 'Performance',
+      link: '/performance',
+    },
+    {
       text: 'Building MCP Servers',
       collapsed: false,
       items: [

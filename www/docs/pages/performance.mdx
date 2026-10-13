@@ -1,0 +1,73 @@
+# Performance
+
+FlexMCP is built for servers that answer many tool calls. This page compares it with
+[mcp-go](https://github.com/mark3labs/mcp-go), the library it was forked from, and the official
+[Go SDK](https://github.com/modelcontextprotocol/go-sdk), on the same requests, and shows how to rerun the
+comparison yourself.
+
+## Results
+
+Measured on 2026-10-13: Apple M5 Max, macOS 27, Go 1.27.2; FlexMCP at `28d957a`, mcp-go v1.2.1, go-sdk v1.8.0.
+Each figure is the median of ten runs. Lower is better.
+
+### Time per call
+
+| Call | FlexMCP | mcp-go | go-sdk |
+| --- | --- | --- | --- |
+| Small, modern (2026-07-28) | **7.7 µs** | 22.3 µs | 85.9 µs |
+| Small, legacy (2025-11-25) | **5.5 µs** | 10.4 µs | 69.2 µs |
+| Complex, modern | **121 µs** | 252 µs | 336 µs |
+| Complex, legacy | **122 µs** | 155 µs | 227 µs |
+| Small, modern, parallel | **6.2 µs** | 18.1 µs | 94.1 µs |
+| Small, legacy, parallel | **5.1 µs** | 11.1 µs | 69.3 µs |
+| Complex, modern, parallel | **63.5 µs** | 116 µs | 197 µs |
+| Complex, legacy, parallel | **57.7 µs** | 72.1 µs | 137 µs |
+| Small, modern, over loopback HTTP | **30.2 µs** | 41.7 µs | 127 µs |
+| Small, legacy, over loopback HTTP | **25.7 µs** | 33.5 µs | 97.7 µs |
+
+### Allocations and memory per call
+
+| Call | FlexMCP | mcp-go | go-sdk |
+| --- | --- | --- | --- |
+| Small, modern | **111** · 11.8 KiB | 252 · 27.8 KiB | 340 · 529 KiB |
+| Small, legacy | **79** · 9.8 KiB | 114 · 20.6 KiB | 209 · 374 KiB |
+| Complex, modern | **2,084** · 164 KiB | 3,427 · 268 KiB | 4,310 · 830 KiB |
+| Complex, legacy | **2,049** · 162 KiB | 2,170 · 177 KiB | 2,538 · 581 KiB |
+
+FlexMCP is fastest and allocates least on every leg. The closest result is a complex legacy call, where it
+allocates 6% less than mcp-go and is about 20% faster.
+
+## What is measured
+
+Every library serves one tool, `echo`, behind its own Streamable HTTP handler, and answers one `tools/call`:
+
+- **Small**: a one-field schema and a short text result.
+- **Complex**: an 8 KB input schema with validation on, 20 nested items and 40 more arguments, and a result of
+  about 16 KB.
+- **Modern** requests speak protocol version 2026-07-28 (`_meta` and the standard headers, no session);
+  **legacy** requests speak 2025-11-25.
+- **Serial** calls run one at a time, **parallel** from every core at once, both through the handler's
+  `ServeHTTP` in-process. **Loopback** calls go through a real HTTP server on 127.0.0.1.
+
+## Fairness rules
+
+1. Every library gets the same request bytes and headers.
+2. Each library is set up as its own documentation sets up a production server: sessionless, JSON answers,
+   logging off. That is FlexMCP's only mode, mcp-go's `WithStateLess(true)`, and go-sdk's
+   `Stateless: true, JSONResponse: true`, the only go-sdk mode that serves 2026-07-28.
+3. Complex calls validate their input in all three libraries. Small calls run each library's default: go-sdk
+   validates, FlexMCP and mcp-go do not.
+4. No leg is timed until it has answered the tool's result, and a complex leg must also refuse an invalid
+   argument, so every library does the same work.
+
+## Rerun it
+
+From a checkout of FlexMCP:
+
+```bash
+go run -C bench/compare/run .
+```
+
+It runs every leg ten times for each library (about 25 minutes) and prints the comparison. Run it on a quiet
+machine. Figures from another machine will differ; the ranking is what to compare. The harness and the requests
+are in [`bench/compare`](https://github.com/pbednarcik/FlexMCP/tree/master/bench/compare).
