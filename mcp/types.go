@@ -4,11 +4,13 @@ package mcp
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/yosida95/uritemplate/v3"
@@ -220,14 +222,53 @@ type Meta struct {
 	AdditionalFields map[string]any
 }
 
+// MarshalJSON writes m as [Meta.MarshalJSONTo] does, with encoding/json's own
+// options.
 func (m *Meta) MarshalJSON() ([]byte, error) {
-	raw := make(map[string]any)
-	if m.ProgressToken != nil {
-		raw["progressToken"] = m.ProgressToken
-	}
-	maps.Copy(raw, m.AdditionalFields)
+	return jsonv2.Marshal(m, metaJSONOptions)
+}
 
-	return json.Marshal(raw)
+// metaJSONOptions are encoding/json's own, so [Meta.MarshalJSON] writes what
+// json.Marshal would.
+var metaJSONOptions = json.DefaultOptionsV1()
+
+// MarshalJSONTo writes the fields as one object into the encoder of the value
+// being marshaled, keys in the order json.Marshal gives a map's, with
+// progressToken among them unless a field of that name overrides it. Written
+// straight out, a _meta needs no merged copy of its map and no buffer of its
+// own; json.Marshal calls it in preference to MarshalJSON.
+func (m *Meta) MarshalJSONTo(enc *jsontext.Encoder) error {
+	_, overridden := m.AdditionalFields["progressToken"]
+	withToken := m.ProgressToken != nil && !overridden
+	count := len(m.AdditionalFields)
+	if withToken {
+		count++
+	}
+	keys := make([]string, 0, count)
+	for key := range m.AdditionalFields {
+		keys = append(keys, key)
+	}
+	if withToken {
+		keys = append(keys, "progressToken")
+	}
+	slices.Sort(keys)
+
+	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		value := m.AdditionalFields[key]
+		if withToken && key == "progressToken" {
+			value = m.ProgressToken
+		}
+		if err := enc.WriteToken(jsontext.String(key)); err != nil {
+			return err
+		}
+		if err := jsonv2.MarshalEncode(enc, value); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(jsontext.EndObject)
 }
 
 func (m *Meta) UnmarshalJSON(data []byte) error {
