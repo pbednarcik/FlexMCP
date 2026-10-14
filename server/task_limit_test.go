@@ -127,11 +127,14 @@ func TestMaxConcurrentTasks(t *testing.T) {
 		entry1.cancelFunc = cancel
 		server.tasksMu.Unlock()
 
-		// Cancel one task
+		// Cancel one task: its slot is held until its handler returns.
 		err = server.cancelTask(cancelCtx, "task-1")
 		require.NoError(t, err)
+		_, err = server.createTask(ctx, "task-3", "test-tool", nil, nil)
+		require.Error(t, err)
 
-		// Now we should be able to create a new task
+		// The handler returns: the slot is free.
+		server.releaseTaskSlot(entry1)
 		_, err = server.createTask(ctx, "task-3", "test-tool", nil, nil)
 		require.NoError(t, err)
 

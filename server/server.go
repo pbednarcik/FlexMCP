@@ -52,6 +52,9 @@ type taskEntry struct {
 	// that cancels its own task does not wait for itself.
 	createdHookDone bool
 	pendingHooks    []func()
+	// slotReleased, under tasksMu, says the concurrency slot createTask took
+	// has been given back: once, when the handler has returned.
+	slotReleased bool
 }
 
 // ServerOption is a function that configures an MCPServer.
@@ -248,7 +251,7 @@ type MCPServer struct {
 	tasks                    map[string]*taskEntry
 	expiredTasks             map[string]time.Time // Tracks recently expired task IDs with expiration timestamp
 	maxConcurrentTasks       *int                 // Optional limit on concurrent running tasks
-	activeTasks              int                  // Current count of running (non-terminal) tasks
+	activeTasks              int                  // Tasks whose handler may still be running
 	inflightCancels          sync.Map             // Maps request ID -> context.CancelFunc for in-flight requests
 	inputValidator           *inputSchemaValidator
 	outputValidator          *outputSchemaValidator
@@ -2192,6 +2195,10 @@ func (s *MCPServer) executeTaskTool(
 	taskTool ServerTaskTool,
 	request mcp.CallToolRequest,
 ) {
+	// The slot is given back once the handler has returned, however the
+	// task ended: a cancelled task's handler may run on for a while, and a
+	// panicking one is failed first.
+	defer s.releaseTaskSlot(entry)
 	defer func() {
 		if r := recover(); r != nil {
 			s.completeTask(entry, nil, fmt.Errorf("panic in task tool handler %s: %v", request.Params.Name, r))
@@ -2242,8 +2249,7 @@ func (s *MCPServer) executeTaskTool(
 					entry.completed = true
 					close(entry.done)
 
-					// Decrement active tasks counter
-					s.activeTasks--
+					s.releaseTaskSlotLocked(entry)
 
 					s.sendTaskStatusNotification(entry.task)
 
@@ -2306,6 +2312,10 @@ func (s *MCPServer) executeRegularToolAsTask(
 	regularTool ServerTool,
 	request mcp.CallToolRequest,
 ) {
+	// The slot is given back once the handler has returned, however the
+	// task ended: a cancelled task's handler may run on for a while, and a
+	// panicking one is failed first.
+	defer s.releaseTaskSlot(entry)
 	// A panic fails the task, as it does a task tool's: this goroutine has
 	// no transport above it to recover one.
 	defer func() {
@@ -2367,8 +2377,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 					entry.completed = true
 					close(entry.done)
 
-					// Decrement active tasks counter
-					s.activeTasks--
+					s.releaseTaskSlotLocked(entry)
 
 					s.sendTaskStatusNotification(entry.task)
 
@@ -2799,12 +2808,23 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 			CreatedAt: createdAt,
 			SessionID: getSessionID(ctx),
 		}
+		// createTask owns the slot until it hands the entry back: a panic
+		// out of any hook here, the created one or one queued behind it,
+		// means the task's goroutine, which would give the slot back,
+		// never starts.
+		handedOff := false
+		defer func() {
+			if !handedOff {
+				s.releaseTaskSlot(entry)
+			}
+		}()
 		func() {
 			// However the hook ends: one that panics must not leave the
 			// task's later hooks waiting.
 			defer s.finishCreatedHook(entry)
 			s.taskHooks.taskCreated(ctx, metrics)
 		}()
+		handedOff = true
 	}
 
 	// Start TTL cleanup if specified
@@ -2826,6 +2846,24 @@ func (s *MCPServer) finishCreatedHook(entry *taskEntry) {
 	for _, fire := range pending {
 		fire()
 	}
+}
+
+// releaseTaskSlot gives back the concurrency slot createTask took for entry,
+// once: the task's goroutine calls it when the handler has returned, and
+// completeTask when a handler's result arrives, whichever is first.
+func (s *MCPServer) releaseTaskSlot(entry *taskEntry) {
+	s.tasksMu.Lock()
+	s.releaseTaskSlotLocked(entry)
+	s.tasksMu.Unlock()
+}
+
+// releaseTaskSlotLocked is releaseTaskSlot under tasksMu.
+func (s *MCPServer) releaseTaskSlotLocked(entry *taskEntry) {
+	if entry.slotReleased {
+		return
+	}
+	entry.slotReleased = true
+	s.activeTasks--
 }
 
 // fireTaskHook runs fire, a hook of entry, with ctx now, or after the
@@ -2957,8 +2995,8 @@ func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
 	entry.completed = true
 	close(entry.done)
 
-	// Decrement active tasks counter
-	s.activeTasks--
+	// The handler has returned: its slot is free.
+	s.releaseTaskSlotLocked(entry)
 
 	// Send task status notification
 	s.sendTaskStatusNotification(entry.task)
@@ -3024,8 +3062,8 @@ func (s *MCPServer) cancelTask(ctx context.Context, taskID string) error {
 	entry.completed = true
 	close(entry.done)
 
-	// Decrement active tasks counter
-	s.activeTasks--
+	// The slot stays taken: the handler may not have noticed yet, and it
+	// gives the slot back when it returns.
 
 	// Send task status notification
 	s.sendTaskStatusNotification(entry.task)
