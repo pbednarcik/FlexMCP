@@ -377,9 +377,11 @@ func outboundHeader(header http.Header, requestMethod string) http.Header {
 // its own protocol metadata; the returned InitializeResult is rendered from
 // the discovery response so that callers observe the same value in both eras.
 //
-// When the probe fails with anything other than a recognized modern error the
-// server is taken to be legacy, and the classic initialize handshake is
-// performed instead.
+// When the probe fails before a modern version shared with the server is
+// found, the server is taken to be legacy, and the classic initialize
+// handshake is performed instead. That covers a server that answers the probe
+// but offers only legacy versions. Once a shared modern version is found, a
+// negotiation failure is returned to the caller rather than falling back.
 func (c *Client) Initialize(
 	ctx context.Context,
 	request mcp.InitializeRequest,
@@ -398,12 +400,15 @@ func (c *Client) Initialize(
 	// earlier revision or configured the transport in a way that rules it out.
 	if !c.legacyOnly && !c.transportRequiresLegacyProtocol() &&
 		(preferred == "" || mcp.IsModernProtocol(preferred)) {
-		discovered, err := c.negotiateModern(ctx, preferred)
+		discovered, modern, err := c.negotiateModern(ctx, preferred)
 		if err == nil {
 			c.serverCapabilities = discovered.Capabilities
 			c.applyNegotiatedVersion(c.protocolVersion)
 			c.initialized.Store(true)
 			return initializeResultFromDiscover(c.protocolVersion, discovered), nil
+		}
+		if modern {
+			return nil, err
 		}
 		// Fall through to the handshake: the server is not modern.
 	}

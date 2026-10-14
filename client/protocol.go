@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -306,6 +307,10 @@ func (c *Client) Discover(ctx context.Context, request mcp.DiscoverRequest) (*mc
 		return nil, err
 	}
 
+	if err := validateDiscoverResult(*response); err != nil {
+		return nil, fmt.Errorf("invalid server/discover result: %w", err)
+	}
+
 	var result mcp.DiscoverResult
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal discover result: %w", err)
@@ -316,18 +321,74 @@ func (c *Client) Discover(ctx context.Context, request mcp.DiscoverRequest) (*mc
 	return &result, nil
 }
 
+// validateDiscoverResult checks the fields that tell a discovery result apart
+// from a legacy server's unrelated successful result, since some legacy
+// servers answer an unknown method with an empty result. It is not a full
+// schema check: an absent resultType or cache hint decodes as before.
+func validateDiscoverResult(data json.RawMessage) error {
+	var shape struct {
+		SupportedVersions []*string                  `json:"supportedVersions"`
+		Capabilities      map[string]json.RawMessage `json:"capabilities"`
+		Meta              json.RawMessage            `json:"_meta"`
+	}
+	if err := json.Unmarshal(data, &shape); err != nil {
+		return err
+	}
+	if shape.SupportedVersions == nil {
+		return errors.New("supportedVersions must be a non-null array of strings")
+	}
+	for _, version := range shape.SupportedVersions {
+		if version == nil {
+			return errors.New("supportedVersions must contain only strings")
+		}
+	}
+	if shape.Capabilities == nil {
+		return errors.New("capabilities must be an object")
+	}
+	if len(shape.Meta) == 0 {
+		return nil
+	}
+	var meta map[string]json.RawMessage
+	if err := json.Unmarshal(shape.Meta, &meta); err != nil {
+		return err
+	}
+	if meta == nil {
+		return errors.New("_meta must be an object")
+	}
+	if raw, ok := meta[mcp.MetaKeyServerInfo]; ok {
+		var info struct {
+			Name    *string `json:"name"`
+			Version *string `json:"version"`
+		}
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return err
+		}
+		if info.Name == nil || info.Version == nil {
+			return errors.New("_meta serverInfo must be an object with string name and version")
+		}
+	}
+	return nil
+}
+
 // negotiateModern attempts to establish a modern, stateless connection.
 //
 // It sends server/discover at the client's preferred version. If the server
 // rejects that version but names the ones it does support, the request is
-// retried once at the highest mutually supported modern version. Any other
-// failure means the server is not modern, and the caller falls back to the
-// initialize handshake.
+// retried once at the highest mutually supported modern version, even when it
+// matches the rejected version. A discovery result is accepted at the version
+// the probe was sent with when the server lists it, and otherwise at the
+// highest modern version both sides support.
+//
+// It also reports whether the server answered as a modern one that the legacy
+// initialize handshake cannot reach: it shares a modern version with the
+// client, or it lists only versions the client does not speak. A failure then
+// is the caller's to see. Otherwise the server may be legacy, or pinned to a
+// legacy revision it lists, and the caller falls back to the handshake.
 //
 // The probe is bounded by a timeout: a well-behaved JSON-RPC server answers an
 // unknown method with MethodNotFound, but a server predating this method may
 // simply ignore it, which on stdio would otherwise block forever.
-func (c *Client) negotiateModern(ctx context.Context, preferred string) (*mcp.DiscoverResult, error) {
+func (c *Client) negotiateModern(ctx context.Context, preferred string) (*mcp.DiscoverResult, bool, error) {
 	if preferred == "" {
 		preferred = mcp.LATEST_PROTOCOL_VERSION
 	}
@@ -345,29 +406,64 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string) (*mcp.Di
 	previous := c.protocolVersion
 	c.applyNegotiatedVersion(preferred)
 
-	for range 2 {
-		result, err := c.Discover(probeCtx, mcp.DiscoverRequest{})
+	var err error
+	modern := false
+	for attempt := range 2 {
+		var result *mcp.DiscoverResult
+		result, err = c.Discover(probeCtx, mcp.DiscoverRequest{})
 		if err == nil {
-			return result, nil
-		}
-
-		// A recognized modern error identifies a modern server: renegotiate
-		// rather than falling back.
-		var unsupported mcp.UnsupportedProtocolVersionError
-		if errors.As(err, &unsupported) && len(unsupported.Supported) > 0 {
-			negotiated := mcp.NegotiateMutuallySupportedVersion(unsupported.Supported)
-			if negotiated != "" && mcp.IsModernProtocol(negotiated) && negotiated != c.protocolVersion {
-				c.applyNegotiatedVersion(negotiated)
-				continue
+			version := discoveredVersion(c.protocolVersion, result.SupportedVersions)
+			if version == "" {
+				// A server that answers server/discover is modern; it is
+				// reached through the handshake only when it lists a legacy
+				// version this client speaks.
+				c.applyNegotiatedVersion(previous)
+				return nil, !listsSharedVersion(result.SupportedVersions), fmt.Errorf("server/discover result lists no modern version this client supports: %v", result.SupportedVersions)
 			}
+			c.applyNegotiatedVersion(version)
+			return result, true, nil
 		}
 
-		c.applyNegotiatedVersion(previous)
-		return nil, err
+		// A rejection naming a modern version both sides support identifies a
+		// modern server: renegotiate rather than fall back. The retry stays
+		// bounded even when that version is the one just rejected.
+		var unsupported mcp.UnsupportedProtocolVersionError
+		if !errors.As(err, &unsupported) || unsupported.Supported == nil || attempt > 0 {
+			break
+		}
+		negotiated := mcp.NegotiateMutuallySupportedVersion(unsupported.Supported)
+		if !mcp.IsModernProtocol(negotiated) {
+			// The rejection is a modern server's. With no modern version in
+			// common, the client falls back to the handshake only when the
+			// server lists a legacy version it speaks.
+			modern = negotiated == ""
+			break
+		}
+		modern = true
+		c.applyNegotiatedVersion(negotiated)
 	}
 
 	c.applyNegotiatedVersion(previous)
-	return nil, fmt.Errorf("server/discover: exhausted version negotiation attempts")
+	return nil, modern, err
+}
+
+// listsSharedVersion reports whether supported names any version this client
+// speaks.
+func listsSharedVersion(supported []string) bool {
+	return mcp.NegotiateMutuallySupportedVersion(supported) != ""
+}
+
+// discoveredVersion picks the version to continue with after server/discover
+// lists supported: the one the probe was sent with, when listed, or else the
+// newest modern version both sides support. It returns "" when there is none.
+func discoveredVersion(sent string, supported []string) string {
+	if slices.Contains(supported, sent) {
+		return sent
+	}
+	if negotiated := mcp.NegotiateMutuallySupportedVersion(supported); mcp.IsModernProtocol(negotiated) {
+		return negotiated
+	}
+	return ""
 }
 
 // discoverProbeTimeout returns how long to wait for a server/discover reply
