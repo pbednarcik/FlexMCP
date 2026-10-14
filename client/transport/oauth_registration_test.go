@@ -203,8 +203,12 @@ func TestOAuthHandler_CredentialsAreReplacedAndReadAsOneRecord(t *testing.T) {
 		func() { _ = handler.RegisterClient(t.Context(), "test") },
 		func() { _, _ = handler.GetAuthorizationURL(t.Context(), "state", "challenge") },
 		func() {
+			// A refresh that overlaps the registration is not saved, since it
+			// was made with the replaced credentials; it is sent all the same.
 			_, err := handler.RefreshToken(t.Context(), "refresh")
-			assert.NoError(t, err, "the refresh did not reach the token endpoint")
+			if err != nil {
+				assert.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
+			}
 		},
 		func() { _ = handler.GetClientID() },
 		func() { _ = handler.GetClientSecret() },
@@ -213,6 +217,9 @@ func TestOAuthHandler_CredentialsAreReplacedAndReadAsOneRecord(t *testing.T) {
 		wg.Go(use)
 	}
 	wg.Wait()
+	server.mu.Lock()
+	assert.NotEmpty(t, server.forms, "the refresh did not reach the token endpoint")
+	server.mu.Unlock()
 	assert.Equal(t, "new", handler.GetClientID())
 	assert.Equal(t, "new-secret", handler.GetClientSecret())
 }

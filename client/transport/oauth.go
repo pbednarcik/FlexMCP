@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -160,6 +161,8 @@ type TokenStore interface {
 	GetToken(ctx context.Context) (*Token, error)
 
 	// SaveToken saves a token.
+	// It must not call back into the OAuthHandler that is saving: a refresh
+	// or code exchange started from it with ctx fails rather than waits.
 	// Returns context.Canceled or context.DeadlineExceeded if ctx is cancelled.
 	// Returns other errors for operational failures (I/O, database, etc.).
 	SaveToken(ctx context.Context, token *Token) error
@@ -307,6 +310,11 @@ type OAuthHandler struct {
 	// network round trips out of the critical section (#871).
 	metadataMu  sync.Mutex
 	resourceURL string // RFC 8707 resource indicator; set from protected resource metadata
+	// knownIssuer is the issuer discovery last named for the base URL. It
+	// survives a reset of discovery, so a token from another issuer stays
+	// refused until discovery names one again; a change of base URL forgets
+	// it.
+	knownIssuer string
 	// resourceScopes is scopes_supported from the protected resource
 	// metadata: what to ask for when no challenge and no configuration says.
 	resourceScopes []string
@@ -349,6 +357,14 @@ type OAuthHandler struct {
 	// send it.
 	refreshMu  sync.Mutex
 	refreshing *tokenRefresh
+
+	// saveMu makes checking and saving a token one step, so an older token
+	// request cannot overwrite what a newer one saved. tokenGen counts what
+	// supersedes a token request in flight: each code exchange and each
+	// replacement of the client credentials. A request saves only if
+	// tokenGen is still what it was when the request began.
+	saveMu   sync.Mutex
+	tokenGen atomic.Uint64
 }
 
 // clientCredentials is one snapshot of the client credentials, taken under
@@ -477,16 +493,13 @@ func (h *OAuthHandler) tokenIsForThisServer(token *Token) bool {
 func (h *OAuthHandler) tokenIsFor(token *Token, recipient string) bool {
 	h.metadataMu.Lock()
 	resource, base := h.resourceURL, h.baseURL
-	issuer := ""
-	if h.serverMetadata != nil {
-		issuer = h.serverMetadata.Issuer
-	}
+	issuer := h.knownIssuer
 	h.metadataMu.Unlock()
 	if recipient != "" && recipient != base {
 		return false
 	}
 	// A token from another authorization server than the one discovery
-	// names now belongs to a server the handler has moved away from.
+	// last named belongs to a server the handler has moved away from.
 	if token.Issuer != "" && issuer != "" && token.Issuer != issuer {
 		return false
 	}
@@ -544,6 +557,11 @@ func (h *OAuthHandler) getValidToken(ctx context.Context, recipient string) (*To
 	if err != nil || token.RefreshToken == "" {
 		// We need to get a new token through the authorization flow
 		return nil, ErrOAuthAuthorizationRequired
+	}
+	// Called from inside this handler's own SaveToken, a refresh would wait
+	// for the one that is saving.
+	if ctx.Value(savingKey{h}) != nil {
+		return nil, errSaveReentered
 	}
 
 	// Share one refresh among the callers that need it. With refresh token
@@ -616,6 +634,7 @@ func (h *OAuthHandler) refreshStoredToken(ctx context.Context) (*Token, error) {
 // that issued it, for the server it was issued for. A refresh token without a
 // record carries none.
 func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token, error) {
+	gen := h.tokenGen.Load()
 	// A refresh token without a record goes only to the issuer ClientIssuer
 	// names: the first issuer the client credentials were used with is not
 	// evidence of where the refresh token came from. With neither, it can go
@@ -703,7 +722,7 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
 
-	if err := h.saveIssuedToken(ctx, &tokenResp); err != nil {
+	if err := h.saveIssuedToken(ctx, &tokenResp, gen); err != nil {
 		return nil, err
 	}
 
@@ -976,6 +995,7 @@ func (h *OAuthHandler) SetBaseURL(baseURL string) {
 	}
 	h.baseURL = baseURL
 	h.advertisedPRMURL = ""
+	h.knownIssuer = ""
 	h.forgetDiscoveryLocked()
 	h.metadataMu.Unlock()
 
@@ -1128,6 +1148,7 @@ func (h *OAuthHandler) getServerMetadata(ctx context.Context) (*AuthServerMetada
 		// non-200 responses without touching shared state.
 		if result.metadata != nil {
 			h.serverMetadata = result.metadata
+			h.knownIssuer = result.metadata.Issuer
 			h.metadataFetchErr = nil
 		}
 		if result.resourceURL != "" {
@@ -1863,6 +1884,8 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	h.registeredAuthMethod = regResponse.TokenEndpointAuthMethod
 	h.registeredIssuer = metadata.Issuer
 	h.mu.Unlock()
+	// A token request in flight was made with the replaced credentials.
+	h.tokenGen.Add(1)
 
 	return nil
 }
@@ -1989,6 +2012,8 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	if codeVerifier == "" && !h.config.PKCEDisabled {
 		return ErrPKCERequired
 	}
+	// A new authorization supersedes every token request already in flight.
+	gen := h.tokenGen.Add(1)
 
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
@@ -2061,24 +2086,36 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
 
-	return h.saveIssuedToken(ctx, &tokenResp)
+	return h.saveIssuedToken(ctx, &tokenResp, gen)
 }
 
-// saveIssuedToken saves token, issued for token.Resource by token.Issuer,
-// unless the handler has moved to another resource or authorization server
-// since the request for it was sent: a response that arrives after the
-// move does not replace the token of the server the handler targets now.
-// A move that lands while the token is being saved is caught where tokens
-// are used: tokenIsFor refuses a token from another issuer. No lock is held
-// across SaveToken, so a token store may call back into the handler.
-func (h *OAuthHandler) saveIssuedToken(ctx context.Context, token *Token) error {
+// savingKey marks the context a handler passes to TokenStore.SaveToken.
+type savingKey struct{ h *OAuthHandler }
+
+// errSaveReentered is returned to a token request made from inside the
+// handler's own TokenStore.SaveToken, which would otherwise wait for itself.
+var errSaveReentered = errors.New("TokenStore.SaveToken called back into the OAuth handler that is saving")
+
+// saveIssuedToken saves token, issued for token.Resource by token.Issuer by
+// a request that began at generation gen, unless something has superseded
+// that request: a newer authorization or new client credentials (tokenGen
+// moved), or a move of the handler to another resource or authorization
+// server. The check and the save are one step under saveMu. A move that
+// lands during the save is caught where tokens are used: tokenIsFor refuses
+// a token from an issuer discovery no longer names.
+func (h *OAuthHandler) saveIssuedToken(ctx context.Context, token *Token, gen uint64) error {
+	if ctx.Value(savingKey{h}) != nil {
+		return errSaveReentered
+	}
+	h.saveMu.Lock()
+	defer h.saveMu.Unlock()
 	h.metadataMu.Lock()
 	current := h.serverMetadata != nil && h.serverMetadata.Issuer == token.Issuer && h.resourceURL == token.Resource
 	h.metadataMu.Unlock()
-	if !current {
-		return fmt.Errorf("%w: the handler moved to another server while the token was requested", ErrOAuthAuthorizationRequired)
+	if !current || h.tokenGen.Load() != gen {
+		return fmt.Errorf("%w: a newer authorization, new client credentials or a move to another server superseded the token request", ErrOAuthAuthorizationRequired)
 	}
-	if err := h.config.TokenStore.SaveToken(ctx, token); err != nil {
+	if err := h.config.TokenStore.SaveToken(context.WithValue(ctx, savingKey{h}, true), token); err != nil {
 		return fmt.Errorf("failed to save token: %w", err)
 	}
 	return nil
