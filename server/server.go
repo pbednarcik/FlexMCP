@@ -2306,6 +2306,14 @@ func (s *MCPServer) executeRegularToolAsTask(
 	regularTool ServerTool,
 	request mcp.CallToolRequest,
 ) {
+	// A panic fails the task, as it does a task tool's: this goroutine has
+	// no transport above it to recover one.
+	defer func() {
+		if r := recover(); r != nil {
+			s.completeTask(entry, nil, fmt.Errorf("panic in tool handler %s: %v", request.Params.Name, r))
+		}
+	}()
+
 	// Create cancellable context for this task execution
 	taskCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
