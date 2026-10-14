@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/text/language"
@@ -276,6 +277,16 @@ func normalizeArgumentsForValidation(rawArgs any) (any, error) {
 	return jsonschema.UnmarshalJSON(bytes.NewReader(encoded))
 }
 
+// A failing call's feedback is bounded: the first maxValidationMessages
+// failures, each cut at maxValidationMessageBytes, then the count of the
+// rest. The validator reports every failing array item, and each report
+// repeats the schema's own enum or pattern, so unbounded feedback would let
+// a request of a few kilobytes draw a response of hundreds of megabytes.
+const (
+	maxValidationMessages     = 10
+	maxValidationMessageBytes = 512
+)
+
 // formatValidationError turns the validator's structured error into a single
 // flat message that's friendly for an LLM to read. Each individual constraint
 // violation is rendered as `<path>: <message>` and joined with semicolons.
@@ -284,29 +295,38 @@ func formatValidationError(err error) error {
 	if !errors.As(err, &verr) {
 		return fmt.Errorf("input schema validation failed: %w", err)
 	}
-	parts := collectValidationMessages(verr)
+	var parts []string
+	rest := collectValidationMessages(verr, &parts)
 	if len(parts) == 0 {
 		return fmt.Errorf("input schema validation failed: %s", verr.Error())
+	}
+	if rest > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more", rest))
 	}
 	return fmt.Errorf("input schema validation failed: %s", strings.Join(parts, "; "))
 }
 
 // collectValidationMessages walks the leaf causes of a validation error tree
-// and produces one message per leaf. Non-leaf nodes don't carry useful
-// information for the model (they're aggregator nodes like "anyOf failed").
-func collectValidationMessages(verr *jsonschema.ValidationError) []string {
+// and appends one message per leaf to *out, the first maxValidationMessages
+// of them, returning how many leaves were left unrendered. Non-leaf nodes
+// don't carry useful information for the model (they're aggregator nodes
+// like "anyOf failed").
+func collectValidationMessages(verr *jsonschema.ValidationError, out *[]string) int {
 	if verr == nil {
-		return nil
+		return 0
 	}
-	var out []string
 	if len(verr.Causes) == 0 {
-		out = append(out, formatLeafMessage(verr))
-		return out
+		if len(*out) >= maxValidationMessages {
+			return 1
+		}
+		*out = append(*out, formatLeafMessage(verr))
+		return 0
 	}
+	rest := 0
 	for _, cause := range verr.Causes {
-		out = append(out, collectValidationMessages(cause)...)
+		rest += collectValidationMessages(cause, out)
 	}
-	return out
+	return rest
 }
 
 // validationMessages renders the validator's error kinds as English
@@ -318,7 +338,15 @@ func formatLeafMessage(verr *jsonschema.ValidationError) string {
 	if location == "" {
 		location = "<root>"
 	}
-	return location + ": " + verr.ErrorKind.LocalizedString(validationMessages)
+	msg := location + ": " + verr.ErrorKind.LocalizedString(validationMessages)
+	if len(msg) > maxValidationMessageBytes {
+		cut := maxValidationMessageBytes
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "..."
+	}
+	return msg
 }
 
 // jsonPointer renders a list of path segments as a RFC 6901 JSON Pointer.
