@@ -73,7 +73,12 @@ func (c *InProcessTransport) Start(ctx context.Context) error {
 		// only unregisters a session it can see, and the session is published
 		// only after registration, so a Close that lands during registration
 		// is caught by the recheck below and this call unregisters the session
-		// itself. Concurrent Start calls wait on startDone for this attempt.
+		// itself. Until then the server may still address the session, but
+		// nothing it sends reaches the client: forwarding starts only once the
+		// session is published. Unregistering it from Close instead would run
+		// the unregister hooks inside a registration hook that closes, and a
+		// second unregister by ID could remove a later session with the same
+		// ID. Concurrent Start calls wait on startDone for this attempt.
 		session := server.NewInProcessSession(c.sessionID)
 		err := c.server.RegisterSession(ctx, session)
 
