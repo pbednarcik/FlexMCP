@@ -482,12 +482,10 @@ func TestTaskHooks_CreatedHookPrecedesCancellation(t *testing.T) {
 		_, _ = server.handleTaskAugmentedToolCall(ctx, "slow", mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "slow", Task: &mcp.TaskParams{}}})
 	}()
 	taskID := <-entered
-	cancelErr := make(chan error, 1)
-	go func() { cancelErr <- server.cancelTask(ctx, taskID) }()
-	// Give the cancellation time to reach its hook, which must wait.
-	time.Sleep(100 * time.Millisecond)
+	// The cancellation returns while the created hook still runs: its hook
+	// waits for that one.
+	require.NoError(t, server.cancelTask(ctx, taskID))
 	close(release)
-	require.NoError(t, <-cancelErr)
 	select {
 	case <-cancelled:
 	case <-time.After(5 * time.Second):
@@ -505,30 +503,65 @@ func TestTaskHooks_CreatedHookPrecedesCancellation(t *testing.T) {
 }
 
 // A created hook that panics does not leave the task's later hooks waiting:
-// the task can still be cancelled.
+// a cancellation that landed while it ran still gets its hook.
 func TestTaskHooks_APanickingCreatedHookDoesNotBlockCancellation(t *testing.T) {
+	var server *MCPServer
 	hooks := &TaskHooks{}
-	hooks.AddOnTaskCreated(func(context.Context, TaskMetrics) { panic("hook bug") })
-	server := NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, true, false))
+	hooks.AddOnTaskCreated(func(ctx context.Context, m TaskMetrics) {
+		require.NoError(t, server.cancelTask(ctx, m.TaskID))
+		panic("hook bug")
+	})
+	cancelled := make(chan struct{})
+	hooks.AddOnTaskCancelled(func(context.Context, TaskMetrics) { close(cancelled) })
+	server = NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, true, false))
 
-	ctx := t.Context()
-	var entry *taskEntry
 	func() {
 		defer func() { require.Equal(t, "hook bug", recover()) }()
-		entry, _ = server.createTask(ctx, "task-1", "tool", nil, nil)
+		_, _ = server.createTask(t.Context(), "task-1", "tool", nil, nil)
 	}()
-	server.tasksMu.RLock()
-	entry = server.tasks["task-1"]
-	server.tasksMu.RUnlock()
-	require.NotNil(t, entry, "the task was not registered")
-
-	cancelled := make(chan error, 1)
-	go func() { cancelled <- server.cancelTask(ctx, "task-1") }()
 	select {
-	case err := <-cancelled:
-		require.NoError(t, err)
+	case <-cancelled:
 	case <-time.After(2 * time.Second):
-		t.Fatal("cancelling a task whose created hook panicked hung")
+		t.Fatal("the cancelled hook never ran after the created hook panicked")
+	}
+}
+
+// A hook that waited for the created hook runs with the values of the
+// request that raised it, but not its cancellation: that request may have
+// ended by then.
+func TestTaskHooks_AWaitingHookOutlivesItsRequest(t *testing.T) {
+	type keyType struct{}
+	entered, release := make(chan string, 1), make(chan struct{})
+	hooks := &TaskHooks{}
+	hooks.AddOnTaskCreated(func(_ context.Context, m TaskMetrics) {
+		entered <- m.TaskID
+		<-release
+	})
+	seen := make(chan context.Context, 1)
+	hooks.AddOnTaskCancelled(func(ctx context.Context, _ TaskMetrics) { seen <- ctx })
+	server := NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, true, false))
+	server.AddTaskTool(mcp.Tool{Name: "slow", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
+		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+
+	go func() {
+		_, _ = server.handleTaskAugmentedToolCall(t.Context(), "slow", mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "slow", Task: &mcp.TaskParams{}}})
+	}()
+	taskID := <-entered
+	// The cancel request ends, as a served request does, before the created
+	// hook lets its hook run.
+	cancelCtx, endRequest := context.WithCancel(context.WithValue(t.Context(), keyType{}, "request value"))
+	require.NoError(t, server.cancelTask(cancelCtx, taskID))
+	endRequest()
+	close(release)
+	select {
+	case ctx := <-seen:
+		assert.NoError(t, ctx.Err(), "the waiting hook ran on an ended context")
+		assert.Equal(t, "request value", ctx.Value(keyType{}))
+	case <-time.After(2 * time.Second):
+		t.Fatal("the cancelled hook never ran")
 	}
 }
 
@@ -565,4 +598,55 @@ func TestTaskHooks_FailedTaskMessageIsRenderedOutsideTheTaskLock(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the task never failed: its message was rendered under the task lock")
 	}
+}
+
+// A created hook may cancel the task it is called for: the cancellation
+// returns, and its hook runs after the created one.
+func TestTaskHooks_ACreatedHookMayCancelItsOwnTask(t *testing.T) {
+	var server *MCPServer
+	var mu sync.Mutex
+	var events []string
+	record := func(event string) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}
+	hooks := &TaskHooks{}
+	cancelErr := make(chan error, 1)
+	hooks.AddOnTaskCreated(func(ctx context.Context, m TaskMetrics) {
+		cancelErr <- server.cancelTask(ctx, m.TaskID)
+		record("created")
+	})
+	cancelled := make(chan struct{})
+	hooks.AddOnTaskCancelled(func(context.Context, TaskMetrics) {
+		record("cancelled")
+		close(cancelled)
+	})
+	server = NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, true, false))
+	server.AddTaskTool(mcp.Tool{Name: "slow", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
+		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = server.handleTaskAugmentedToolCall(t.Context(), "slow", mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "slow", Task: &mcp.TaskParams{}}})
+	}()
+	select {
+	case err := <-cancelErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a created hook cancelling its own task hung")
+	}
+	<-done
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the cancelled hook never ran")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"created", "cancelled"}, events)
 }
