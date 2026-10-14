@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"testing"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -203,4 +205,86 @@ func TestSchemaDraft07RefsStopAtANestedResource(t *testing.T) {
 	nested := schema.AdditionalFields["allOf"].([]any)[0].(map[string]any)
 	assert.Equal(t, "#/definitions/v", nested["$ref"])
 	assert.Contains(t, nested, "definitions")
+}
+
+// compileError compiles schema the way input validation does, returning
+// the validator's verdict.
+func compileError(schema []byte) error {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
+	if err != nil {
+		return err
+	}
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("mem:///schema.json", doc); err != nil {
+		return err
+	}
+	_, err = c.Compile("mem:///schema.json")
+	return err
+}
+
+// A schema the validator compiles still compiles after a decode and an
+// encode: where a subschema starts a resource of its own, and what its
+// dialect requires, is read as the validator reads it.
+func TestSchemaRoundTripStillCompiles(t *testing.T) {
+	const (
+		draft04 = `"$schema":"http://json-schema.org/draft-04/schema#",`
+		draft07 = `"$schema":"http://json-schema.org/draft-07/schema#",`
+	)
+	for name, source := range map[string]string{
+		"a fragment-only $id is an anchor": `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"#p","allOf":[{"$ref":"#/definitions/v"}]}}}`,
+		"an empty $id is no resource":      `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"","allOf":[{"$ref":"#/definitions/v"}]}}}`,
+		"a $id of # is no resource":        `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"#","allOf":[{"$ref":"#/definitions/v"}]}}}`,
+		"a $ref hides a draft-07 $id":      `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"allOf":[{"$id":"urn:hidden","$ref":"#/definitions/v"}]}`,
+		"draft-04 names resources by id":   `{` + draft04 + `"type":"object","required":["n"],"definitions":{"v":{"type":"string"}},"allOf":[{"id":"urn:nested","definitions":{"v":{"type":"number"}},"properties":{"n":{"$ref":"#/definitions/v"}}}]}`,
+		"draft-04 required is never empty": `{` + draft04 + `"type":"object"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.NoError(t, compileError([]byte(source)), "the source schema")
+			var schema ToolArgumentsSchema
+			require.NoError(t, json.Unmarshal([]byte(source), &schema))
+			encoded, err := json.Marshal(schema)
+			require.NoError(t, err)
+			assert.NoError(t, compileError(encoded), string(encoded))
+		})
+	}
+}
+
+// Each subschema is walked in the dialect of its resource, named by the
+// whole $schema URI as the validator reads it: a keyword holds schemas only
+// where that dialect says so, an embedded resource may name its own
+// dialect, and a URI naming no known dialect means 2020-12.
+func TestParamHeaderAnnotationsFollowTheResourceDialect(t *testing.T) {
+	const (
+		draft04 = `"$schema":"http://json-schema.org/draft-04/schema#",`
+		draft06 = `"$schema":"http://json-schema.org/draft-06/schema#",`
+		draft07 = `"$schema":"http://json-schema.org/draft-07/schema#",`
+	)
+	for name, tt := range map[string]struct {
+		schema  string
+		refused bool
+	}{
+		"draft-04 contains is data":         {`{` + draft04 + `"type":"object","contains":{"x-mcp-header":"data"}}`, false},
+		"draft-04 propertyNames is data":    {`{` + draft04 + `"type":"object","propertyNames":{"x-mcp-header":"data"}}`, false},
+		"draft-06 if is data":               {`{` + draft06 + `"type":"object","if":{"x-mcp-header":"data"}}`, false},
+		"draft-06 contains is a schema":     {`{` + draft06 + `"type":"object","contains":{"x-mcp-header":"X"}}`, true},
+		"draft-07 if is a schema":           {`{` + draft07 + `"type":"object","if":{"x-mcp-header":"X"}}`, true},
+		"a 2020-12 resource in draft-07":    {`{` + draft07 + `"type":"object","allOf":[{"$id":"urn:child","$schema":"https://json-schema.org/draft/2020-12/schema","prefixItems":[{"x-mcp-header":"X"}]}]}`, true},
+		"a draft-07 resource in 2020-12":    {`{"type":"object","allOf":[{"$id":"urn:child",` + draft07 + `"prefixItems":[{"x-mcp-header":"data"}]}]}`, false},
+		"$schema outside a resource root":   {`{"type":"object","allOf":[{` + draft07 + `"prefixItems":[{"x-mcp-header":"X"}]}]}`, true},
+		"a custom URI naming draft-07":      {`{"$schema":"urn:my:draft-07","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		"a custom URI naming 2019-09":       {`{"$schema":"urn:my:2019-09","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		"a fragment names no dialect":       {`{"$schema":"http://json-schema.org/draft-07/schema#/x","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		"https and no fragment":             {`{"$schema":"https://json-schema.org/draft-07/schema","type":"object","prefixItems":[{"x-mcp-header":"data"}]}`, false},
+		"the latest-dialect URI is 2020-12": {`{"$schema":"https://json-schema.org/schema","type":"object","additionalItems":{"x-mcp-header":"data"}}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool := NewToolWithRawSchema("t", "", json.RawMessage(tt.schema))
+			err := ValidateParamHeaderAnnotations(&tool)
+			if tt.refused {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

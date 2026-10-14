@@ -1008,10 +1008,12 @@ func toolArgumentsSchemaMarshalJSON(tis ToolArgumentsSchema) ([]byte, error) {
 		m["properties"] = map[string]any{}
 	}
 
-	// Marshal Required to '[]' rather than `nil` when its length equals zero
-	if len(tis.Required) > 0 {
+	// Marshal Required to '[]' rather than `nil` when its length equals zero,
+	// except in draft-04, where required is never empty.
+	switch {
+	case len(tis.Required) > 0:
 		m["required"] = tis.Required
-	} else {
+	case schemaDialectOf(tis.AdditionalFields["$schema"]) != dialectDraft04:
 		m["required"] = []string{}
 	}
 
@@ -1194,8 +1196,8 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 // a schema or an array of schemas, and the schemas inside it. Non-local refs
 // are left untouched, and so is everything that is not a schema in dialect:
 // a keyword is followed only when subschemaKeyword names it. A subschema
-// with its own $id is a resource of its own, whose local refs point into
-// it, so the rewrite stops there.
+// that is a resource of its own (see embeddedResource) has local refs that
+// point into it, so the rewrite stops there.
 func rewriteDraft07LocalRefs(schema any, dialect schemaDialect) {
 	rewriteDraft07LocalRefsAt(schema, dialect, false)
 }
@@ -1206,7 +1208,7 @@ func rewriteDraft07LocalRefsAt(schema any, dialect schemaDialect, root bool) {
 	const draft07Prefix = "#/definitions/"
 	switch v := schema.(type) {
 	case map[string]any:
-		if _, ok := v["$id"]; ok && !root {
+		if resource, _ := embeddedResource(v, dialect); resource && !root {
 			return
 		}
 		if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, draft07Prefix) {
@@ -1245,22 +1247,74 @@ const (
 	// dialect2020 is 2020-12, the dialect of a schema that declares none.
 	dialect2020 schemaDialect = iota
 	dialect2019
-	// dialectDraft07 covers drafts 4, 6 and 7, whose applicators match.
 	dialectDraft07
+	dialectDraft06
+	dialectDraft04
 )
 
-// schemaDialectOf returns the dialect a root $schema value declares. A
-// schema without $schema is 2020-12, and so is one naming a dialect this
-// package does not know, which validation refuses on its own.
+// beforeDraft2019 reports whether d is draft-04, -06 or -07, where a $ref
+// hides every keyword beside it.
+func (d schemaDialect) beforeDraft2019() bool {
+	return d == dialectDraft04 || d == dialectDraft06 || d == dialectDraft07
+}
+
+// schemaDialectOf returns the dialect a $schema value names, read as the
+// validator reads it: the whole URI, http or https, with no fragment or an
+// empty one. A schema without $schema is 2020-12, and so is one naming a
+// dialect this package does not know, which validation refuses on its own.
 func schemaDialectOf(schemaURI any) schemaDialect {
 	uri, _ := schemaURI.(string)
-	switch {
-	case strings.Contains(uri, "draft-07"), strings.Contains(uri, "draft-06"), strings.Contains(uri, "draft-04"):
-		return dialectDraft07
-	case strings.Contains(uri, "2019-09"):
+	uri, fragment, _ := strings.Cut(uri, "#")
+	if fragment != "" {
+		return dialect2020
+	}
+	if rest, ok := strings.CutPrefix(uri, "http://"); ok {
+		uri = rest
+	} else {
+		uri = strings.TrimPrefix(uri, "https://")
+	}
+	switch uri {
+	case "json-schema.org/draft/2019-09/schema":
 		return dialect2019
+	case "json-schema.org/draft-07/schema":
+		return dialectDraft07
+	case "json-schema.org/draft-06/schema":
+		return dialectDraft06
+	case "json-schema.org/draft-04/schema":
+		return dialectDraft04
 	}
 	return dialect2020
+}
+
+// embeddedResource reports whether schema, a subschema met while walking
+// one of dialect, is the root of a schema resource of its own, and the
+// dialect it is walked in, both as the validator decides them: it is a
+// resource when its id names one (see hasResourceID), and only then does a
+// $schema it carries name its dialect.
+func embeddedResource(schema map[string]any, dialect schemaDialect) (bool, schemaDialect) {
+	if uri, ok := schema["$schema"].(string); ok {
+		if own := schemaDialectOf(uri); hasResourceID(schema, own) {
+			return true, own
+		}
+	}
+	return hasResourceID(schema, dialect), dialect
+}
+
+// hasResourceID reports whether schema, read in dialect, has an id ($id, or
+// id in draft-04) that names a resource: one that is not empty without its
+// fragment, which alone is only an anchor in the resource schema is in.
+// Before 2019-09 a $ref hides the keywords beside it, the id among them.
+func hasResourceID(schema map[string]any, dialect schemaDialect) bool {
+	if _, ok := schema["$ref"]; ok && dialect.beforeDraft2019() {
+		return false
+	}
+	idKeyword := "$id"
+	if dialect == dialectDraft04 {
+		idKeyword = "id"
+	}
+	id, _ := schema[idKeyword].(string)
+	base, _, _ := strings.Cut(id, "#")
+	return base != ""
 }
 
 // subschemaKind says what the value of a JSON Schema keyword holds.
@@ -1282,14 +1336,25 @@ const (
 // here.
 func subschemaKeyword(key string, dialect schemaDialect) subschemaKind {
 	switch key {
-	case "contains", "additionalProperties", "propertyNames",
-		"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "items":
+	case "additionalProperties", "allOf", "anyOf", "oneOf", "not", "items":
 		return subschemas
 	case "properties", "patternProperties":
 		return namedSubschemas
+	case "contains", "propertyNames":
+		// Since draft-06.
+		if dialect == dialectDraft04 {
+			return noSubschema
+		}
+		return subschemas
+	case "if", "then", "else":
+		// Since draft-07.
+		if dialect == dialectDraft04 || dialect == dialectDraft06 {
+			return noSubschema
+		}
+		return subschemas
 	}
 	switch dialect {
-	case dialectDraft07:
+	case dialectDraft04, dialectDraft06, dialectDraft07:
 		switch key {
 		case "additionalItems":
 			return subschemas

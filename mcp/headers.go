@@ -403,8 +403,9 @@ func genericSchema(schema any) (any, error) {
 }
 
 // misplacedParamHeader returns the location of the first x-mcp-header in
-// schema, of dialect, at path, that is not on a property reached from the root through
-// properties keys alone (not through items, a composition keyword, $defs or
+// schema at path, walked in dialect or in the one an embedded resource
+// names (see embeddedResource), that is not on a property reached from the
+// root through properties keys alone (not through items, a composition keyword, $defs or
 // any other), or "" when there is none. chain says schema is reached that
 // way, property that it is a property. Only schemas are searched: a keyword
 // whose value holds none (see subschemaKeyword) holds data.
@@ -414,6 +415,7 @@ func misplacedParamHeader(schema any, dialect schemaDialect, path string, chain,
 		if _, ok := v["x-mcp-header"]; ok && (!chain || !property) {
 			return path
 		}
+		_, dialect = embeddedResource(v, dialect)
 		for _, key := range slices.Sorted(maps.Keys(v)) {
 			child := v[key]
 			switch kind := subschemaKeyword(key, dialect); {
