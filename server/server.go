@@ -2845,6 +2845,12 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 	entry.createdHookDone = s.taskHooks == nil
 	s.tasksMu.Unlock()
 
+	// The TTL runs from creation, before the hooks: a task whose creation
+	// fails below still expires.
+	if ttl != nil && *ttl > 0 {
+		s.scheduleTaskCleanup(taskID, entry, *ttl)
+	}
+
 	// Fire task created hook, outside the lock: a hook may take time, or
 	// read task state through the server.
 	if s.taskHooks != nil {
@@ -2855,13 +2861,15 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 			CreatedAt: createdAt,
 			SessionID: getSessionID(ctx),
 		}
-		// createTask owns the slot until it hands the entry back: a panic
+		// createTask owns the task until it hands the entry back: a panic
 		// out of any hook here, the created one or one queued behind it,
-		// means the task's goroutine, which would give the slot back,
-		// never starts.
+		// means the task's goroutine never starts, so the task is failed
+		// here, which gives its slot back too; one cancelled meanwhile keeps
+		// that status and gives the slot back directly.
 		handedOff := false
 		defer func() {
 			if !handedOff {
+				s.completeTask(entry, nil, errTaskHookPanicked)
 				s.releaseTaskSlot(entry)
 			}
 		}()
@@ -2872,11 +2880,6 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 			s.taskHooks.taskCreated(ctx, metrics)
 		}()
 		handedOff = true
-	}
-
-	// Start TTL cleanup if specified
-	if ttl != nil && *ttl > 0 {
-		s.scheduleTaskCleanup(taskID, entry, *ttl)
 	}
 
 	return entry, nil

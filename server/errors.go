@@ -50,6 +50,10 @@ var (
 	ErrLoadShedding = errors.New("the server is busy, retry later")
 )
 
+// errTaskHookPanicked fails a task a hook panicked on while it was created:
+// its goroutine never starts, so nothing else would end it.
+var errTaskHookPanicked = errors.New("a task hook panicked while the task was created")
+
 // noResultError reports a handler that returned neither a result nor an
 // error, which leaves the server nothing to send.
 func noResultError(kind, name string) error {
