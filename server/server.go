@@ -12,6 +12,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1399,6 +1400,9 @@ func (s *MCPServer) handleSetLevel(
 	}
 }
 
+// listByPagination returns the page of allElements that follows cursor. A nil
+// or empty cursor means the start of the list. allElements must be sorted by
+// name, then by pageTieBreak.
 func listByPagination[T mcp.Named](
 	_ context.Context,
 	s *MCPServer,
@@ -1406,15 +1410,31 @@ func listByPagination[T mcp.Named](
 	allElements []T,
 ) ([]T, *mcp.Cursor, error) {
 	startPos := 0
-	if cursor != nil {
-		c, err := base64.StdEncoding.DecodeString(string(*cursor))
+	if cursor != nil && *cursor != "" {
+		encodedName, encodedTieBreak, hasTieBreak := strings.Cut(string(*cursor), ".")
+		c, err := base64.StdEncoding.DecodeString(encodedName)
 		if err != nil {
 			return nil, nil, err
 		}
-		cString := string(c)
-		startPos = sort.Search(len(allElements), func(i int) bool {
-			return allElements[i].GetName() > cString
-		})
+		name := string(c)
+		if !hasTieBreak {
+			// A name-only cursor, as older servers issued, cannot say where in
+			// a group of equally named elements its page ended. It continues
+			// after the whole group, as it always did, rather than repeating
+			// the group from its start.
+			startPos = sort.Search(len(allElements), func(i int) bool {
+				return allElements[i].GetName() > name
+			})
+		} else {
+			t, err := base64.StdEncoding.DecodeString(encodedTieBreak)
+			if err != nil {
+				return nil, nil, err
+			}
+			tieBreak := string(t)
+			startPos = sort.Search(len(allElements), func(i int) bool {
+				return comparePageKey(&allElements[i], name, tieBreak) > 0
+			})
+		}
 	}
 	endPos := len(allElements)
 	if s.paginationLimit != nil && *s.paginationLimit > 0 {
@@ -1432,13 +1452,52 @@ func listByPagination[T mcp.Named](
 	// set the next cursor
 	nextCursor := func() *mcp.Cursor {
 		if s.paginationLimit != nil && *s.paginationLimit > 0 && len(elementsToReturn) >= *s.paginationLimit {
-			nc := elementsToReturn[len(elementsToReturn)-1].GetName()
-			next := mcp.Cursor(base64.StdEncoding.EncodeToString([]byte(nc)))
+			next := encodePageCursor(&elementsToReturn[len(elementsToReturn)-1])
 			return &next
 		}
 		return nil
 	}()
 	return elementsToReturn, nextCursor, nil
+}
+
+// pageTieBreak orders list elements that share a name. Tool, prompt and task
+// names are unique, but resource and resource template names need not be, so
+// those are ordered by URI or URI template within a name. Both are unique, as
+// the server keys its resources and templates by them. Without a tie-break the
+// cursor could not say where among equally named elements a page ended, and
+// the rest of them would be skipped.
+func pageTieBreak[T mcp.Named](element *T) string {
+	switch e := any(element).(type) {
+	case *mcp.Resource:
+		return e.URI
+	case *mcp.ResourceTemplate:
+		if e.URITemplate != nil {
+			return e.URITemplate.Raw()
+		}
+	}
+	return ""
+}
+
+// comparePageKey compares element with the position given by a name and a
+// tie-break. The tie-break is only looked at when the names are equal.
+func comparePageKey[T mcp.Named](element *T, name, tieBreak string) int {
+	if c := cmp.Compare((*element).GetName(), name); c != 0 {
+		return c
+	}
+	return cmp.Compare(pageTieBreak(element), tieBreak)
+}
+
+// encodePageCursor returns the cursor for the page after element: the base64
+// of its name, followed for resources and templates by a dot and the base64 of
+// their URI or URI template, even when that is empty. The dot is outside the
+// base64 alphabet, so it tells these cursors apart from name-only ones.
+func encodePageCursor[T mcp.Named](element *T) mcp.Cursor {
+	cursor := base64.StdEncoding.EncodeToString([]byte((*element).GetName()))
+	switch any(element).(type) {
+	case *mcp.Resource, *mcp.ResourceTemplate:
+		cursor += "." + base64.StdEncoding.EncodeToString([]byte(pageTieBreak(element)))
+	}
+	return mcp.Cursor(cursor)
 }
 
 func (s *MCPServer) handleListResources(
@@ -1453,9 +1512,12 @@ func (s *MCPServer) handleListResources(
 	}
 	s.resourcesMu.RUnlock()
 
-	// Sort the resources by name
+	// Sort the resources by name, then URI
 	resourcesList := slices.SortedFunc(maps.Values(resourceMap), func(a, b mcp.Resource) int {
-		return cmp.Compare(a.Name, b.Name)
+		if c := cmp.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.URI, b.URI)
 	})
 
 	// Apply pagination
@@ -1499,8 +1561,12 @@ func (s *MCPServer) handleListResourceTemplates(
 		templates = append(templates, template)
 	}
 
-	sort.Slice(templates, func(i, j int) bool {
-		return templates[i].Name < templates[j].Name
+	// Sort the templates by name, then URI template
+	slices.SortFunc(templates, func(a, b mcp.ResourceTemplate) int {
+		if c := cmp.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return cmp.Compare(pageTieBreak(&a), pageTieBreak(&b))
 	})
 	templatesToReturn, nextCursor, err := listByPagination(
 		ctx,
