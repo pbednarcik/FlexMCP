@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -370,8 +371,7 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 		// no Mcp-Param-* header is ever generated from it.
 		return nil
 	}
-	var schema any
-	if remarshal(toolInputSchema(tool), &schema) == nil {
+	if schema, err := genericSchema(toolInputSchema(tool)); err == nil {
 		if at := misplacedParamHeader(schema, "#", true, false); at != "" {
 			return fmt.Errorf("x-mcp-header at %s: only a property reached from the root through properties alone may carry it", at)
 		}
@@ -382,12 +382,28 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 	return validateParamHeadersIn(props, "", make(map[string]bool))
 }
 
+// genericSchema decodes schema into maps and slices, numbers kept as
+// json.Number so no number, however large, fails the decode.
+func genericSchema(schema any) (any, error) {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var generic any
+	if err := decoder.Decode(&generic); err != nil {
+		return nil, err
+	}
+	return generic, nil
+}
+
 // misplacedParamHeader returns the location of the first x-mcp-header in
 // schema, at path, that is not on a property reached from the root through
 // properties keys alone (not through items, a composition keyword, $defs or
 // any other), or "" when there is none. chain says schema is reached that
-// way, property that it is a property. Data (const, enum, default, examples
-// and vendor keywords) is not searched.
+// way, property that it is a property. Only schemas are searched: a keyword
+// whose value holds none (see subschemaKeyword) holds data.
 func misplacedParamHeader(schema any, path string, chain, property bool) string {
 	switch v := schema.(type) {
 	case map[string]any:
@@ -396,8 +412,7 @@ func misplacedParamHeader(schema any, path string, chain, property bool) string 
 		}
 		for _, key := range slices.Sorted(maps.Keys(v)) {
 			child := v[key]
-			switch {
-			case key == "x-mcp-header" || isSchemaDataKeyword(key):
+			switch kind := subschemaKeyword(key); {
 			case key == "properties":
 				if properties, ok := child.(map[string]any); ok {
 					for _, name := range slices.Sorted(maps.Keys(properties)) {
@@ -406,7 +421,7 @@ func misplacedParamHeader(schema any, path string, chain, property bool) string 
 						}
 					}
 				}
-			case isSchemaMapKeyword(key):
+			case kind == namedSubschemas:
 				if schemas, ok := child.(map[string]any); ok {
 					for _, name := range slices.Sorted(maps.Keys(schemas)) {
 						if at := misplacedParamHeader(schemas[name], path+"/"+key+"/"+name, false, false); at != "" {
@@ -414,7 +429,7 @@ func misplacedParamHeader(schema any, path string, chain, property bool) string 
 						}
 					}
 				}
-			default:
+			case kind == subschemas:
 				if at := misplacedParamHeader(child, path+"/"+key, false, false); at != "" {
 					return at
 				}

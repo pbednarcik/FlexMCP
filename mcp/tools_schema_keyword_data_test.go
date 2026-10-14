@@ -105,3 +105,63 @@ func TestOutputSchemaOfKeptKeywordsOnly(t *testing.T) {
 	_, err = json.Marshal(tool)
 	require.Error(t, err)
 }
+
+// draft-07 dependencies maps property names to schemas: a property named
+// like a keyword is still a schema there, so its refs are rewritten and its
+// annotations checked.
+func TestSchemaDependenciesAreSchemas(t *testing.T) {
+	var schema ToolArgumentsSchema
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"object","definitions":{"value":true},"dependencies":{"const":{"$ref":"#/definitions/value"},"list":["a"]}}`), &schema))
+	dependencies := schema.AdditionalFields["dependencies"].(map[string]any)
+	assert.Equal(t, "#/$defs/value", dependencies["const"].(map[string]any)["$ref"])
+	assert.Equal(t, []any{"a"}, dependencies["list"])
+
+	tool := NewToolWithRawSchema("t", "", json.RawMessage(`{"type":"object","dependencies":{"const":{"properties":{"x":{"type":"string","x-mcp-header":"X"}}}}}`))
+	require.Error(t, ValidateParamHeaderAnnotations(&tool))
+}
+
+// A keyword that holds no schema holds data: an x-mcp-header key or a $ref
+// inside it is neither an annotation nor a reference.
+func TestSchemaUnknownKeywordsAreData(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"object","dependentRequired":{"x-mcp-header":["y"]}}`,
+		`{"type":"object","extension-data":{"x-mcp-header":"data"}}`,
+	} {
+		tool := NewToolWithRawSchema("t", "", json.RawMessage(raw))
+		require.NoError(t, ValidateParamHeaderAnnotations(&tool), raw)
+	}
+	var schema ToolArgumentsSchema
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"object","definitions":{"value":true},"extension-data":{"$ref":"#/definitions/value"}}`), &schema))
+	assert.Equal(t, "#/definitions/value", schema.AdditionalFields["extension-data"].(map[string]any)["$ref"])
+}
+
+// A number no float64 holds does not hide a misplaced annotation.
+func TestParamHeaderAnnotationsBesideAHugeNumber(t *testing.T) {
+	const raw = `{"type":"object","x-big":1e400,"allOf":[{"properties":{"x":{"type":"string","x-mcp-header":"X"}}}]}`
+	tool := NewToolWithRawSchema("t", "", json.RawMessage(raw))
+	require.Error(t, ValidateParamHeaderAnnotations(&tool))
+	var typed Tool
+	require.NoError(t, json.Unmarshal([]byte(`{"name":"t","inputSchema":`+raw+`}`), &typed))
+	require.Error(t, ValidateParamHeaderAnnotations(&typed))
+}
+
+// A generated input schema replaces the whole decoded one, kept keywords
+// included.
+func TestGeneratedInputSchemaReplacesKeptKeywords(t *testing.T) {
+	type args struct {
+		Name string `json:"name"`
+	}
+	for name, option := range map[string]ToolOption{
+		"WithInputSchema":       WithInputSchema[args](),
+		"WithCachedInputSchema": WithCachedInputSchema[args](NewSchemaCache()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var tool Tool
+			require.NoError(t, json.Unmarshal([]byte(`{"name":"t","inputSchema":{"type":"object","title":"old"}}`), &tool))
+			option(&tool)
+			encoded, err := json.Marshal(tool)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), `"old"`)
+		})
+	}
+}

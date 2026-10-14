@@ -1189,8 +1189,8 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 // rewriteDraft07LocalRefs rewrites local draft-07 "#/definitions/..." $ref
 // pointers to their 2019-09+ "#/$defs/..." equivalent in place, in schema,
 // a schema or an array of schemas, and the schemas inside it. Non-local refs
-// are left untouched, and so is data: the values of const, enum, default,
-// examples and vendor (x-) keywords are instances, not schemas.
+// are left untouched, and so is everything that is not a schema: a keyword
+// is followed only when subschemaKeyword names it.
 func rewriteDraft07LocalRefs(schema any) {
 	const draft07Prefix = "#/definitions/"
 	switch v := schema.(type) {
@@ -1199,12 +1199,11 @@ func rewriteDraft07LocalRefs(schema any) {
 			v["$ref"] = "#/$defs/" + ref[len(draft07Prefix):]
 		}
 		for key, child := range v {
-			switch {
-			case isSchemaDataKeyword(key):
-			case isSchemaMapKeyword(key):
-				rewriteDraft07LocalRefsIn(child)
-			default:
+			switch subschemaKeyword(key) {
+			case subschemas:
 				rewriteDraft07LocalRefs(child)
+			case namedSubschemas:
+				rewriteDraft07LocalRefsIn(child)
 			}
 		}
 	case []any:
@@ -1225,24 +1224,32 @@ func rewriteDraft07LocalRefsIn(named any) {
 	}
 }
 
-// isSchemaDataKeyword reports whether the value of key is an instance or
-// vendor data rather than a schema.
-func isSchemaDataKeyword(key string) bool {
-	switch key {
-	case "const", "enum", "default", "examples":
-		return true
-	}
-	return strings.HasPrefix(key, "x-")
-}
+// subschemaKind says what the value of a JSON Schema keyword holds.
+type subschemaKind int
 
-// isSchemaMapKeyword reports whether the value of key maps names to
-// schemas.
-func isSchemaMapKeyword(key string) bool {
+const (
+	// noSubschema: the value is data, an annotation or a keyword this
+	// package does not know, never searched for schemas.
+	noSubschema subschemaKind = iota
+	// subschemas: a schema, or an array of schemas.
+	subschemas
+	// namedSubschemas: a map from names to schemas (or, for draft-07
+	// dependencies, to arrays of property names).
+	namedSubschemas
+)
+
+// subschemaKeyword returns what the value of key holds, by the applicator
+// keywords of draft-07 and 2020-12.
+func subschemaKeyword(key string) subschemaKind {
 	switch key {
-	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
-		return true
+	case "items", "additionalItems", "prefixItems", "contains",
+		"additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties",
+		"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "contentSchema":
+		return subschemas
+	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies":
+		return namedSubschemas
 	}
-	return false
+	return noSubschema
 }
 
 type ToolAnnotation struct {
@@ -1355,6 +1362,7 @@ func WithInputSchema[T any]() ToolOption {
 
 		t.InputSchema.Type = ""
 		t.InputSchema.Types = nil
+		t.InputSchema.AdditionalFields = nil
 		t.RawInputSchema = json.RawMessage(mcpSchema)
 	}
 }
