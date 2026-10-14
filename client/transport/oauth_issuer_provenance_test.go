@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -215,6 +217,9 @@ func TestOAuthHandler_ATokenStoreThatCallsBackFromSaveTokenFailsFast(t *testing.
 			_, err := h.GetAuthorizationHeader(ctx)
 			return err
 		},
+		"RegisterClient": func(ctx context.Context, h *OAuthHandler, _ *Token) error {
+			return h.RegisterClient(ctx, "nested")
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := newRefreshServer(t, singleUseTokens(0))
@@ -400,4 +405,169 @@ func TestOAuthHandler_ARefreshWithReplacedCredentialsIsNotSaved(t *testing.T) {
 	stored, err := store.GetToken(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "old", stored.AccessToken, "a token for the replaced client was saved")
+}
+
+// grantServer is an authorization server whose tokens name the grant they
+// answer: a code buys "from-code", refresh token R buys "refreshed-R" and
+// "rotated-R". Registration hands out "new-client".
+type grantServer struct {
+	*httptest.Server
+	mu        sync.Mutex
+	refreshes []url.Values
+}
+
+func newGrantServer(t *testing.T) *grantServer {
+	s := &grantServer{}
+	s.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/.well-known/oauth-authorization-server":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           s.URL,
+				"authorization_endpoint":           s.URL + "/authorize",
+				"token_endpoint":                   s.URL + "/token",
+				"registration_endpoint":            s.URL + "/register",
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/register":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "new-client"})
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("parsing token request: %v", err)
+			}
+			access, refresh := "from-code", "refresh-from-code"
+			if r.PostForm.Get("grant_type") == "refresh_token" {
+				s.mu.Lock()
+				s.refreshes = append(s.refreshes, r.PostForm)
+				s.mu.Unlock()
+				access, refresh = "refreshed-"+r.PostForm.Get("refresh_token"), "rotated-"+r.PostForm.Get("refresh_token")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": access, "token_type": "Bearer", "expires_in": 3600, "refresh_token": refresh})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// refreshForms returns the forms of the refresh requests made so far.
+func (s *grantServer) refreshForms() []url.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]url.Values(nil), s.refreshes...)
+}
+
+// gatedReadStore blocks its gate-th GetToken, after it has read the token,
+// until release, signalling entered.
+type gatedReadStore struct {
+	TokenStore
+	gate             int32
+	calls            atomic.Int32
+	entered, release chan struct{}
+}
+
+func (s *gatedReadStore) GetToken(ctx context.Context) (*Token, error) {
+	token, err := s.TokenStore.GetToken(ctx)
+	if s.calls.Add(1) == s.gate {
+		close(s.entered)
+		<-s.release
+	}
+	return token, err
+}
+
+// A token request belongs to the generation of the token it read: a refresh
+// that read the stored token before a newer authorization saved its own
+// does not overwrite it.
+func TestOAuthHandler_ARefreshThatReadBeforeANewerAuthorizationIsNotSaved(t *testing.T) {
+	for name, tc := range map[string]struct {
+		// gate is the GetToken that reads the token the refresh spends.
+		gate    int32
+		refresh func(context.Context, *OAuthHandler) error
+	}{
+		"GetAuthorizationHeader": {gate: 2, refresh: func(ctx context.Context, h *OAuthHandler) error {
+			_, err := h.GetAuthorizationHeader(ctx)
+			return err
+		}},
+		"RefreshToken": {gate: 1, refresh: func(ctx context.Context, h *OAuthHandler) error {
+			_, err := h.RefreshToken(ctx, "refresh-A")
+			return err
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := newGrantServer(t)
+			store := &gatedReadStore{TokenStore: NewMemoryTokenStore(), gate: tc.gate, entered: make(chan struct{}), release: make(chan struct{})}
+			require.NoError(t, store.SaveToken(t.Context(), &Token{
+				AccessToken:  "A",
+				RefreshToken: "refresh-A",
+				ExpiresAt:    time.Now().Add(-time.Minute),
+				Issuer:       server.URL,
+			}))
+			handler := NewOAuthHandler(OAuthConfig{
+				ClientID:              "client",
+				RedirectURI:           "http://localhost:8085/callback",
+				TokenStore:            store,
+				AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
+			})
+			handler.SetBaseURL(server.URL + "/mcp")
+
+			done := make(chan error, 1)
+			go func() { done <- tc.refresh(t.Context(), handler) }()
+			<-store.entered
+			_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+			require.NoError(t, err)
+			require.NoError(t, handler.ProcessAuthorizationResponse(t.Context(), "code", "state", "verifier"))
+			close(store.release)
+			<-done
+
+			stored, err := store.TokenStore.GetToken(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, "from-code", stored.AccessToken, "a refresh of the older grant overwrote the newer authorization")
+		})
+	}
+}
+
+// A refresh token is spent only with the client it was issued to (RFC 6749
+// §6): a registration does not land while a token of the client it replaces
+// is being saved, and that token is not refreshed with the new client.
+func TestOAuthHandler_ARefreshTokenIsSpentOnlyByItsClient(t *testing.T) {
+	server := newGrantServer(t)
+	store := &gatedSaveStore{TokenStore: &expiringStore{TokenStore: NewMemoryTokenStore()}, entered: make(chan struct{}), release: make(chan struct{})}
+	require.NoError(t, store.TokenStore.SaveToken(t.Context(), &Token{
+		AccessToken:  "A",
+		RefreshToken: "refresh-A",
+		Issuer:       server.URL,
+	}))
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "old-client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            store,
+		AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(server.URL + "/mcp")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := handler.GetAuthorizationHeader(t.Context())
+		done <- err
+	}()
+	<-store.entered
+	registered := make(chan error, 1)
+	go func() { registered <- handler.RegisterClient(t.Context(), "test") }()
+	select {
+	case err := <-registered:
+		registered <- err
+		t.Error("a registration completed while a token of the client it replaces was being saved")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(store.release)
+	require.NoError(t, <-done)
+	require.NoError(t, <-registered)
+
+	_, err := handler.GetAuthorizationHeader(t.Context())
+	assert.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
+	for _, form := range server.refreshForms() {
+		assert.Equal(t, "old-client", form.Get("client_id"), "refresh token %q was sent with another client's credentials", form.Get("refresh_token"))
+	}
 }

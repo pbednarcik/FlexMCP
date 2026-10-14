@@ -192,6 +192,10 @@ type Token struct {
 	// record, whose refresh token goes only to OAuthConfig.ClientIssuer and,
 	// without it, nowhere.
 	Issuer string `json:"issuer,omitempty"`
+	// ClientID is the client the token was issued to, the only one its
+	// refresh token is sent with (RFC 6749 §6). Empty for a token saved
+	// without the record, whose refresh token is sent with the current client.
+	ClientID string `json:"client_id,omitempty"`
 }
 
 // IsExpired returns true if the token is expired
@@ -359,10 +363,12 @@ type OAuthHandler struct {
 	refreshing *tokenRefresh
 
 	// saveMu makes checking and saving a token one step, so an older token
-	// request cannot overwrite what a newer one saved. tokenGen counts what
-	// supersedes a token request in flight: each code exchange and each
+	// request cannot overwrite what a newer one saved, and a replacement of
+	// the client credentials waits for a save in progress. tokenGen counts
+	// what supersedes a token request in flight: each code exchange and each
 	// replacement of the client credentials. A request saves only if
-	// tokenGen is still what it was when the request began.
+	// tokenGen is still what it was before the request read the token it
+	// spends.
 	saveMu   sync.Mutex
 	tokenGen atomic.Uint64
 }
@@ -616,6 +622,7 @@ func (h *OAuthHandler) startRefresh(ctx context.Context) *tokenRefresh {
 // refreshStoredToken refreshes the stored token, unless a refresh that
 // finished since the caller read the store has already replaced it.
 func (h *OAuthHandler) refreshStoredToken(ctx context.Context) (*Token, error) {
+	gen := h.tokenGen.Load()
 	token, err := h.config.TokenStore.GetToken(ctx)
 	if err != nil {
 		return nil, err
@@ -626,15 +633,16 @@ func (h *OAuthHandler) refreshStoredToken(ctx context.Context) (*Token, error) {
 	if token.RefreshToken == "" {
 		return nil, ErrOAuthAuthorizationRequired
 	}
-	return h.refreshToken(ctx, token)
+	return h.refreshToken(ctx, token, gen)
 }
 
 // refreshToken spends the refresh token of stored, whose record, read with
 // it, says where the refresh token may go: only to the authorization server
-// that issued it, for the server it was issued for. A refresh token without a
-// record carries none.
-func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token, error) {
-	gen := h.tokenGen.Load()
+// that issued it, for the server it was issued for, with the client it was
+// issued to. A refresh token without a record carries none. gen is tokenGen
+// as it was before stored was read, so an authorization or registration
+// that lands after the read supersedes the refresh.
+func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint64) (*Token, error) {
 	// A refresh token without a record goes only to the issuer ClientIssuer
 	// names: the first issuer the client credentials were used with is not
 	// evidence of where the refresh token came from. With neither, it can go
@@ -669,9 +677,12 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	data.Set("refresh_token", refreshToken)
 	data.Set("resource", resourceURL)
 
-	req, err := h.newTokenRequest(ctx, metadata, data)
+	req, clientID, err := h.newTokenRequest(ctx, metadata, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create refresh token request: %w", err)
+	}
+	if stored.ClientID != "" && stored.ClientID != clientID {
+		return nil, fmt.Errorf("%w: the refresh token was issued to client %q", ErrOAuthAuthorizationRequired, stored.ClientID)
 	}
 
 	resp, err := h.credentialClient.Do(req)
@@ -721,6 +732,7 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	}
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
+	tokenResp.ClientID = clientID
 
 	if err := h.saveIssuedToken(ctx, &tokenResp, gen); err != nil {
 		return nil, err
@@ -735,6 +747,7 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 // store that cannot be read refuses the refresh.
 func (h *OAuthHandler) RefreshToken(ctx context.Context, refreshToken string) (*Token, error) {
 	token := &Token{RefreshToken: refreshToken}
+	gen := h.tokenGen.Load()
 	stored, err := h.config.TokenStore.GetToken(ctx)
 	switch {
 	case err == nil && stored.RefreshToken == refreshToken:
@@ -742,7 +755,7 @@ func (h *OAuthHandler) RefreshToken(ctx context.Context, refreshToken string) (*
 	case err != nil && !errors.Is(err, ErrNoToken):
 		return nil, fmt.Errorf("failed to read the token store: %w", err)
 	}
-	return h.refreshToken(ctx, token)
+	return h.refreshToken(ctx, token, gen)
 }
 
 // GetClientID returns the client ID
@@ -1801,6 +1814,11 @@ func (h *OAuthHandler) getDefaultEndpoints(baseURL string) (*AuthServerMetadata,
 
 // RegisterClient performs dynamic client registration
 func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) error {
+	// Called from inside this handler's own SaveToken, the registration
+	// would wait for the save it was called from.
+	if ctx.Value(savingKey{h}) != nil {
+		return errSaveReentered
+	}
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get server metadata: %w", err)
@@ -1878,13 +1896,16 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	// earlier registration, or from configuration, does not stay beside the
 	// new client ID. RFC 7591 §3.2.1: the response carries the method the
 	// server actually registered, which may differ from the one requested.
+	// A token request in flight was made with the replaced credentials, so it
+	// is superseded; one that is saving finishes first.
+	h.saveMu.Lock()
+	defer h.saveMu.Unlock()
 	h.mu.Lock()
 	h.config.ClientID = regResponse.ClientID
 	h.config.ClientSecret = regResponse.ClientSecret
 	h.registeredAuthMethod = regResponse.TokenEndpointAuthMethod
 	h.registeredIssuer = metadata.Issuer
 	h.mu.Unlock()
-	// A token request in flight was made with the replaced credentials.
 	h.tokenGen.Add(1)
 
 	return nil
@@ -2042,7 +2063,7 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 		data.Set("code_verifier", codeVerifier)
 	}
 
-	req, err := h.newTokenRequest(ctx, metadata, data)
+	req, clientID, err := h.newTokenRequest(ctx, metadata, data)
 	if err != nil {
 		return fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -2082,9 +2103,10 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	if tokenResp.ExpiresIn > 0 {
 		tokenResp.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
-	// Record what the token is for and who issued it.
+	// Record what the token is for, who issued it and to which client.
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
+	tokenResp.ClientID = clientID
 
 	return h.saveIssuedToken(ctx, &tokenResp, gen)
 }
@@ -2176,11 +2198,11 @@ func (h *OAuthHandler) tokenEndpointAuthMethod(metadata *AuthServerMetadata, cre
 }
 
 // newTokenRequest builds a token endpoint request carrying data and the
-// client's credentials.
-func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServerMetadata, data url.Values) (*http.Request, error) {
+// client's credentials, and returns the ID of the client it authenticates.
+func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServerMetadata, data url.Values) (*http.Request, string, error) {
 	creds, err := h.credentialsFor(metadata)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	method := h.tokenEndpointAuthMethod(metadata, creds)
 	basic := method == clientSecretBasic
@@ -2198,7 +2220,7 @@ func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServer
 		strings.NewReader(data.Encode()),
 	)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
@@ -2207,7 +2229,7 @@ func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServer
 		// they are used as the Basic user name and password.
 		req.SetBasicAuth(url.QueryEscape(creds.id), url.QueryEscape(creds.secret))
 	}
-	return req, nil
+	return req, creds.id, nil
 }
 
 // GetAuthorizationURL returns the URL for the authorization endpoint.
