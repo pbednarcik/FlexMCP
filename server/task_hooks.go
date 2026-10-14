@@ -44,6 +44,11 @@ type OnTaskStatusChangedHookFunc func(ctx context.Context, metrics TaskMetrics)
 
 // TaskHooks contains lifecycle hooks for task execution.
 // These hooks enable observability and monitoring of task-augmented tools.
+//
+// A task's hooks run in order, created first, outside the server's task
+// lock, so a hook may take its time or read task state through the server.
+// A hook must not cancel or complete the task it is called for: that
+// task's next hook would wait for the running one.
 type TaskHooks struct {
 	OnTaskCreated       []OnTaskCreatedHookFunc
 	OnTaskCompleted     []OnTaskCompletedHookFunc

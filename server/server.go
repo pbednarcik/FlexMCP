@@ -45,6 +45,10 @@ type taskEntry struct {
 	cancelFunc context.CancelFunc // Function to cancel the task
 	done       chan struct{}      // Channel to signal task completion
 	completed  bool               // Whether the task has been completed (guards done channel closure)
+	// hooksMu orders the task's hooks: created first, taken before the
+	// task is visible, then completion's or cancellation's. Hooks run
+	// outside tasksMu, which this keeps from reordering them.
+	hooksMu sync.Mutex
 }
 
 // ServerOption is a function that configures an MCPServer.
@@ -2195,12 +2199,14 @@ func (s *MCPServer) executeTaskTool(
 	taskCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Register cancellation atomically with TTL cleanup, which may have already removed the task.
+	// Register cancellation atomically with TTL cleanup, which may have
+	// already removed the task, and with tasks/cancel, which may have ended
+	// it while the created hook ran.
 	s.tasksMu.Lock()
 	entry.cancelFunc = cancel
-	expired := s.tasks[entry.task.TaskId] != entry
+	ended := s.tasks[entry.task.TaskId] != entry || entry.completed
 	s.tasksMu.Unlock()
-	if expired {
+	if ended {
 		cancel()
 	}
 
@@ -2223,6 +2229,8 @@ func (s *MCPServer) executeTaskTool(
 				cancelledAt := time.Now()
 				duration := cancelledAt.Sub(entry.createdAt)
 
+				// The metrics are read under the lock; the hook runs outside it.
+				var metrics *TaskMetrics
 				s.tasksMu.Lock()
 				if !entry.completed {
 					entry.task.Status = mcp.TaskStatusCancelled
@@ -2236,9 +2244,8 @@ func (s *MCPServer) executeTaskTool(
 
 					s.sendTaskStatusNotification(entry.task)
 
-					// Fire task cancellation hook
 					if s.taskHooks != nil {
-						metrics := TaskMetrics{
+						metrics = &TaskMetrics{
 							TaskID:        entry.task.TaskId,
 							ToolName:      entry.toolName,
 							Status:        entry.task.Status,
@@ -2248,10 +2255,14 @@ func (s *MCPServer) executeTaskTool(
 							Duration:      duration,
 							SessionID:     entry.sessionID,
 						}
-						s.taskHooks.taskCancelled(ctx, metrics)
 					}
 				}
 				s.tasksMu.Unlock()
+				if metrics != nil {
+					entry.hooksMu.Lock()
+					s.taskHooks.taskCancelled(ctx, *metrics)
+					entry.hooksMu.Unlock()
+				}
 			}
 			return
 		}
@@ -2298,12 +2309,14 @@ func (s *MCPServer) executeRegularToolAsTask(
 	taskCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Register cancellation atomically with TTL cleanup, which may have already removed the task.
+	// Register cancellation atomically with TTL cleanup, which may have
+	// already removed the task, and with tasks/cancel, which may have ended
+	// it while the created hook ran.
 	s.tasksMu.Lock()
 	entry.cancelFunc = cancel
-	expired := s.tasks[entry.task.TaskId] != entry
+	ended := s.tasks[entry.task.TaskId] != entry || entry.completed
 	s.tasksMu.Unlock()
-	if expired {
+	if ended {
 		cancel()
 	}
 
@@ -2335,6 +2348,8 @@ func (s *MCPServer) executeRegularToolAsTask(
 				cancelledAt := time.Now()
 				duration := cancelledAt.Sub(entry.createdAt)
 
+				// The metrics are read under the lock; the hook runs outside it.
+				var metrics *TaskMetrics
 				s.tasksMu.Lock()
 				if !entry.completed {
 					entry.task.Status = mcp.TaskStatusCancelled
@@ -2348,9 +2363,8 @@ func (s *MCPServer) executeRegularToolAsTask(
 
 					s.sendTaskStatusNotification(entry.task)
 
-					// Fire task cancellation hook
 					if s.taskHooks != nil {
-						metrics := TaskMetrics{
+						metrics = &TaskMetrics{
 							TaskID:        entry.task.TaskId,
 							ToolName:      entry.toolName,
 							Status:        entry.task.Status,
@@ -2360,10 +2374,14 @@ func (s *MCPServer) executeRegularToolAsTask(
 							Duration:      duration,
 							SessionID:     entry.sessionID,
 						}
-						s.taskHooks.taskCancelled(ctx, metrics)
 					}
 				}
 				s.tasksMu.Unlock()
+				if metrics != nil {
+					entry.hooksMu.Lock()
+					s.taskHooks.taskCancelled(ctx, *metrics)
+					entry.hooksMu.Unlock()
+				}
 			}
 			return
 		}
@@ -2756,11 +2774,11 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 
 	// Single critical section for check + increment + insert
 	s.tasksMu.Lock()
-	defer s.tasksMu.Unlock()
 
 	// Check concurrent task limit
 	if s.maxConcurrentTasks != nil && *s.maxConcurrentTasks > 0 {
 		if s.activeTasks >= *s.maxConcurrentTasks {
+			s.tasksMu.Unlock()
 			return nil, fmt.Errorf("max concurrent tasks limit reached (%d)", *s.maxConcurrentTasks)
 		}
 	}
@@ -2768,8 +2786,15 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 	// Increment active task counter and insert task atomically
 	s.activeTasks++
 	s.tasks[taskID] = entry
+	if s.taskHooks != nil {
+		// Uncontended: the task is not visible yet. A cancellation or
+		// completion that lands from here on fires its hook after this one.
+		entry.hooksMu.Lock()
+	}
+	s.tasksMu.Unlock()
 
-	// Fire task created hook
+	// Fire task created hook, outside the lock: a hook may take time, or
+	// read task state through the server.
 	if s.taskHooks != nil {
 		metrics := TaskMetrics{
 			TaskID:    taskID,
@@ -2778,7 +2803,12 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 			CreatedAt: createdAt,
 			SessionID: getSessionID(ctx),
 		}
-		s.taskHooks.taskCreated(ctx, metrics)
+		func() {
+			// Released however the hook ends: a hook that panics must not
+			// leave the task's later hooks waiting.
+			defer entry.hooksMu.Unlock()
+			s.taskHooks.taskCreated(ctx, metrics)
+		}()
 	}
 
 	// Start TTL cleanup if specified
@@ -2870,10 +2900,10 @@ func (s *MCPServer) listTasks(ctx context.Context) []mcp.Task {
 // completeTask marks a task as completed with the given result.
 func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
 	s.tasksMu.Lock()
-	defer s.tasksMu.Unlock()
 
 	// Guard against double completion
 	if entry.completed {
+		s.tasksMu.Unlock()
 		return
 	}
 
@@ -2902,9 +2932,10 @@ func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
 	// Send task status notification
 	s.sendTaskStatusNotification(entry.task)
 
-	// Fire task hooks
+	// The metrics are read under the lock; the hooks run outside it.
+	var metrics *TaskMetrics
 	if s.taskHooks != nil {
-		metrics := TaskMetrics{
+		metrics = &TaskMetrics{
 			TaskID:        entry.task.TaskId,
 			ToolName:      entry.toolName,
 			Status:        entry.task.Status,
@@ -2915,12 +2946,18 @@ func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
 			SessionID:     entry.sessionID,
 			Error:         err,
 		}
+	}
+	s.tasksMu.Unlock()
 
-		if err != nil {
-			s.taskHooks.taskFailed(context.Background(), metrics)
-		} else {
-			s.taskHooks.taskCompleted(context.Background(), metrics)
-		}
+	if metrics == nil {
+		return
+	}
+	entry.hooksMu.Lock()
+	defer entry.hooksMu.Unlock()
+	if err != nil {
+		s.taskHooks.taskFailed(context.Background(), *metrics)
+	} else {
+		s.taskHooks.taskCompleted(context.Background(), *metrics)
 	}
 }
 
@@ -2932,10 +2969,10 @@ func (s *MCPServer) cancelTask(ctx context.Context, taskID string) error {
 	}
 
 	s.tasksMu.Lock()
-	defer s.tasksMu.Unlock()
 
 	// Don't allow cancelling already completed tasks
 	if entry.completed {
+		s.tasksMu.Unlock()
 		return fmt.Errorf("cannot cancel task in terminal status: %s", entry.task.Status)
 	}
 
@@ -2962,9 +2999,10 @@ func (s *MCPServer) cancelTask(ctx context.Context, taskID string) error {
 	// Send task status notification
 	s.sendTaskStatusNotification(entry.task)
 
-	// Fire task cancellation hook
+	// The metrics are read under the lock; the hook runs outside it.
+	var metrics *TaskMetrics
 	if s.taskHooks != nil {
-		metrics := TaskMetrics{
+		metrics = &TaskMetrics{
 			TaskID:        entry.task.TaskId,
 			ToolName:      entry.toolName,
 			Status:        entry.task.Status,
@@ -2974,7 +3012,12 @@ func (s *MCPServer) cancelTask(ctx context.Context, taskID string) error {
 			Duration:      duration,
 			SessionID:     entry.sessionID,
 		}
-		s.taskHooks.taskCancelled(ctx, metrics)
+	}
+	s.tasksMu.Unlock()
+	if metrics != nil {
+		entry.hooksMu.Lock()
+		s.taskHooks.taskCancelled(ctx, *metrics)
+		entry.hooksMu.Unlock()
 	}
 
 	return nil
