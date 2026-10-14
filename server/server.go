@@ -2542,6 +2542,11 @@ func (s *MCPServer) handleTaskResult(
 	case *mcp.CallToolResult:
 		result.Content = taskResult.Content
 		result.StructuredContent = taskResult.StructuredContent
+		// The bytes are copied so the reply does not share them with the
+		// stored result, which later tasks/result calls read again.
+		if len(taskResult.RawStructuredContent) > 0 {
+			result.RawStructuredContent = append(json.RawMessage(nil), taskResult.RawStructuredContent...)
+		}
 		result.IsError = taskResult.IsError
 		mergeTaskResultMeta(result, taskResult.Meta)
 	case *mcp.CreateTaskResult:

@@ -1324,7 +1324,7 @@ func ParseTaskResultResult(rawMessage *json.RawMessage) (*TaskResultResult, erro
 		Meta              *Meta             `json:"_meta"`
 		ResultType        ResultType        `json:"resultType"`
 		Content           []json.RawMessage `json:"content"`
-		StructuredContent any               `json:"structuredContent"`
+		StructuredContent json.RawMessage   `json:"structuredContent"`
 		IsError           bool              `json:"isError"`
 	}
 	if err := json.Unmarshal(*rawMessage, &raw); err != nil {
@@ -1332,10 +1332,18 @@ func ParseTaskResultResult(rawMessage *json.RawMessage) (*TaskResultResult, erro
 	}
 
 	resultResult := TaskResultResult{
-		Meta:              raw.Meta,
-		ResultType:        raw.ResultType,
-		StructuredContent: raw.StructuredContent,
-		IsError:           raw.IsError,
+		Meta:       raw.Meta,
+		ResultType: raw.ResultType,
+		IsError:    raw.IsError,
+	}
+
+	// The structured content keeps its bytes so a re-encoded result writes
+	// its numbers as received; StructuredContent holds the decoded value.
+	if len(raw.StructuredContent) > 0 {
+		resultResult.RawStructuredContent = raw.StructuredContent
+		if err := json.Unmarshal(raw.StructuredContent, &resultResult.StructuredContent); err != nil {
+			return nil, fmt.Errorf("unmarshal task structured content: %w", err)
+		}
 	}
 
 	for _, item := range raw.Content {
