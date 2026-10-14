@@ -249,10 +249,10 @@ type MCPServer struct {
 	hooks                    *Hooks
 	taskHooks                *TaskHooks
 	tasks                    map[string]*taskEntry
-	expiredTasks             map[string]time.Time // Tracks recently expired task IDs with expiration timestamp
-	maxConcurrentTasks       *int                 // Optional limit on concurrent running tasks
-	activeTasks              int                  // Tasks whose handler may still be running
-	inflightCancels          sync.Map             // Maps request ID -> context.CancelFunc for in-flight requests
+	expiredTasks             map[string]string // Recently expired task IDs, each with its session
+	maxConcurrentTasks       *int              // Optional limit on concurrent running tasks
+	activeTasks              int               // Tasks whose handler may still be running
+	inflightCancels          sync.Map          // Maps request ID -> context.CancelFunc for in-flight requests
 	inputValidator           *inputSchemaValidator
 	outputValidator          *outputSchemaValidator
 	strictInputSchemaDefault bool
@@ -727,7 +727,7 @@ func NewMCPServer(
 		version:                    version,
 		notificationHandlers:       make(map[string]NotificationHandlerFunc),
 		tasks:                      make(map[string]*taskEntry),
-		expiredTasks:               make(map[string]time.Time),
+		expiredTasks:               make(map[string]string),
 		promptCompletionProvider:   &DefaultPromptCompletionProvider{},
 		resourceCompletionProvider: &DefaultResourceCompletionProvider{},
 		capabilities: serverCapabilities{
@@ -2239,8 +2239,10 @@ func (s *MCPServer) executeTaskTool(
 				cancelledAt := time.Now()
 				duration := cancelledAt.Sub(entry.createdAt)
 
-				// The metrics are read under the lock; the hook runs outside it.
+				// The metrics and the status are read under the lock; the
+				// notification and the hook go outside it.
 				var metrics *TaskMetrics
+				var status *mcp.Task
 				s.tasksMu.Lock()
 				if !entry.completed {
 					entry.task.Status = mcp.TaskStatusCancelled
@@ -2250,8 +2252,7 @@ func (s *MCPServer) executeTaskTool(
 					close(entry.done)
 
 					s.releaseTaskSlotLocked(entry)
-
-					s.sendTaskStatusNotification(entry.task)
+					status = new(entry.task)
 
 					if s.taskHooks != nil {
 						metrics = &TaskMetrics{
@@ -2267,6 +2268,9 @@ func (s *MCPServer) executeTaskTool(
 					}
 				}
 				s.tasksMu.Unlock()
+				if status != nil {
+					s.sendTaskStatusNotification(entry.sessionID, *status)
+				}
 				if metrics != nil {
 					s.fireTaskHook(ctx, entry, func(ctx context.Context) { s.taskHooks.taskCancelled(ctx, *metrics) })
 				}
@@ -2367,8 +2371,10 @@ func (s *MCPServer) executeRegularToolAsTask(
 				cancelledAt := time.Now()
 				duration := cancelledAt.Sub(entry.createdAt)
 
-				// The metrics are read under the lock; the hook runs outside it.
+				// The metrics and the status are read under the lock; the
+				// notification and the hook go outside it.
 				var metrics *TaskMetrics
+				var status *mcp.Task
 				s.tasksMu.Lock()
 				if !entry.completed {
 					entry.task.Status = mcp.TaskStatusCancelled
@@ -2378,8 +2384,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 					close(entry.done)
 
 					s.releaseTaskSlotLocked(entry)
-
-					s.sendTaskStatusNotification(entry.task)
+					status = new(entry.task)
 
 					if s.taskHooks != nil {
 						metrics = &TaskMetrics{
@@ -2395,6 +2400,9 @@ func (s *MCPServer) executeRegularToolAsTask(
 					}
 				}
 				s.tasksMu.Unlock()
+				if status != nil {
+					s.sendTaskStatusNotification(entry.sessionID, *status)
+				}
 				if metrics != nil {
 					s.fireTaskHook(ctx, entry, func(ctx context.Context) { s.taskHooks.taskCancelled(ctx, *metrics) })
 				}
@@ -2885,55 +2893,39 @@ func (s *MCPServer) fireTaskHook(ctx context.Context, entry *taskEntry, fire fun
 // getTask retrieves a task by ID, checking session isolation if applicable.
 // Returns a copy of the task and the done channel for waiting on completion.
 func (s *MCPServer) getTask(ctx context.Context, taskID string) (mcp.Task, chan struct{}, error) {
-	s.tasksMu.RLock()
-	entry, exists := s.tasks[taskID]
-	if !exists {
-		// Check if this task was recently expired
-		if _, wasExpired := s.expiredTasks[taskID]; wasExpired {
-			s.tasksMu.RUnlock()
-			return mcp.Task{}, nil, fmt.Errorf("task has expired")
-		}
-		s.tasksMu.RUnlock()
-		return mcp.Task{}, nil, fmt.Errorf("task not found")
-	}
-
-	// Verify session isolation
 	sessionID := getSessionID(ctx)
-	if entry.sessionID != "" && sessionID != "" && entry.sessionID != sessionID {
-		s.tasksMu.RUnlock()
-		return mcp.Task{}, nil, fmt.Errorf("task not found")
+	s.tasksMu.RLock()
+	defer s.tasksMu.RUnlock()
+	entry, exists := s.tasks[taskID]
+	if !exists || entry.sessionID != sessionID {
+		return mcp.Task{}, nil, s.taskUnreachableLocked(taskID, sessionID)
 	}
-
-	// Return a copy of the task and the done channel
-	taskCopy := entry.task
-	done := entry.done
-	s.tasksMu.RUnlock()
-
-	return taskCopy, done, nil
+	return entry.task, entry.done, nil
 }
 
 // getTaskEntry retrieves the raw task entry for internal use (requires caller to handle synchronization).
 func (s *MCPServer) getTaskEntry(ctx context.Context, taskID string) (*taskEntry, error) {
-	s.tasksMu.RLock()
-	entry, exists := s.tasks[taskID]
-	if !exists {
-		// Check if this task was recently expired
-		if _, wasExpired := s.expiredTasks[taskID]; wasExpired {
-			s.tasksMu.RUnlock()
-			return nil, fmt.Errorf("task has expired")
-		}
-		s.tasksMu.RUnlock()
-		return nil, fmt.Errorf("task not found")
-	}
-	s.tasksMu.RUnlock()
-
-	// Verify session isolation
 	sessionID := getSessionID(ctx)
-	if entry.sessionID != "" && sessionID != "" && entry.sessionID != sessionID {
-		return nil, fmt.Errorf("task not found")
+	s.tasksMu.RLock()
+	defer s.tasksMu.RUnlock()
+	entry, exists := s.tasks[taskID]
+	if !exists || entry.sessionID != sessionID {
+		return nil, s.taskUnreachableLocked(taskID, sessionID)
 	}
-
 	return entry, nil
+}
+
+// taskUnreachableLocked is the error for a task the caller's session does
+// not reach. A task belongs to the session that created it, and a task
+// created with no session to a caller with none, as every streamable-HTTP
+// request is: there the ID alone is the bearer token (Tasks.md row 25). A
+// task that expired is expired to its own session and unknown to any
+// other, so the tombstone tells no one else that the ID existed.
+func (s *MCPServer) taskUnreachableLocked(taskID, sessionID string) error {
+	if owner, wasExpired := s.expiredTasks[taskID]; wasExpired && owner == sessionID {
+		return fmt.Errorf("task has expired")
+	}
+	return fmt.Errorf("task not found")
 }
 
 // listTasks returns copies of the tasks of the caller's session. A caller whose
@@ -2998,9 +2990,6 @@ func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
 	// The handler has returned: its slot is free.
 	s.releaseTaskSlotLocked(entry)
 
-	// Send task status notification
-	s.sendTaskStatusNotification(entry.task)
-
 	// The metrics are read under the lock; the hooks run outside it.
 	var metrics *TaskMetrics
 	if s.taskHooks != nil {
@@ -3016,8 +3005,10 @@ func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
 			Error:         err,
 		}
 	}
+	task := entry.task
 	s.tasksMu.Unlock()
 
+	s.sendTaskStatusNotification(entry.sessionID, task)
 	if metrics == nil {
 		return
 	}
@@ -3065,9 +3056,6 @@ func (s *MCPServer) cancelTask(ctx context.Context, taskID string) error {
 	// The slot stays taken: the handler may not have noticed yet, and it
 	// gives the slot back when it returns.
 
-	// Send task status notification
-	s.sendTaskStatusNotification(entry.task)
-
 	// The metrics are read under the lock; the hook runs outside it.
 	var metrics *TaskMetrics
 	if s.taskHooks != nil {
@@ -3082,7 +3070,10 @@ func (s *MCPServer) cancelTask(ctx context.Context, taskID string) error {
 			SessionID:     entry.sessionID,
 		}
 	}
+	task := entry.task
 	s.tasksMu.Unlock()
+
+	s.sendTaskStatusNotification(entry.sessionID, task)
 	if metrics != nil {
 		s.fireTaskHook(ctx, entry, func(ctx context.Context) { s.taskHooks.taskCancelled(ctx, *metrics) })
 	}
@@ -3107,7 +3098,7 @@ func (s *MCPServer) scheduleTaskCleanup(taskID string, expected *taskEntry, ttlM
 		cancel = entry.cancelFunc
 	}
 	delete(s.tasks, taskID)
-	s.expiredTasks[taskID] = time.Now()
+	s.expiredTasks[taskID] = entry.sessionID
 	s.tasksMu.Unlock()
 
 	if cancel != nil {
@@ -3122,8 +3113,25 @@ func (s *MCPServer) scheduleTaskCleanup(taskID string, expected *taskEntry, ttlM
 	})
 }
 
-// sendTaskStatusNotification sends a notification when a task's status changes.
-func (s *MCPServer) sendTaskStatusNotification(task mcp.Task) {
+// sendTaskStatusNotification tells the session that created a task of its
+// new status. That session alone: a task ID is the bearer token of its
+// stored state, which no other session may learn (Tasks.md row 25). A task
+// created with no session has nobody to tell; its client polls. Never under
+// tasksMu: the send walks the session's streams and may call the error
+// hook.
+func (s *MCPServer) sendTaskStatusNotification(sessionID string, task mcp.Task) {
+	if sessionID == "" {
+		return
+	}
+	value, ok := s.sessions.Load(sessionID)
+	if !ok {
+		return
+	}
+	session, ok := value.(ClientSession)
+	if !ok || !session.Initialized() {
+		return
+	}
+
 	// Convert task to map[string]any for notification params
 	taskMap := map[string]any{
 		"taskId":        task.TaskId,
@@ -3142,7 +3150,11 @@ func (s *MCPServer) sendTaskStatusNotification(task mcp.Task) {
 		taskMap["pollInterval"] = *task.PollInterval
 	}
 
-	s.SendNotificationToAllClients(mcp.MethodNotificationTasksStatus, taskMap)
+	s.broadcastToSession(session, mcp.JSONRPCNotification{
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  mcp.MethodNotificationTasksStatus,
+		Params:  mcp.NotificationParams{AdditionalFields: taskMap},
+	})
 }
 
 // getSessionID extracts the session ID from the context.
