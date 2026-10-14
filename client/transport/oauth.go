@@ -349,10 +349,6 @@ type OAuthHandler struct {
 	// send it.
 	refreshMu  sync.Mutex
 	refreshing *tokenRefresh
-
-	// saveMu orders the token saves of code exchanges and refreshes, each
-	// checked against the server the handler targets as it is saved.
-	saveMu sync.Mutex
 }
 
 // clientCredentials is one snapshot of the client credentials, taken under
@@ -481,8 +477,17 @@ func (h *OAuthHandler) tokenIsForThisServer(token *Token) bool {
 func (h *OAuthHandler) tokenIsFor(token *Token, recipient string) bool {
 	h.metadataMu.Lock()
 	resource, base := h.resourceURL, h.baseURL
+	issuer := ""
+	if h.serverMetadata != nil {
+		issuer = h.serverMetadata.Issuer
+	}
 	h.metadataMu.Unlock()
 	if recipient != "" && recipient != base {
+		return false
+	}
+	// A token from another authorization server than the one discovery
+	// names now belongs to a server the handler has moved away from.
+	if token.Issuer != "" && issuer != "" && token.Issuer != issuer {
 		return false
 	}
 	if token.Resource == "" {
@@ -2063,9 +2068,10 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 // unless the handler has moved to another resource or authorization server
 // since the request for it was sent: a response that arrives after the
 // move does not replace the token of the server the handler targets now.
+// A move that lands while the token is being saved is caught where tokens
+// are used: tokenIsFor refuses a token from another issuer. No lock is held
+// across SaveToken, so a token store may call back into the handler.
 func (h *OAuthHandler) saveIssuedToken(ctx context.Context, token *Token) error {
-	h.saveMu.Lock()
-	defer h.saveMu.Unlock()
 	h.metadataMu.Lock()
 	current := h.serverMetadata != nil && h.serverMetadata.Issuer == token.Issuer && h.resourceURL == token.Resource
 	h.metadataMu.Unlock()

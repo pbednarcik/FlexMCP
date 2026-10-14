@@ -1,9 +1,11 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -128,4 +130,105 @@ func TestOAuthHandler_ARefreshAnsweredAfterARetargetIsNotRecorded(t *testing.T) 
 	stored, err := store.GetToken(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "old", stored.AccessToken, "a refresh from the previous authorization server was recorded")
+}
+
+// gatedSaveStore blocks its first save until release, after signalling
+// entered.
+type gatedSaveStore struct {
+	TokenStore
+	once             sync.Once
+	entered, release chan struct{}
+}
+
+func (s *gatedSaveStore) SaveToken(ctx context.Context, token *Token) error {
+	s.once.Do(func() {
+		close(s.entered)
+		<-s.release
+	})
+	return s.TokenStore.SaveToken(ctx, token)
+}
+
+// A token is used only with the authorization server that issued it: one
+// saved while the handler moved to another is not sent, to the caller that
+// waited for it or to any later one.
+func TestOAuthHandler_ATokenSavedAcrossARetargetIsNotUsed(t *testing.T) {
+	first := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+	second := (&tokenAuthServer{codeChallengeMethods: []string{"S256"}}).start(t)
+	resource, point := switchingResource(t, first.URL)
+	store := &gatedSaveStore{TokenStore: NewMemoryTokenStore(), entered: make(chan struct{}), release: make(chan struct{})}
+	require.NoError(t, store.TokenStore.SaveToken(t.Context(), &Token{
+		AccessToken:  "old",
+		RefreshToken: "refresh-from-first",
+		ExpiresAt:    time.Now().Add(-time.Minute),
+		Resource:     resource.URL,
+		Issuer:       first.URL,
+	}))
+	handler := NewOAuthHandler(OAuthConfig{RedirectURI: "http://localhost:8085/callback", TokenStore: store})
+	handler.SetBaseURL(resource.URL)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := handler.GetAuthorizationHeader(t.Context())
+		done <- err
+	}()
+	<-store.entered
+	point(second.URL)
+	handler.SetProtectedResourceMetadataURL(resource.URL + "/.well-known/oauth-protected-resource")
+	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.NoError(t, err)
+	close(store.release)
+
+	require.ErrorIs(t, <-done, ErrOAuthAuthorizationRequired)
+	_, err = handler.GetAuthorizationHeader(t.Context())
+	require.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
+}
+
+// reentrantStore refreshes through the handler from inside its first save.
+type reentrantStore struct {
+	TokenStore
+	handler *OAuthHandler
+	called  atomic.Bool
+	nested  error
+}
+
+func (s *reentrantStore) SaveToken(ctx context.Context, token *Token) error {
+	if err := s.TokenStore.SaveToken(ctx, token); err != nil {
+		return err
+	}
+	if s.called.CompareAndSwap(false, true) {
+		_, s.nested = s.handler.RefreshToken(ctx, token.RefreshToken)
+	}
+	return nil
+}
+
+// A token store may call back into the handler from SaveToken.
+func TestOAuthHandler_ATokenStoreMayRefreshFromSaveToken(t *testing.T) {
+	server := newRefreshServer(t, singleUseTokens(0))
+	store := &reentrantStore{TokenStore: NewMemoryTokenStore()}
+	require.NoError(t, store.TokenStore.SaveToken(t.Context(), &Token{
+		AccessToken:  "old-access",
+		RefreshToken: "single-use",
+		ExpiresAt:    time.Now().Add(-time.Minute),
+		Issuer:       server.URL,
+	}))
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		TokenStore:            store,
+		AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(server.URL + "/mcp")
+	store.handler = handler
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := handler.GetAuthorizationHeader(t.Context())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+		require.NoError(t, store.nested)
+	case <-time.After(5 * time.Second):
+		t.Fatal("a token store that refreshes from SaveToken deadlocked the handler")
+	}
 }
