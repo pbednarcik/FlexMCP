@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -77,4 +78,32 @@ func TestMaxConcurrentTasks_APanickingQueuedHookFreesTheSlot(t *testing.T) {
 	hooks.OnTaskCreated, hooks.OnTaskCancelled = nil, nil
 	_, err := s.createTask(t.Context(), "task-2", "tool", nil, nil)
 	require.NoError(t, err, "the slot of a task whose handler never started was kept")
+}
+
+// A task created with invalid arguments has no handler to give its slot
+// back: it gives the slot back itself, even when a hook cancelled it first.
+func TestMaxConcurrentTasks_AnInvalidTaskCancelledByItsHookFreesTheSlot(t *testing.T) {
+	var s *MCPServer
+	hooks := &TaskHooks{}
+	hooks.AddOnTaskCreated(func(ctx context.Context, m TaskMetrics) {
+		require.NoError(t, s.cancelTask(ctx, m.TaskID))
+	})
+	s = NewMCPServer("test", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, true, true),
+		WithMaxConcurrentTasks(1), WithInputSchemaValidation())
+	s.AddTool(mcp.Tool{
+		Name:           "picky",
+		Execution:      &mcp.ToolExecution{TaskSupport: mcp.TaskSupportOptional},
+		RawInputSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"number"}},"required":["n"]}`),
+	}, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("ran"), nil
+	})
+	call := mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name: "picky", Task: &mcp.TaskParams{}, Arguments: map[string]any{"n": "x"},
+	}}
+
+	_, reqErr := s.handleTaskAugmentedToolCall(t.Context(), 1, call)
+	require.Nil(t, reqErr)
+	hooks.OnTaskCreated = nil
+	_, reqErr = s.handleTaskAugmentedToolCall(t.Context(), 2, call)
+	require.Nil(t, reqErr, "the slot of a task whose handler never started was kept")
 }

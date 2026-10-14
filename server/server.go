@@ -2152,10 +2152,20 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 		}
 	}
 
-	// Note: input schema validation (WithInputSchemaValidation) is currently
-	// only applied on the synchronous tool call path. The task-augmented path
-	// would need to surface validation failures through tasks/result rather
-	// than the create-task response; that's deferred to a follow-up.
+	// The arguments are validated as on the synchronous path (Tools.md row
+	// 23): ones that fail never reach the handler. The task is still
+	// created, so the client fetches the same tool error through
+	// tasks/result.
+	var invalid error
+	if s.inputValidator != nil {
+		toolDef := regularTool.Tool
+		if hasTaskHandler {
+			toolDef = toolToUse.Tool
+		}
+		if _, err := s.inputValidator.validate(toolDef, s.argumentsToValidate(request)); err != nil {
+			invalid = err
+		}
+	}
 
 	// Generate task ID (UUID v4)
 	taskID := uuid.New().String()
@@ -2174,6 +2184,18 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 			code: mcp.INTERNAL_ERROR,
 			err:  err,
 		}
+	}
+
+	if invalid != nil {
+		// No handler runs for this task, so nothing else gives its slot back;
+		// a hook may have cancelled it meanwhile, which completeTask leaves
+		// as it is, and the slot is given back all the same.
+		s.completeTask(entry, validationToolResult(invalid), nil)
+		s.releaseTaskSlot(entry)
+		s.tasksMu.RLock()
+		taskCopy := entry.task
+		s.tasksMu.RUnlock()
+		return &mcp.CreateTaskResult{Task: taskCopy}, nil
 	}
 
 	// Snapshot the task as "working" before launching execution, so the
