@@ -24,6 +24,40 @@ var urlElicitationRequired = mcp.URLElicitationRequiredError{
 // pointer to a value-receiver error, but the server must unwrap it too.
 var urlElicitationRequiredPointer error = &urlElicitationRequired
 
+// testHandlerJSONRPCError is an application error with a JSON-RPC form whose
+// message differs from its Go error text, so a test can tell which was sent.
+type testHandlerJSONRPCError struct{}
+
+func (testHandlerJSONRPCError) Error() string {
+	return "private diagnostic"
+}
+
+func (testHandlerJSONRPCError) JSONRPCError() mcp.JSONRPCError {
+	return mcp.JSONRPCError{
+		Error: mcp.NewJSONRPCErrorDetails(
+			mcp.INVALID_PARAMS,
+			"invalid customer ID",
+			map[string]any{"field": "customer_id"},
+		),
+	}
+}
+
+// testReservedCodeError is an application error whose JSON-RPC form claims a
+// code that the SDK gives a protocol meaning of its own.
+type testReservedCodeError struct {
+	code int
+}
+
+func (e testReservedCodeError) Error() string {
+	return fmt.Sprintf("private diagnostic %d", e.code)
+}
+
+func (e testReservedCodeError) JSONRPCError() mcp.JSONRPCError {
+	return mcp.JSONRPCError{
+		Error: mcp.NewJSONRPCErrorDetails(e.code, "claimed", map[string]any{"claimed": true}),
+	}
+}
+
 func newHandlerErrorServer() *MCPServer {
 	srv := NewMCPServer("test-server", "1.0.0",
 		WithToolCapabilities(true),
@@ -36,6 +70,15 @@ func newHandlerErrorServer() *MCPServer {
 	})
 	srv.AddTool(mcp.NewTool("protected_pointer_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return nil, fmt.Errorf("checking access: %w", urlElicitationRequiredPointer)
+	})
+	srv.AddTool(mcp.NewTool("marked_protected_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, NewHandlerError(urlElicitationRequired)
+	})
+	srv.AddTool(mcp.NewTool("public_error_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, fmt.Errorf("validating request: %w", NewHandlerError(testHandlerJSONRPCError{}))
+	})
+	srv.AddTool(mcp.NewTool("reserved_code_action", mcp.WithNumber("code")), func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, NewHandlerError(testReservedCodeError{code: request.GetInt("code", 0)})
 	})
 	srv.AddTool(mcp.NewTool("failing_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return nil, errors.New("backend unavailable")
@@ -120,22 +163,107 @@ func TestHandlerURLElicitationRequiredError(t *testing.T) {
 // Protocol version 2026-07-28 reserves -32042 and asks for a URL elicitation
 // through a multi round-trip request instead, so a modern client still gets
 // an internal error.
+// Marking the error for the client does not change that.
 func TestHandlerURLElicitationRequiredErrorForModernClients(t *testing.T) {
 	srv := newHandlerErrorServer()
 
-	errorResponse := handleForError(t, srv, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
-		"name":"protected_action",
-		"_meta":{
-			"io.modelcontextprotocol/protocolVersion":"2026-07-28",
-			"io.modelcontextprotocol/clientCapabilities":{}
-		}
-	}}`)
-	assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
-	assert.Nil(t, errorResponse.Error.Data)
+	for _, name := range []string{"protected_action", "marked_protected_action"} {
+		t.Run(name, func(t *testing.T) {
+			errorResponse := handleForError(t, srv, fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+				"name":%q,
+				"_meta":{
+					"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+					"io.modelcontextprotocol/clientCapabilities":{}
+				}
+			}}`, name))
+			assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
+			assert.Nil(t, errorResponse.Error.Data)
+		})
+	}
 }
 
-// Any other handler error is an internal error, including one that carries a
-// JSON-RPC form of its own from somewhere else.
+// A handler error marked with NewHandlerError goes to the client as the code,
+// message and data of its JSON-RPC form, under either protocol version.
+func TestMarkedHandlerJSONRPCError(t *testing.T) {
+	srv := newHandlerErrorServer()
+
+	tests := []struct {
+		name    string
+		request string
+	}{
+		{
+			name:    "legacy protocol",
+			request: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"public_error_action"}}`,
+		},
+		{
+			name: "modern protocol",
+			request: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{
+				"name":"public_error_action",
+				"_meta":{
+					"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+					"io.modelcontextprotocol/clientCapabilities":{}
+				}
+			}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errorResponse := handleForError(t, srv, tt.request)
+			assert.Equal(t, mcp.JSONRPC_VERSION, errorResponse.JSONRPC)
+			assert.Equal(t, mcp.INVALID_PARAMS, errorResponse.Error.Code)
+			assert.Equal(t, "invalid customer ID", errorResponse.Error.Message)
+			assert.Equal(t, map[string]any{"field": "customer_id"}, errorResponse.Error.Data)
+		})
+	}
+}
+
+// A marked error cannot claim a code the SDK gives a protocol meaning of its
+// own: the client would act on it as that condition. It is an internal error,
+// as if it were not marked.
+func TestMarkedHandlerErrorWithReservedCode(t *testing.T) {
+	srv := newHandlerErrorServer()
+
+	codes := []int{
+		mcp.REQUEST_INTERRUPTED,
+		mcp.RESOURCE_NOT_FOUND,
+		mcp.HEADER_MISMATCH,
+		mcp.MISSING_REQUIRED_CLIENT_CAPABILITY,
+		mcp.UNSUPPORTED_PROTOCOL_VERSION,
+		mcp.URL_ELICITATION_REQUIRED,
+		-32050,
+		-32099,
+	}
+	meta := map[string]string{
+		"legacy protocol": "",
+		"modern protocol": `,"_meta":{
+			"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities":{}
+		}`,
+	}
+	for protocol, extra := range meta {
+		for _, code := range codes {
+			t.Run(fmt.Sprintf("%s/%d", protocol, code), func(t *testing.T) {
+				errorResponse := handleForError(t, srv, fmt.Sprintf(
+					`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"reserved_code_action","arguments":{"code":%d}%s}}`,
+					code, extra))
+				assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
+				assert.Equal(t, fmt.Sprintf("private diagnostic %d", code), errorResponse.Error.Message)
+				assert.Nil(t, errorResponse.Error.Data)
+			})
+		}
+	}
+}
+
+// A typed nil provider is no error, as a nil one is.
+func TestNewHandlerErrorWithTypedNilProvider(t *testing.T) {
+	var provider *testHandlerJSONRPCError
+
+	assert.NoError(t, NewHandlerError(provider))
+	assert.NoError(t, NewHandlerError(nil))
+}
+
+// Any other handler error is an internal error, including one that carries an
+// unmarked JSON-RPC form of its own from somewhere else.
 func TestHandlerErrorsAreOtherwiseInternal(t *testing.T) {
 	srv := newHandlerErrorServer()
 
@@ -146,5 +274,16 @@ func TestHandlerErrorsAreOtherwiseInternal(t *testing.T) {
 			assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
 			assert.Nil(t, errorResponse.Error.Data)
 		})
+	}
+}
+
+// A code outside the range the specification keeps, such as -32019 or
+// -32100, is the handler's to send.
+func TestMarkedHandlerErrorBesideTheReservedRange(t *testing.T) {
+	srv := newHandlerErrorServer()
+	for _, code := range []int{-32019, -32100} {
+		errorResponse := handleForError(t, srv, fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"reserved_code_action","arguments":{"code":%d}}}`, code))
+		assert.Equal(t, code, errorResponse.Error.Code)
 	}
 }
