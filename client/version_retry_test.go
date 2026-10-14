@@ -326,3 +326,23 @@ func TestInitializeFallsBackOnNullAdvertisedVersions(t *testing.T) {
 		"initialize " + mcp.LATEST_LEGACY_PROTOCOL_VERSION,
 	}, server.seen())
 }
+
+// Once a rejection has named a modern version both sides support, the server
+// is modern: a retry whose result then lists no modern version is a failure
+// to report, not a reason to fall back to the handshake.
+func TestInitializeKeepsAModernServerWhoseRetryListsNoModernVersion(t *testing.T) {
+	server := &versionRejectingServer{
+		supported:  []string{mcp.ProtocolVersion20260728, mcp.ProtocolVersion20251125},
+		rejections: 1,
+		discoverResult: json.RawMessage(`{"resultType":"complete","supportedVersions":["2025-11-25"],"capabilities":{},` +
+			`"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"rejecting","version":"1.0.0"}},"ttlMs":0,"cacheScope":"private"}`),
+	}
+	client := newClientAgainst(t, server)
+
+	_, err := client.Initialize(t.Context(), mcp.InitializeRequest{})
+	require.Error(t, err)
+	assert.False(t, client.IsInitialized())
+	for _, request := range server.seen() {
+		assert.NotContains(t, request, "initialize ")
+	}
+}

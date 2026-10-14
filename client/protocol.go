@@ -416,9 +416,10 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string) (*mcp.Di
 			if version == "" {
 				// A server that answers server/discover is modern; it is
 				// reached through the handshake only when it lists a legacy
-				// version this client speaks.
+				// version this client speaks, and never once a rejection has
+				// named a modern version both sides support.
 				c.applyNegotiatedVersion(previous)
-				return nil, !listsSharedVersion(result.SupportedVersions), fmt.Errorf("server/discover result lists no modern version this client supports: %v", result.SupportedVersions)
+				return nil, modern || !listsSharedVersion(result.SupportedVersions), fmt.Errorf("server/discover result lists no modern version this client supports: %v", result.SupportedVersions)
 			}
 			c.applyNegotiatedVersion(version)
 			return result, true, nil
