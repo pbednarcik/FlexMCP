@@ -573,11 +573,14 @@ func (c *StreamableHTTP) SendRequest(
 		}
 
 		// A JSON-RPC error in the body is the answer, whatever the status, if
-		// it answers this request.
+		// it answers this request. Any other JSON body, a gateway's or a
+		// framework's error object, is no answer: the status is reported.
 		var errResponse JSONRPCResponse
 		body, _ := io.ReadAll(resp.Body)
-		if err := json.Unmarshal(body, &errResponse); err == nil && errResponse.Error != nil && answers(request, &errResponse) == nil {
-			return &errResponse, nil
+		if isJSONRPCErrorBody(body) {
+			if err := json.Unmarshal(body, &errResponse); err == nil && errResponse.Error != nil && answers(request, &errResponse) == nil {
+				return &errResponse, nil
+			}
 		}
 		// Per the MCP spec's backwards compatibility section: a 4xx to an
 		// initialize POST (404, 405) whose body is not a JSON-RPC error means
@@ -1355,4 +1358,32 @@ func answers(request JSONRPCRequest, response *JSONRPCResponse) error {
 		return fmt.Errorf("the response answers request %s, not %s", got, want)
 	}
 	return nil
+}
+
+// isJSONRPCErrorBody says whether body is a JSON-RPC error message: version
+// "2.0" and an error with a numeric code and a string message. Member names
+// are matched exactly, where json.Unmarshal into a struct ignores case, so a
+// body that only resembles one is not taken for an answer.
+func isJSONRPCErrorBody(body []byte) bool {
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return false
+	}
+	var version string
+	if err := json.Unmarshal(msg["jsonrpc"], &version); err != nil || version != mcp.JSONRPC_VERSION {
+		return false
+	}
+	var errObj map[string]json.RawMessage
+	if err := json.Unmarshal(msg["error"], &errObj); err != nil {
+		return false
+	}
+	var code *int
+	if err := json.Unmarshal(errObj["code"], &code); err != nil || code == nil {
+		return false
+	}
+	var message *string
+	if err := json.Unmarshal(errObj["message"], &message); err != nil || message == nil {
+		return false
+	}
+	return true
 }
