@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"reflect"
 
@@ -60,31 +61,40 @@ func (s *MCPServer) decorateResponse(
 	return response
 }
 
-// decorateResult stamps the modern result metadata onto a result value.
+// decorateResult stamps the modern result metadata onto a copy of a result.
 //
-// The generated dispatcher stores results by value, so the value is copied
-// into an addressable location before the pointer-receiver decoration
-// interfaces are applied.
+// The handler's own result is never written: a handler may return the same
+// one to every call, so a stamp written into it would race with the next
+// call's and would reach a legacy client. The copy is addressable, which is
+// what makes the pointer-receiver decoration interfaces reachable for the
+// results the generated dispatcher stores by value.
 func (s *MCPServer) decorateResult(result any, method mcp.MCPMethod) (any, bool) {
 	value := reflect.ValueOf(result)
 	if !value.IsValid() {
 		return nil, false
 	}
 
-	// Work on an addressable copy so that pointer-receiver methods promoted
-	// from the embedded mcp.Result are reachable.
 	byValue := value.Kind() != reflect.Pointer
-	pointer := value
-	if byValue {
-		pointer = reflect.New(value.Type())
-		pointer.Elem().Set(value)
-	} else if value.IsNil() {
-		return nil, false
+	if !byValue {
+		if value.IsNil() {
+			return nil, false
+		}
+		value = value.Elem()
 	}
+	pointer := reflect.New(value.Type())
+	pointer.Elem().Set(value)
 
 	metadata, ok := reflect.TypeAssert[mcp.ResultMetadata](pointer)
 	if !ok {
 		return nil, false
+	}
+
+	// The copy still shares the handler's _meta: it gets its own before a
+	// field is written.
+	if meta := metadata.GetResultMeta(); meta != nil {
+		own := *meta
+		own.AdditionalFields = maps.Clone(meta.AdditionalFields)
+		metadata.SetResultMeta(&own)
 	}
 
 	// resultType is required from 2026-07-28 onward. A handler that already
@@ -108,7 +118,7 @@ func (s *MCPServer) decorateResult(result any, method mcp.MCPMethod) (any, bool)
 	if byValue {
 		return pointer.Elem().Interface(), true
 	}
-	return result, true
+	return pointer.Interface(), true
 }
 
 // boxedServerInfo is the server's identity as result _meta carries it: boxed
