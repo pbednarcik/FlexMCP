@@ -153,6 +153,10 @@ func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 	p.Meta = raw.Meta
 	p.Task = raw.Task
 	p.MultiRoundTripParams = raw.MultiRoundTripParams
+	// A value decoded into twice must not keep the previous request's
+	// arguments when the new one omits them.
+	p.Arguments = nil
+	p.RawArguments = nil
 
 	if len(raw.Arguments) == 0 {
 		return nil
