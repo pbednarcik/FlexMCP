@@ -325,7 +325,7 @@ func (s *StdioServer) toolCallWorker(ctx context.Context) {
 				defer func() {
 					if r := recover(); r != nil {
 						s.errLogger.Printf("panic recovered in stdio tool call worker: %v", r)
-						resp = createErrorResponse(work.id, mcp.INTERNAL_ERROR, fmt.Sprintf("internal panic: %v", r))
+						resp = createErrorResponse(work.id, mcp.INTERNAL_ERROR, internalErrorMessage)
 					}
 				}()
 				return s.server.handleMessageRead(work.ctx, work.message, work.read)
@@ -547,7 +547,7 @@ func (s *StdioServer) handleMessage(ctx context.Context, id any, rawMessage json
 		if r := recover(); r != nil {
 			s.errLogger.Printf("panic recovered in stdio message handler: %v", r)
 			if id != nil {
-				response = createErrorResponse(id, mcp.INTERNAL_ERROR, fmt.Sprintf("internal panic: %v", r))
+				response = createErrorResponse(id, mcp.INTERNAL_ERROR, internalErrorMessage)
 			}
 		}
 	}()

@@ -99,8 +99,11 @@ func TestStdioServer_ToolCallWorkerPanicRecovery(t *testing.T) {
 			continue
 		}
 
-		if msg.Error != nil && strings.Contains(string(msg.Error), "internal panic") {
+		// The panic's value stays on the server; the client gets the fixed
+		// internal-error message.
+		if msg.Error != nil && strings.Contains(string(msg.Error), internalErrorMessage) {
 			foundPanicError = true
+			assert.NotContains(t, string(msg.Error), "panic")
 		}
 
 		// Check for id=3 (safe tool response)

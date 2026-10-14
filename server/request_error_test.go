@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
@@ -121,14 +122,15 @@ func TestHandlerURLElicitationRequiredError(t *testing.T) {
 		message string
 	}{
 		{
+			// The message is the error's own, not the handler's wrapping.
 			name:    "tools/call",
 			request: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"protected_action"}}`,
-			message: "checking access: URL elicitation required: 1 elicitation(s) needed",
+			message: "URL elicitation required: 1 elicitation(s) needed",
 		},
 		{
 			name:    "tools/call returning a pointer",
 			request: `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"protected_pointer_action"}}`,
-			message: "checking access: URL elicitation required: 1 elicitation(s) needed",
+			message: "URL elicitation required: 1 elicitation(s) needed",
 		},
 		{
 			name:    "prompts/get",
@@ -247,7 +249,7 @@ func TestMarkedHandlerErrorWithReservedCode(t *testing.T) {
 					`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"reserved_code_action","arguments":{"code":%d}%s}}`,
 					code, extra))
 				assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
-				assert.Equal(t, fmt.Sprintf("private diagnostic %d", code), errorResponse.Error.Message)
+				assert.Equal(t, internalErrorMessage, errorResponse.Error.Message)
 				assert.Nil(t, errorResponse.Error.Data)
 			})
 		}
@@ -286,4 +288,88 @@ func TestMarkedHandlerErrorBesideTheReservedRange(t *testing.T) {
 			`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"reserved_code_action","arguments":{"code":%d}}}`, code))
 		assert.Equal(t, code, errorResponse.Error.Code)
 	}
+}
+
+// The text of an unmarked handler error stays on the server: it may name
+// hosts, paths or credentials, so the client gets a fixed message, and hooks
+// and logs get the error.
+func TestUnmarkedHandlerErrorTextStaysOnTheServer(t *testing.T) {
+	const secret = "query: dial postgres://app:s3cret@db.internal:5432"
+	srv := newHandlerErrorServer()
+	srv.AddTool(mcp.NewTool("leaky_action"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, errors.New(secret)
+	})
+	var logged error
+	srv.hooks = &Hooks{}
+	srv.hooks.AddOnError(func(_ context.Context, _ any, _ mcp.MCPMethod, _ any, err error) { logged = err })
+
+	errorResponse := handleForError(t, srv, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"leaky_action"}}`)
+	assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
+	assert.Equal(t, internalErrorMessage, errorResponse.Error.Message)
+	assert.ErrorContains(t, logged, secret)
+}
+
+// A failed task's status message is the same fixed message, and its hook
+// still gets the error.
+func TestFailedTaskStatusMessageStaysOnTheServer(t *testing.T) {
+	const secret = "query: dial postgres://app:s3cret@db.internal:5432"
+	failed := make(chan TaskMetrics, 1)
+	hooks := &TaskHooks{}
+	hooks.AddOnTaskFailed(func(_ context.Context, metrics TaskMetrics) { failed <- metrics })
+	srv := NewMCPServer("t", "1", WithTaskHooks(hooks), WithTaskCapabilities(true, false, false))
+	srv.AddTaskTool(mcp.Tool{Name: "leaky", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
+		func(context.Context, mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+			return nil, errors.New(secret)
+		})
+
+	result, reqErr := srv.handleTaskAugmentedToolCall(t.Context(), "id", mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "leaky", Task: &mcp.TaskParams{}}})
+	require.Nil(t, reqErr)
+	select {
+	case metrics := <-failed:
+		assert.ErrorContains(t, metrics.Error, secret)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the task never failed")
+	}
+	srv.tasksMu.RLock()
+	statusMessage := srv.tasks[result.Task.TaskId].task.StatusMessage
+	srv.tasksMu.RUnlock()
+	assert.Equal(t, internalErrorMessage, statusMessage)
+}
+
+// The message a failed task shows is the one a request would get: an error
+// the server recognises keeps its own text, as a marked one does.
+func TestClientMessageRecognisesProtocolErrors(t *testing.T) {
+	missing := mcp.MissingRequiredClientCapabilityError{Required: mcp.ClientCapabilities{Roots: &struct {
+		ListChanged bool `json:"listChanged,omitempty"`
+	}{}}}
+	assert.Equal(t, urlElicitationRequired.Error(), clientMessage(fmt.Errorf("checking: %w", urlElicitationRequired)))
+	assert.Equal(t, missing.Error(), clientMessage(fmt.Errorf("checking: %w", missing)))
+	assert.Equal(t, "invalid customer ID", clientMessage(fmt.Errorf("validating: %w", NewHandlerError(testHandlerJSONRPCError{}))))
+	assert.Equal(t, ErrLoadShedding.Error(), clientMessage(fmt.Errorf("busy: %w", ErrLoadShedding)))
+	assert.Equal(t, internalErrorMessage, clientMessage(errors.New("dial postgres://app:s3cret@db")))
+}
+
+// completionProvider answers every completion with err.
+type completionProvider struct{ err error }
+
+func (p completionProvider) CompletePromptArgument(context.Context, string, mcp.CompleteArgument, mcp.CompleteContext) (*mcp.Completion, error) {
+	return nil, p.err
+}
+
+// A completion provider's error follows the handler rule: a marked error
+// is sent in its own JSON-RPC form, an unmarked one as a fixed message.
+func TestCompletionProviderErrorsFollowTheHandlerRule(t *testing.T) {
+	const request = `{"jsonrpc":"2.0","id":7,"method":"completion/complete","params":{"ref":{"type":"ref/prompt","name":"p"},"argument":{"name":"a","value":"x"}}}`
+	t.Run("marked", func(t *testing.T) {
+		srv := NewMCPServer("t", "1", WithCompletions(), WithPromptCompletionProvider(completionProvider{err: NewHandlerError(testHandlerJSONRPCError{})}))
+		errorResponse := handleForError(t, srv, request)
+		assert.Equal(t, mcp.INVALID_PARAMS, errorResponse.Error.Code)
+		assert.Equal(t, "invalid customer ID", errorResponse.Error.Message)
+	})
+	t.Run("unmarked", func(t *testing.T) {
+		srv := NewMCPServer("t", "1", WithCompletions(), WithPromptCompletionProvider(completionProvider{err: errors.New("dial postgres://app:s3cret@db")}))
+		errorResponse := handleForError(t, srv, request)
+		assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
+		assert.Equal(t, internalErrorMessage, errorResponse.Error.Message)
+	})
 }

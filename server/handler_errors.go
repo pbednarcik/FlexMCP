@@ -8,6 +8,11 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// internalErrorMessage is what a client is told about an error the handler
+// did not mark for it: the error's own text may name hosts, paths or
+// credentials, so it stays on the server, for hooks and logs.
+const internalErrorMessage = "internal error"
+
 // JSONRPCErrorProvider is an error with a JSON-RPC form of its own: the code,
 // message and data a client should receive for it.
 type JSONRPCErrorProvider interface {
@@ -38,7 +43,9 @@ func (e *exposedHandlerError) Unwrap() error {
 //
 // Errors are not sent in their JSON-RPC form unless marked, because one may
 // have come from another server, and its code, message and data were meant
-// for that server's client.
+// for that server's client. Nor is an unmarked error's text sent: the
+// client gets a fixed internal-error message, and the error itself goes to
+// the server's hooks and logs.
 //
 // A provider whose code has a protocol meaning is still an internal error,
 // because the client would act on it as that condition: every code from
@@ -86,20 +93,20 @@ func handlerError(ctx context.Context, id any, err error) *requestError {
 	if required, ok := asURLElicitationRequired(err); ok {
 		if !mcp.IsModernProtocol(RequestProtocolVersion(ctx)) {
 			details := required.JSONRPCError().Error
-			return &requestError{id: id, code: details.Code, err: err, data: details.Data}
+			return &requestError{id: id, code: details.Code, err: err, message: &details.Message, data: details.Data}
 		}
 		// Marking it with NewHandlerError does not make -32042 an answer a
 		// modern client can act on.
-		return &requestError{id: id, code: mcp.INTERNAL_ERROR, err: err}
+		return internalError(id, err)
 	}
 	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
 		details := missing.JSONRPCError().Error
-		return &requestError{id: id, code: details.Code, err: err, data: details.Data}
+		return &requestError{id: id, code: details.Code, err: err, message: &details.Message, data: details.Data}
 	}
 	if exposed, ok := errors.AsType[*exposedHandlerError](err); ok {
 		details := exposed.provider.JSONRPCError().Error
 		if reservedHandlerErrorCode(details.Code) {
-			return &requestError{id: id, code: mcp.INTERNAL_ERROR, err: err}
+			return internalError(id, err)
 		}
 		return &requestError{
 			id:      id,
@@ -109,7 +116,48 @@ func handlerError(ctx context.Context, id any, err error) *requestError {
 			data:    details.Data,
 		}
 	}
-	return &requestError{id: id, code: mcp.INTERNAL_ERROR, err: err}
+	return internalError(id, err)
+}
+
+// knownErrors are errors the server raises or recognises in a handler's
+// error, whose own text names a condition and not the handler's internals,
+// so a client may see it. A handler's wrapping around one is still not sent.
+var knownErrors = []error{
+	ErrInputRequiresModernClient, ErrLoadShedding,
+	ErrResourceNotFound, ErrPromptNotFound, ErrToolNotFound, ErrUnsupported,
+	context.Canceled, context.DeadlineExceeded,
+}
+
+// internalError is the internal error a client gets for err, a handler
+// error: a known error's own text or a fixed message; err itself is kept for
+// hooks and logs.
+func internalError(id any, err error) *requestError {
+	message := clientMessage(err)
+	return &requestError{id: id, code: mcp.INTERNAL_ERROR, err: err, message: &message}
+}
+
+// clientMessage is the message a client may see for err, a handler error:
+// the message of its JSON-RPC form when it is an error the server
+// recognises or one marked with NewHandlerError not claiming a reserved
+// code, the text of a known error in it, and otherwise internalErrorMessage.
+func clientMessage(err error) string {
+	if required, ok := asURLElicitationRequired(err); ok {
+		return required.Error()
+	}
+	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
+		return missing.Error()
+	}
+	if exposed, ok := errors.AsType[*exposedHandlerError](err); ok {
+		if details := exposed.provider.JSONRPCError().Error; !reservedHandlerErrorCode(details.Code) {
+			return details.Message
+		}
+	}
+	for _, known := range knownErrors {
+		if errors.Is(err, known) {
+			return known.Error()
+		}
+	}
+	return internalErrorMessage
 }
 
 // reservedHandlerErrorCode reports whether code is one a handler error marked

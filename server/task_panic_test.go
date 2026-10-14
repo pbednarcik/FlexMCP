@@ -54,8 +54,8 @@ func TestExecuteTaskTool_PanicRecovery(t *testing.T) {
 	s.tasksMu.RLock()
 	assert.True(t, entry.completed)
 	assert.Equal(t, mcp.TaskStatusFailed, entry.task.Status)
-	assert.Contains(t, entry.task.StatusMessage, "panic in task tool handler")
-	assert.Contains(t, entry.task.StatusMessage, "deliberate panic in task handler")
+	assert.Equal(t, internalErrorMessage, entry.task.StatusMessage)
+	assert.ErrorContains(t, entry.resultErr, "deliberate panic in task handler")
 	s.tasksMu.RUnlock()
 }
 

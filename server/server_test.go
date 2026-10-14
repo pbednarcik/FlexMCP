@@ -2416,11 +2416,7 @@ func TestMCPServer_WithRecover(t *testing.T) {
 
 	require.True(t, ok)
 	assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
-	assert.Equal(
-		t,
-		"panic recovered in panic-tool tool handler: test panic",
-		errorResponse.Error.Message,
-	)
+	assert.Equal(t, internalErrorMessage, errorResponse.Error.Message)
 	assert.Nil(t, errorResponse.Error.Data)
 }
 
@@ -2457,7 +2453,8 @@ func TestMCPServer_ToolHandlerPreservesJSONRPCError(t *testing.T) {
 	assert.Equal(t, mcp.JSONRPC_VERSION, errorResponse.JSONRPC)
 	assert.Equal(t, int64(4), errorResponse.ID.Value())
 	assert.Equal(t, mcp.URL_ELICITATION_REQUIRED, errorResponse.Error.Code)
-	assert.Equal(t, "tool call failed: "+handlerErr.Error(), errorResponse.Error.Message)
+	// The message is the error's own, not the handler's wrapping.
+	assert.Equal(t, handlerErr.Error(), errorResponse.Error.Message)
 	assert.Equal(t, map[string]any{
 		"elicitations": []mcp.ElicitationParams{elicitation},
 	}, errorResponse.Error.Data)
@@ -2488,7 +2485,7 @@ func TestMCPServer_ToolHandlerErrorDefaultsToInternalError(t *testing.T) {
 	assert.Equal(t, mcp.JSONRPC_VERSION, errorResponse.JSONRPC)
 	assert.Equal(t, int64(5), errorResponse.ID.Value())
 	assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
-	assert.Equal(t, handlerErr.Error(), errorResponse.Error.Message)
+	assert.Equal(t, internalErrorMessage, errorResponse.Error.Message)
 	assert.Nil(t, errorResponse.Error.Data)
 }
 

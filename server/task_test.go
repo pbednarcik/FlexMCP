@@ -998,7 +998,7 @@ func TestMCPServer_TaskStatusNotifications(t *testing.T) {
 
 			assert.Equal(t, "task-notify-fail", params["taskId"])
 			assert.Equal(t, mcp.TaskStatusFailed, params["status"])
-			assert.Equal(t, "test error", params["statusMessage"])
+			assert.Equal(t, internalErrorMessage, params["statusMessage"])
 
 		case <-time.After(1 * time.Second):
 			t.Fatal("Expected task status notification but none received")
@@ -1267,7 +1267,8 @@ func TestMCPServer_ExecuteTaskTool(t *testing.T) {
 		// Verify task is completed with error
 		server.tasksMu.RLock()
 		assert.Equal(t, mcp.TaskStatusFailed, entry.task.Status)
-		assert.Equal(t, expectedErr.Error(), entry.task.StatusMessage)
+		assert.Equal(t, internalErrorMessage, entry.task.StatusMessage)
+		assert.Equal(t, expectedErr, entry.resultErr)
 		assert.Nil(t, entry.result)
 		assert.Equal(t, expectedErr, entry.resultErr)
 		assert.True(t, entry.completed)
@@ -1340,7 +1341,7 @@ func TestMCPServer_ExecuteTaskTool(t *testing.T) {
 		// Verify task was cancelled (not failed) when context error is returned
 		server.tasksMu.RLock()
 		assert.Equal(t, mcp.TaskStatusCancelled, entry.task.Status)
-		assert.Contains(t, entry.task.StatusMessage, "context canceled")
+		assert.Equal(t, "Task cancelled", entry.task.StatusMessage)
 		assert.True(t, entry.completed)
 		server.tasksMu.RUnlock()
 	})

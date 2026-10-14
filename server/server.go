@@ -2234,7 +2234,7 @@ func (s *MCPServer) executeTaskTool(
 				s.tasksMu.Lock()
 				if !entry.completed {
 					entry.task.Status = mcp.TaskStatusCancelled
-					entry.task.StatusMessage = err.Error()
+					entry.task.StatusMessage = "Task cancelled"
 					entry.task.LastUpdatedAt = cancelledAt.UTC().Format(time.RFC3339)
 					entry.completed = true
 					close(entry.done)
@@ -2353,7 +2353,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 				s.tasksMu.Lock()
 				if !entry.completed {
 					entry.task.Status = mcp.TaskStatusCancelled
-					entry.task.StatusMessage = err.Error()
+					entry.task.StatusMessage = "Task cancelled"
 					entry.task.LastUpdatedAt = cancelledAt.UTC().Format(time.RFC3339)
 					entry.completed = true
 					close(entry.done)
@@ -2614,11 +2614,7 @@ func (s *MCPServer) handleTaskResult(
 
 	// Return error if task failed
 	if resultErr != nil {
-		return nil, &requestError{
-			id:   id,
-			code: mcp.INTERNAL_ERROR,
-			err:  resultErr,
-		}
+		return nil, handlerError(ctx, id, resultErr)
 	}
 
 	// Extract the CallToolResult and populate TaskResultResult
@@ -2722,11 +2718,7 @@ func (s *MCPServer) handleComplete(
 		}
 	}
 	if err != nil {
-		return nil, &requestError{
-			id:   id,
-			code: mcp.INTERNAL_ERROR,
-			err:  err,
-		}
+		return nil, handlerError(ctx, id, err)
 	}
 
 	// Defensive nil check: default providers always return non-nil completions,
@@ -2899,6 +2891,12 @@ func (s *MCPServer) listTasks(ctx context.Context) []mcp.Task {
 
 // completeTask marks a task as completed with the given result.
 func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
+	// The message a client may see is rendered by the error, which may be
+	// a marked provider's own code: outside the lock.
+	var statusMessage string
+	if err != nil {
+		statusMessage = clientMessage(err)
+	}
 	s.tasksMu.Lock()
 
 	// Guard against double completion
@@ -2912,7 +2910,7 @@ func (s *MCPServer) completeTask(entry *taskEntry, result any, err error) {
 
 	if err != nil {
 		entry.task.Status = mcp.TaskStatusFailed
-		entry.task.StatusMessage = err.Error()
+		entry.task.StatusMessage = statusMessage
 		entry.resultErr = err
 	} else {
 		entry.task.Status = mcp.TaskStatusCompleted

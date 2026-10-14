@@ -39,8 +39,8 @@ func TestMCPServer_MiddlewarePanicRecovery(t *testing.T) {
 		errorResponse, ok := response.(mcp.JSONRPCError)
 		require.True(t, ok)
 		assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
-		assert.Contains(t, errorResponse.Error.Message, "panic recovered")
-		assert.Contains(t, errorResponse.Error.Message, "intentional panic in tool handler")
+		// What was recovered stays on the server.
+		assert.Equal(t, internalErrorMessage, errorResponse.Error.Message)
 	})
 
 	t.Run("resource handler panic with recovery middleware", func(t *testing.T) {
@@ -68,8 +68,7 @@ func TestMCPServer_MiddlewarePanicRecovery(t *testing.T) {
 		errorResponse, ok := response.(mcp.JSONRPCError)
 		require.True(t, ok)
 		assert.Equal(t, mcp.INTERNAL_ERROR, errorResponse.Error.Code)
-		assert.Contains(t, errorResponse.Error.Message, "panic recovered")
-		assert.Contains(t, errorResponse.Error.Message, "intentional panic in resource handler")
+		assert.Equal(t, internalErrorMessage, errorResponse.Error.Message)
 	})
 }
 

@@ -32,7 +32,7 @@ func TestStructuredToolHandlerURLElicitationRequiredError(t *testing.T) {
 
 			errorResponse := handleForError(t, srv, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"protected_structured_action","arguments":{}}}`)
 			assert.Equal(t, mcp.URL_ELICITATION_REQUIRED, errorResponse.Error.Code)
-			assert.Equal(t, tt.err.Error(), errorResponse.Error.Message)
+			assert.Equal(t, urlElicitationRequired.Error(), errorResponse.Error.Message)
 
 			var got mcp.URLElicitationRequiredError
 			require.ErrorAs(t, errorResponse.Error.AsError(), &got)

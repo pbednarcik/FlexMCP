@@ -514,7 +514,7 @@ func TestTaskToolTracerBullet(t *testing.T) {
 
 		// Step 4: Verify task failed with proper error
 		assert.Equal(t, mcp.TaskStatusFailed, taskObj.Status)
-		assert.Equal(t, expectedErr.Error(), taskObj.StatusMessage)
+		assert.Equal(t, internalErrorMessage, taskObj.StatusMessage)
 
 		// Step 5: Verify tasks/result returns error
 		resultRequest := mcp.TaskResultRequest{

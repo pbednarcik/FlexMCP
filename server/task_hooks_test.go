@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -129,7 +130,8 @@ func TestTaskHooks_TaskFailed(t *testing.T) {
 	assert.Equal(t, "test-task-3", failedMetrics[0].TaskID)
 	assert.Equal(t, "test-tool", failedMetrics[0].ToolName)
 	assert.Equal(t, mcp.TaskStatusFailed, failedMetrics[0].Status)
-	assert.Equal(t, "task failed", failedMetrics[0].StatusMessage)
+	assert.Equal(t, internalErrorMessage, failedMetrics[0].StatusMessage)
+	assert.EqualError(t, failedMetrics[0].Error, "task failed")
 	require.NotNil(t, failedMetrics[0].CompletedAt)
 	assert.Equal(t, failedMetrics[0].CompletedAt.Sub(failedMetrics[0].CreatedAt), failedMetrics[0].Duration)
 	assert.Equal(t, testErr, failedMetrics[0].Error)
@@ -527,5 +529,40 @@ func TestTaskHooks_APanickingCreatedHookDoesNotBlockCancellation(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancelling a task whose created hook panicked hung")
+	}
+}
+
+// taskStateReadingError is a marked error whose JSON-RPC form reads task
+// state through the server, as a provider that enriches its message might.
+type taskStateReadingError struct{ server *MCPServer }
+
+func (taskStateReadingError) Error() string { return "private diagnostic" }
+
+func (e taskStateReadingError) JSONRPCError() mcp.JSONRPCError {
+	e.server.tasksMu.RLock()
+	n := len(e.server.tasks)
+	e.server.tasksMu.RUnlock()
+	return mcp.JSONRPCError{Error: mcp.NewJSONRPCErrorDetails(mcp.INVALID_PARAMS, fmt.Sprintf("failed among %d tasks", n), nil)}
+}
+
+// A failed task's message is rendered outside the task lock: a marked error
+// whose JSON-RPC form reads task state does not deadlock the completion.
+func TestTaskHooks_FailedTaskMessageIsRenderedOutsideTheTaskLock(t *testing.T) {
+	failed := make(chan TaskMetrics, 1)
+	hooks := &TaskHooks{}
+	hooks.AddOnTaskFailed(func(_ context.Context, m TaskMetrics) { failed <- m })
+	server := NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, false, false))
+	server.AddTaskTool(mcp.Tool{Name: "failing", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
+		func(context.Context, mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+			return nil, NewHandlerError(taskStateReadingError{server: server})
+		})
+
+	_, reqErr := server.handleTaskAugmentedToolCall(t.Context(), "failing", mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "failing", Task: &mcp.TaskParams{}}})
+	require.Nil(t, reqErr)
+	select {
+	case metrics := <-failed:
+		assert.Equal(t, "failed among 1 tasks", metrics.StatusMessage)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the task never failed: its message was rendered under the task lock")
 	}
 }
