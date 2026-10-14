@@ -349,6 +349,10 @@ type OAuthHandler struct {
 	// send it.
 	refreshMu  sync.Mutex
 	refreshing *tokenRefresh
+
+	// saveMu orders the token saves of code exchanges and refreshes, each
+	// checked against the server the handler targets as it is saved.
+	saveMu sync.Mutex
 }
 
 // clientCredentials is one snapshot of the client credentials, taken under
@@ -607,6 +611,18 @@ func (h *OAuthHandler) refreshStoredToken(ctx context.Context) (*Token, error) {
 // that issued it, for the server it was issued for. A refresh token without a
 // record carries none.
 func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token, error) {
+	// A refresh token without a record goes only to the issuer ClientIssuer
+	// names: the first issuer the client credentials were used with is not
+	// evidence of where the refresh token came from. With neither, it can go
+	// nowhere, whatever discovery would answer.
+	issuer := stored.Issuer
+	if issuer == "" {
+		issuer = h.config.ClientIssuer
+	}
+	if issuer == "" {
+		return nil, fmt.Errorf("%w: the refresh token has no record of its issuer, and ClientIssuer is not set", ErrOAuthAuthorizationRequired)
+	}
+
 	metadata, err := h.getServerMetadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server metadata: %w", err)
@@ -616,16 +632,6 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	resourceURL := h.getResourceURL()
 	if resourceURL == "" {
 		return nil, ErrResourceUnknown
-	}
-	// A refresh token without a record goes only to the issuer ClientIssuer
-	// names: the first issuer the client credentials were used with is not
-	// evidence of where the refresh token came from.
-	issuer := stored.Issuer
-	if issuer == "" {
-		issuer = h.config.ClientIssuer
-	}
-	if issuer == "" {
-		return nil, fmt.Errorf("%w: the refresh token has no record of its issuer, and ClientIssuer is not set", ErrOAuthAuthorizationRequired)
 	}
 	if issuer != metadata.Issuer {
 		return nil, fmt.Errorf("%w: the refresh token is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, issuer, metadata.Issuer)
@@ -692,9 +698,8 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
 
-	// Save the token
-	if err := h.config.TokenStore.SaveToken(ctx, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to save token: %w", err)
+	if err := h.saveIssuedToken(ctx, &tokenResp); err != nil {
+		return nil, err
 	}
 
 	return &tokenResp, nil
@@ -1082,6 +1087,9 @@ func (h *OAuthHandler) getServerMetadata(ctx context.Context) (*AuthServerMetada
 
 	once.Do(func() {
 		result, err := h.fetchServerMetadata(ctx)
+		if err == nil && result.metadata != nil {
+			err = requireIssuer(result.metadata)
+		}
 		if err == nil && result.metadata != nil {
 			err = requireHTTPSEndpoints(result.metadata)
 		}
@@ -1626,6 +1634,16 @@ func isHTTPS(rawURL string) bool {
 	return err == nil && strings.EqualFold(u.Scheme, "https")
 }
 
+// requireIssuer refuses authorization server metadata that names no issuer,
+// which RFC 8414 §2 requires: client credentials and tokens are bound to the
+// issuer, so without one they would be bound to nothing.
+func requireIssuer(m *AuthServerMetadata) error {
+	if m.Issuer == "" {
+		return errors.New("authorization server metadata names no issuer")
+	}
+	return nil
+}
+
 // requireHTTPSEndpoints refuses authorization server metadata whose issuer or
 // any endpoint is not https, whether discovery found it or guessed it:
 // authorization server endpoints are served over HTTPS only (MCP
@@ -2038,11 +2056,25 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
 
-	// Save the token
-	if err := h.config.TokenStore.SaveToken(ctx, &tokenResp); err != nil {
+	return h.saveIssuedToken(ctx, &tokenResp)
+}
+
+// saveIssuedToken saves token, issued for token.Resource by token.Issuer,
+// unless the handler has moved to another resource or authorization server
+// since the request for it was sent: a response that arrives after the
+// move does not replace the token of the server the handler targets now.
+func (h *OAuthHandler) saveIssuedToken(ctx context.Context, token *Token) error {
+	h.saveMu.Lock()
+	defer h.saveMu.Unlock()
+	h.metadataMu.Lock()
+	current := h.serverMetadata != nil && h.serverMetadata.Issuer == token.Issuer && h.resourceURL == token.Resource
+	h.metadataMu.Unlock()
+	if !current {
+		return fmt.Errorf("%w: the handler moved to another server while the token was requested", ErrOAuthAuthorizationRequired)
+	}
+	if err := h.config.TokenStore.SaveToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to save token: %w", err)
 	}
-
 	return nil
 }
 

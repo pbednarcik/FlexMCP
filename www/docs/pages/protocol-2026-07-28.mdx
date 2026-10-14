@@ -275,6 +275,8 @@ need code are marked **(code)**.
   resource metadata, metadata found under the MCP server's path must name
   that URL as its issuer or is not used, and the metadata at the host's root
   must name the origin.
+- Authorization server metadata must name its `issuer` (RFC 8414); metadata
+  without one is not used, wherever it came from.
 - Client credentials belong to one authorization server: `ClientIssuer`, or
   else the first one they are used with. Another is refused
   (`ErrClientRegisteredElsewhere`). Without `ClientIssuer`, configured

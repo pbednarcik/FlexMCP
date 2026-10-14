@@ -200,6 +200,9 @@ func TestOAuthHandler_RefusesAResourceThatIsNotACanonicalURI(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			config := tt.config
 			config.ClientID = "client"
+			// A raw refresh token reaches the resource check only with
+			// ClientIssuer set.
+			config.ClientIssuer = httpServer.URL
 			config.RedirectURI = "http://localhost:8085/callback"
 			config.TokenStore = NewMemoryTokenStore()
 			handler := NewOAuthHandler(config)

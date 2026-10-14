@@ -1286,6 +1286,7 @@ func TestOAuthHandler_ProcessAuthorizationResponse_ErrorIn200(t *testing.T) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 serverURL,
 				"authorization_endpoint": serverURL + "/authorize",
 				"token_endpoint":         serverURL + "/token",
 			})

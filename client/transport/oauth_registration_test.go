@@ -191,6 +191,7 @@ func TestOAuthHandler_CredentialsAreReplacedAndReadAsOneRecord(t *testing.T) {
 	handler := NewOAuthHandler(OAuthConfig{
 		ClientID:              "old",
 		ClientSecret:          "old-secret",
+		ClientIssuer:          httpServer.URL,
 		RedirectURI:           "http://localhost:8085/callback",
 		TokenStore:            NewMemoryTokenStore(),
 		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",
@@ -201,7 +202,10 @@ func TestOAuthHandler_CredentialsAreReplacedAndReadAsOneRecord(t *testing.T) {
 	for _, use := range []func(){
 		func() { _ = handler.RegisterClient(t.Context(), "test") },
 		func() { _, _ = handler.GetAuthorizationURL(t.Context(), "state", "challenge") },
-		func() { _, _ = handler.RefreshToken(t.Context(), "refresh") },
+		func() {
+			_, err := handler.RefreshToken(t.Context(), "refresh")
+			assert.NoError(t, err, "the refresh did not reach the token endpoint")
+		},
 		func() { _ = handler.GetClientID() },
 		func() { _ = handler.GetClientSecret() },
 		func() { _ = handler.GetTokenEndpointAuthMethod() },
