@@ -80,3 +80,26 @@ func TestPaginationEmptyResourceTieBreak(t *testing.T) {
 		})
 	}
 }
+
+// A cursor the server issues is never empty, since an empty cursor means the
+// start of the list: paging past an element with an empty name moves on
+// rather than starting over.
+func TestPaginationPastAnEmptyName(t *testing.T) {
+	s := NewMCPServer("test", "1.0.0", WithPaginationLimit(1))
+	prompts := []mcp.Prompt{{Name: ""}, {Name: "z"}}
+	var names []string
+	var cursor *mcp.Cursor
+	for range 4 {
+		page, next, err := listByPagination(t.Context(), s, cursor, prompts)
+		require.NoError(t, err)
+		for _, prompt := range page {
+			names = append(names, prompt.Name)
+		}
+		if next == nil {
+			break
+		}
+		require.NotEmpty(t, *next, "an issued cursor is never the start-of-list cursor")
+		cursor = next
+	}
+	assert.Equal(t, []string{"", "z"}, names)
+}

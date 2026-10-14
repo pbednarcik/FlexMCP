@@ -1494,16 +1494,14 @@ func comparePageKey[T mcp.Named](element *T, name, tieBreak string) int {
 }
 
 // encodePageCursor returns the cursor for the page after element: the base64
-// of its name, followed for resources and templates by a dot and the base64 of
-// their URI or URI template, even when that is empty. The dot is outside the
-// base64 alphabet, so it tells these cursors apart from name-only ones.
+// of its name, a dot, and the base64 of its tie-break, the URI or URI template
+// of a resource or template and empty for any other element. The dot is
+// outside the base64 alphabet, so it tells these cursors apart from name-only
+// ones, and it keeps a cursor from ever being empty, which would mean the
+// start of the list even after an element with an empty name.
 func encodePageCursor[T mcp.Named](element *T) mcp.Cursor {
-	cursor := base64.StdEncoding.EncodeToString([]byte((*element).GetName()))
-	switch any(element).(type) {
-	case *mcp.Resource, *mcp.ResourceTemplate:
-		cursor += "." + base64.StdEncoding.EncodeToString([]byte(pageTieBreak(element)))
-	}
-	return mcp.Cursor(cursor)
+	return mcp.Cursor(base64.StdEncoding.EncodeToString([]byte((*element).GetName())) +
+		"." + base64.StdEncoding.EncodeToString([]byte(pageTieBreak(element))))
 }
 
 func (s *MCPServer) handleListResources(
