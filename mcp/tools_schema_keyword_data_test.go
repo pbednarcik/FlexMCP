@@ -110,8 +110,7 @@ func TestOutputSchemaOfKeptKeywordsOnly(t *testing.T) {
 
 // draft-07 dependencies maps property names to schemas: a property named
 // like a keyword is still a schema there, so its refs are rewritten and its
-// annotations checked. (In 2020-12, the default, dependencies is not a
-// keyword.)
+// annotations checked.
 func TestSchemaDependenciesAreSchemas(t *testing.T) {
 	var schema ToolArgumentsSchema
 	require.NoError(t, json.Unmarshal([]byte(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","definitions":{"value":true},"dependencies":{"const":{"$ref":"#/definitions/value"},"list":["a"]}}`), &schema))
@@ -170,8 +169,7 @@ func TestGeneratedInputSchemaReplacesKeptKeywords(t *testing.T) {
 }
 
 // Which keywords hold schemas depends on the dialect the schema declares:
-// prefixItems is data in draft-07 and additionalItems is data in 2020-12,
-// the default.
+// prefixItems is data in draft-07, and additionalItems a schema in 2019-09.
 func TestSchemaKeywordsFollowTheDeclaredDialect(t *testing.T) {
 	const draft07 = `"$schema":"http://json-schema.org/draft-07/schema#",`
 	for _, tt := range []struct {
@@ -180,7 +178,6 @@ func TestSchemaKeywordsFollowTheDeclaredDialect(t *testing.T) {
 	}{
 		{`{` + draft07 + `"type":"object","prefixItems":[{"x-mcp-header":"data"}]}`, false},
 		{`{` + draft07 + `"type":"object","additionalItems":{"x-mcp-header":"X"}}`, true},
-		{`{"type":"object","additionalItems":{"x-mcp-header":"data"}}`, false},
 		{`{"type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
 		{`{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"object","additionalItems":{"x-mcp-header":"X"}}`, true},
 	} {
@@ -231,12 +228,15 @@ func TestSchemaRoundTripStillCompiles(t *testing.T) {
 		draft07 = `"$schema":"http://json-schema.org/draft-07/schema#",`
 	)
 	for name, source := range map[string]string{
-		"a fragment-only $id is an anchor": `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"#p","allOf":[{"$ref":"#/definitions/v"}]}}}`,
-		"an empty $id is no resource":      `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"","allOf":[{"$ref":"#/definitions/v"}]}}}`,
-		"a $id of # is no resource":        `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"#","allOf":[{"$ref":"#/definitions/v"}]}}}`,
-		"a $ref hides a draft-07 $id":      `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"allOf":[{"$id":"urn:hidden","$ref":"#/definitions/v"}]}`,
-		"draft-04 names resources by id":   `{` + draft04 + `"type":"object","required":["n"],"definitions":{"v":{"type":"string"}},"allOf":[{"id":"urn:nested","definitions":{"v":{"type":"number"}},"properties":{"n":{"$ref":"#/definitions/v"}}}]}`,
-		"draft-04 required is never empty": `{` + draft04 + `"type":"object"}`,
+		"a fragment-only $id is an anchor":    `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"#p","allOf":[{"$ref":"#/definitions/v"}]}}}`,
+		"an empty $id is no resource":         `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"","allOf":[{"$ref":"#/definitions/v"}]}}}`,
+		"a $id of # is no resource":           `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"properties":{"p":{"$id":"#","allOf":[{"$ref":"#/definitions/v"}]}}}`,
+		"a $ref hides a draft-07 $id":         `{` + draft07 + `"type":"object","definitions":{"v":{"type":"string"}},"allOf":[{"$id":"urn:hidden","$ref":"#/definitions/v"}]}`,
+		"draft-04 names resources by id":      `{` + draft04 + `"type":"object","required":["n"],"definitions":{"v":{"type":"string"}},"allOf":[{"id":"urn:nested","definitions":{"v":{"type":"number"}},"properties":{"n":{"$ref":"#/definitions/v"}}}]}`,
+		"draft-04 required is never empty":    `{` + draft04 + `"type":"object"}`,
+		"dependencies are schemas":            `{"type":"object","definitions":{"v":{"required":["y"]}},"dependencies":{"x":{"$ref":"#/definitions/v"}}}`,
+		"dependencies are schemas in 2019-09": `{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"object","definitions":{"v":{"required":["y"]}},"dependencies":{"x":{"$ref":"#/definitions/v"}}}`,
+		"dependencies are schemas in 2020-12": `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","definitions":{"v":{"required":["y"]}},"dependencies":{"x":{"$ref":"#/definitions/v"}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			require.NoError(t, compileError([]byte(source)), "the source schema")
@@ -263,19 +263,22 @@ func TestParamHeaderAnnotationsFollowTheResourceDialect(t *testing.T) {
 		schema  string
 		refused bool
 	}{
-		"draft-04 contains is data":         {`{` + draft04 + `"type":"object","contains":{"x-mcp-header":"data"}}`, false},
-		"draft-04 propertyNames is data":    {`{` + draft04 + `"type":"object","propertyNames":{"x-mcp-header":"data"}}`, false},
-		"draft-06 if is data":               {`{` + draft06 + `"type":"object","if":{"x-mcp-header":"data"}}`, false},
-		"draft-06 contains is a schema":     {`{` + draft06 + `"type":"object","contains":{"x-mcp-header":"X"}}`, true},
-		"draft-07 if is a schema":           {`{` + draft07 + `"type":"object","if":{"x-mcp-header":"X"}}`, true},
-		"a 2020-12 resource in draft-07":    {`{` + draft07 + `"type":"object","allOf":[{"$id":"urn:child","$schema":"https://json-schema.org/draft/2020-12/schema","prefixItems":[{"x-mcp-header":"X"}]}]}`, true},
-		"a draft-07 resource in 2020-12":    {`{"type":"object","allOf":[{"$id":"urn:child",` + draft07 + `"prefixItems":[{"x-mcp-header":"data"}]}]}`, false},
-		"$schema outside a resource root":   {`{"type":"object","allOf":[{` + draft07 + `"prefixItems":[{"x-mcp-header":"X"}]}]}`, true},
-		"a custom URI naming draft-07":      {`{"$schema":"urn:my:draft-07","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
-		"a custom URI naming 2019-09":       {`{"$schema":"urn:my:2019-09","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
-		"a fragment names no dialect":       {`{"$schema":"http://json-schema.org/draft-07/schema#/x","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
-		"https and no fragment":             {`{"$schema":"https://json-schema.org/draft-07/schema","type":"object","prefixItems":[{"x-mcp-header":"data"}]}`, false},
-		"the latest-dialect URI is 2020-12": {`{"$schema":"https://json-schema.org/schema","type":"object","additionalItems":{"x-mcp-header":"data"}}`, false},
+		"draft-04 contains is data":           {`{` + draft04 + `"type":"object","contains":{"x-mcp-header":"data"}}`, false},
+		"draft-04 propertyNames is data":      {`{` + draft04 + `"type":"object","propertyNames":{"x-mcp-header":"data"}}`, false},
+		"draft-06 if is data":                 {`{` + draft06 + `"type":"object","if":{"x-mcp-header":"data"}}`, false},
+		"draft-06 contains is a schema":       {`{` + draft06 + `"type":"object","contains":{"x-mcp-header":"X"}}`, true},
+		"draft-07 if is a schema":             {`{` + draft07 + `"type":"object","if":{"x-mcp-header":"X"}}`, true},
+		"a 2020-12 resource in draft-07":      {`{` + draft07 + `"type":"object","allOf":[{"$id":"urn:child","$schema":"https://json-schema.org/draft/2020-12/schema","prefixItems":[{"x-mcp-header":"X"}]}]}`, true},
+		"a draft-07 resource in 2020-12":      {`{"type":"object","allOf":[{"$id":"urn:child",` + draft07 + `"prefixItems":[{"x-mcp-header":"data"}]}]}`, false},
+		"$schema outside a resource root":     {`{"type":"object","allOf":[{` + draft07 + `"prefixItems":[{"x-mcp-header":"X"}]}]}`, true},
+		"a custom URI naming draft-07":        {`{"$schema":"urn:my:draft-07","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		"a custom URI naming 2019-09":         {`{"$schema":"urn:my:2019-09","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		"a fragment names no dialect":         {`{"$schema":"http://json-schema.org/draft-07/schema#/x","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		"https and no fragment":               {`{"$schema":"https://json-schema.org/draft-07/schema","type":"object","prefixItems":[{"x-mcp-header":"data"}]}`, false},
+		"the latest-dialect URI is 2020-12":   {`{"$schema":"https://json-schema.org/schema","type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		"2019-09 has no prefixItems":          {`{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"object","prefixItems":[{"x-mcp-header":"data"}]}`, false},
+		"2020-12 dependencies are schemas":    {`{"type":"object","dependencies":{"x":{"x-mcp-header":"X"}}}`, true},
+		"2020-12 additionalItems is a schema": {`{"type":"object","additionalItems":{"x-mcp-header":"X"}}`, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tool := NewToolWithRawSchema("t", "", json.RawMessage(tt.schema))

@@ -1331,49 +1331,37 @@ const (
 	namedSubschemas
 )
 
-// subschemaKeyword returns what the value of key holds in dialect, by that
-// dialect's applicator keywords. A keyword another dialect defines is data
-// here.
+// subschemaKeyword returns what the value of key holds in dialect, by the
+// validator's list of the keywords that hold schemas in that dialect
+// (santhosh-tekuri/jsonschema, Draft.subschemas). Each draft's list keeps
+// every keyword of the one before: 2020-12 still reads definitions,
+// dependencies and additionalItems. Any other keyword holds data.
 func subschemaKeyword(key string, dialect schemaDialect) subschemaKind {
+	since2019 := dialect == dialect2019 || dialect == dialect2020
 	switch key {
-	case "additionalProperties", "allOf", "anyOf", "oneOf", "not", "items":
+	case "not", "allOf", "anyOf", "oneOf", "additionalProperties", "items", "additionalItems":
 		return subschemas
-	case "properties", "patternProperties":
+	case "definitions", "properties", "patternProperties", "dependencies":
 		return namedSubschemas
 	case "contains", "propertyNames":
-		// Since draft-06.
-		if dialect == dialectDraft04 {
-			return noSubschema
+		if dialect != dialectDraft04 {
+			return subschemas
 		}
-		return subschemas
 	case "if", "then", "else":
-		// Since draft-07.
-		if dialect == dialectDraft04 || dialect == dialectDraft06 {
-			return noSubschema
-		}
-		return subschemas
-	}
-	switch dialect {
-	case dialectDraft04, dialectDraft06, dialectDraft07:
-		switch key {
-		case "additionalItems":
+		if dialect != dialectDraft04 && dialect != dialectDraft06 {
 			return subschemas
-		case "definitions", "dependencies":
+		}
+	case "unevaluatedProperties", "unevaluatedItems", "contentSchema":
+		if since2019 {
+			return subschemas
+		}
+	case "$defs", "dependentSchemas":
+		if since2019 {
 			return namedSubschemas
 		}
-	case dialect2019:
-		switch key {
-		case "additionalItems", "unevaluatedItems", "unevaluatedProperties", "contentSchema":
+	case "prefixItems":
+		if dialect == dialect2020 {
 			return subschemas
-		case "$defs", "dependentSchemas":
-			return namedSubschemas
-		}
-	default:
-		switch key {
-		case "prefixItems", "unevaluatedItems", "unevaluatedProperties", "contentSchema":
-			return subschemas
-		case "$defs", "dependentSchemas":
-			return namedSubschemas
 		}
 	}
 	return noSubschema
