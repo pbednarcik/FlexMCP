@@ -143,25 +143,66 @@ func TestStreamableHTTP_LocalhostProtection(t *testing.T) {
 	}
 }
 
-// TestStreamableHTTP_LocalhostProtection_NonLoopbackUnaffected verifies that
-// the protection only applies to loopback connections: a handler invoked
-// without a loopback local address must not reject foreign Host headers.
-func TestStreamableHTTP_LocalhostProtection_NonLoopbackUnaffected(t *testing.T) {
-	mcpServer := NewMCPServer("test", "1.0.0")
-	httpServer := NewStreamableHTTPServer(mcpServer)
+// A connection on a loopback, private, shared or link-local address is a
+// DNS rebinding target. Only a browser can be rebound, and a browser sends
+// Origin on every POST, so a request carrying an Origin that does not name
+// the server is refused there; Host, which a proxy or a container network
+// sets to the server's own hostname, is checked on loopback only. A header
+// names the server when it is a loopback name, the connection's own
+// address, or a host WithAllowedHosts allows (Transports.md rows 14 and
+// 15). A public address is reachable without rebinding, so it is served as
+// before.
+func TestStreamableHTTP_PrivateNetworkProtection(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		localIP       string
+		host, origin  string
+		allowed       []string
+		wantForbidden string // the header the 403 names, empty when served
+	}{
+		{name: "a private address serves a non-browser client whatever its host", localIP: "192.168.1.10", host: "mcp.example.com"},
+		{name: "a private address rejects a foreign origin", localIP: "192.168.1.10", host: "evil.com:8080", origin: "http://evil.com:8080", wantForbidden: "Origin"},
+		{name: "a private address accepts its own origin", localIP: "192.168.1.10", host: "192.168.1.10:8080", origin: "http://192.168.1.10:8080"},
+		{name: "a private address accepts a loopback origin", localIP: "192.168.1.10", host: "192.168.1.10:8080", origin: "http://localhost:5173"},
+		{name: "a private address rejects another private origin", localIP: "192.168.1.10", host: "192.168.1.10:8080", origin: "http://10.0.0.1:8080", wantForbidden: "Origin"},
+		{name: "an allowed host is accepted as an origin", localIP: "192.168.1.10", host: "mcp.internal", origin: "https://MCP.internal:3000", allowed: []string{"mcp.internal"}},
+		{name: "an allowed host with a trailing dot is accepted", localIP: "192.168.1.10", host: "mcp.internal", origin: "https://mcp.internal.", allowed: []string{"mcp.internal"}},
+		{name: "a hostname not allowed is rejected as an origin", localIP: "192.168.1.10", host: "mcp.internal", origin: "https://mcp.internal", wantForbidden: "Origin"},
+		{name: "an allowed IP is accepted as an origin", localIP: "172.17.0.2", host: "192.168.1.5:8080", origin: "http://192.168.1.5:8080", allowed: []string{"192.168.1.5"}},
+		{name: "an allowed bracketed IPv6 entry is accepted", localIP: "fd12::1", host: "[fd12::2]:8080", origin: "http://[fd12::2]:8080", allowed: []string{"[fd12::2]"}},
+		{name: "an opaque origin is rejected", localIP: "192.168.1.10", host: "192.168.1.10:8080", origin: "null", wantForbidden: "Origin"},
+		{name: "a link-local address rejects a foreign origin", localIP: "169.254.10.10", host: "evil.com", origin: "http://evil.com", wantForbidden: "Origin"},
+		{name: "a unique local address rejects a foreign origin", localIP: "fd12::1", host: "evil.com", origin: "http://evil.com", wantForbidden: "Origin"},
+		{name: "a shared address rejects a foreign origin", localIP: "100.64.1.2", host: "evil.com", origin: "http://evil.com", wantForbidden: "Origin"},
+		{name: "a mapped private address rejects a foreign origin", localIP: "::ffff:192.168.1.10", host: "evil.com", origin: "http://evil.com", wantForbidden: "Origin"},
+		{name: "a public address is served as before", localIP: "203.0.113.5", host: "evil.com", origin: "http://evil.com"},
+		{name: "a loopback address rejects a foreign host", localIP: "127.0.0.1", host: "evil.com", wantForbidden: "Host"},
+		{name: "a loopback address accepts an allowed host", localIP: "127.0.0.1", host: "mcp.internal:8080", allowed: []string{"mcp.internal"}},
+		{name: "a loopback address accepts an allowed IP host", localIP: "127.0.0.1", host: "203.0.113.5:8080", allowed: []string{"203.0.113.5"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			httpServer := NewStreamableHTTPServer(NewMCPServer("test", "1.0.0"), WithAllowedHosts(tt.allowed...))
+			body, err := json.Marshal(initRequest)
+			require.NoError(t, err)
+			req, err := http.NewRequest(http.MethodPost, "http://"+tt.host+"/mcp", bytes.NewReader(body))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			localAddr := &net.TCPAddr{IP: net.ParseIP(tt.localIP), Port: 8080}
+			req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, localAddr))
 
-	// Simulate a request that arrived on a non-loopback interface.
-	body, err := json.Marshal(initRequest)
-	require.NoError(t, err)
-	req, err := http.NewRequest(http.MethodPost, "http://evil.com/mcp", bytes.NewReader(body))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	localAddr := &net.TCPAddr{IP: net.ParseIP("192.168.1.10"), Port: 8080}
-	req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, localAddr))
-
-	rr := httptest.NewRecorder()
-	httpServer.ServeHTTP(rr, req)
-	assert.Equal(t, http.StatusOK, rr.Code)
+			rr := httptest.NewRecorder()
+			httpServer.ServeHTTP(rr, req)
+			if tt.wantForbidden == "" {
+				assert.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+				return
+			}
+			assert.Equal(t, http.StatusForbidden, rr.Code)
+			assert.Contains(t, rr.Body.String(), "invalid "+tt.wantForbidden+" header")
+		})
+	}
 }
 
 // originProtectionTests is the table for the Origin half of the loopback
@@ -244,12 +285,12 @@ func BenchmarkRejectDNSRebinding(b *testing.B) {
 			localAddr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080}
 			req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, localAddr))
 			w := httptest.NewRecorder()
-			if rejectDNSRebinding(w, req, true) {
+			if rejectDNSRebinding(w, req, true, nil) {
 				b.Fatal("the loopback request was rejected")
 			}
 			b.ReportAllocs()
 			for b.Loop() {
-				rejectDNSRebinding(w, req, true)
+				rejectDNSRebinding(w, req, true, nil)
 			}
 		})
 	}

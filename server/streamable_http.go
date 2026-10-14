@@ -40,20 +40,25 @@ func WithEndpointPath(endpointPath string) StreamableHTTPOption {
 // protection of the streamable HTTP server.
 //
 // By default, requests arriving over a loopback connection (127.0.0.1,
-// [::1]) whose Host header is not a localhost value, or whose Origin header
-// is present and not a localhost origin, are rejected with 403 Forbidden.
-// This protects local MCP servers against DNS rebinding attacks, where a
-// malicious website rebinds its own domain to 127.0.0.1 to make a victim's
-// browser issue requests against a local server. The protection applies
-// regardless of whether the server listens on localhost specifically or on
-// 0.0.0.0, and never affects requests arriving via non-loopback addresses.
-// When WithStreamableHTTPCORS names allowed origins, that list judges Origin
-// instead, and the Host check stays.
+// [::1]), a private address (RFC 1918, 100.64.0.0/10 or an IPv6 unique
+// local address) or a link-local address whose Origin header is present
+// and does not name the server are rejected with 403 Forbidden, and so are
+// those on a loopback address whose Host header does not. A header names
+// the server when it is a loopback name, the address the connection
+// arrived on, or a host WithAllowedHosts allows. This protects local and
+// LAN MCP servers against DNS rebinding attacks, where a malicious website
+// rebinds its own domain to the server's address to make a victim's
+// browser issue requests against it; a browser sends Origin on every POST,
+// so Origin catches the rebound request, while Host is left to the proxies
+// and container networks that set it on a private address. The protection
+// applies regardless of whether the server listens on one address or on
+// 0.0.0.0, and never affects requests arriving on a public address. When
+// WithStreamableHTTPCORS names allowed origins, that list judges Origin
+// instead, and the loopback Host check stays.
 //
-// Disable it only if you understand the security implications, for example
-// when a reverse proxy on the same host forwards requests via localhost
-// while preserving the original Host header. In that case, prefer
-// configuring the proxy to rewrite the Host header to localhost instead.
+// A browser page served from the server's own hostname on a private
+// network names that host with WithAllowedHosts. Disable the protection
+// only if you understand the security implications.
 //
 // See https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 func WithDisableLocalhostProtection(disable bool) StreamableHTTPOption {
@@ -155,6 +160,20 @@ func WithStreamableHTTPCORS(opts ...CORSOption) StreamableHTTPOption {
 	}
 }
 
+// WithAllowedHosts names hosts, besides loopback names and the connection's
+// own address, that a request arriving on a loopback, private or link-local
+// address may carry in its Origin header when no CORS allow list judges
+// Origin, and in its Host header on a loopback address: the server's own
+// hostnames, as a reverse proxy forwards them or a browser page served
+// from the server names them. A host is compared without its port,
+// case-insensitively and without a trailing dot; an IP literal as an
+// address. See WithDisableLocalhostProtection.
+func WithAllowedHosts(hosts ...string) StreamableHTTPOption {
+	return func(s *StreamableHTTPServer) {
+		s.allowedHosts = append(s.allowedHosts, hosts...)
+	}
+}
+
 // DefaultMaxRequestBodyBytes is the bound WithMaxRequestBodyBytes puts on a
 // POST body when the option is not given.
 const DefaultMaxRequestBodyBytes = 4 << 20
@@ -208,6 +227,8 @@ type StreamableHTTPServer struct {
 	// rebinding protection applied to requests arriving over loopback
 	// connections. See WithDisableLocalhostProtection.
 	disableLocalhostProtection bool
+	// allowedHosts are the hosts WithAllowedHosts named.
+	allowedHosts []string
 
 	// maxRequestBodyBytes bounds a POST body read by ServeHTTP; zero or less
 	// is no bound. See WithMaxRequestBodyBytes.
@@ -274,9 +295,11 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 // requests are answered directly and simple cross-origin responses are
 // decorated with the configured Access-Control-* headers before dispatch.
 //
-// Requests arriving over a loopback connection with a non-localhost Host
-// header are rejected with 403 Forbidden to protect against DNS rebinding
-// attacks, unless WithDisableLocalhostProtection is set.
+// Requests arriving over a loopback, private or link-local connection with
+// an Origin header that does not name the server, or over a loopback
+// connection with a Host header that does not, are rejected with 403
+// Forbidden to protect against DNS rebinding attacks, unless
+// WithDisableLocalhostProtection is set; see WithAllowedHosts.
 //
 // ServeHTTP is the conventional net/http entry point; for non-net/http HTTP
 // frameworks (fasthttp, fiber, etc.), see Handle.
@@ -284,7 +307,7 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Origin is validated on every request: by the CORS allow list when one
 	// is configured, by the loopback check otherwise.
 	corsEnabled := s.corsConfig.enabled()
-	if !s.disableLocalhostProtection && rejectDNSRebinding(w, r, !corsEnabled) {
+	if !s.disableLocalhostProtection && rejectDNSRebinding(w, r, !corsEnabled, s.allowedHosts) {
 		return
 	}
 	if corsEnabled {
