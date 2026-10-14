@@ -2049,15 +2049,32 @@ type TaskResultResult struct {
 // MarshalJSON implements custom JSON marshaling for TaskResultResult.
 // structuredContent is written from RawStructuredContent when it is set.
 func (r TaskResultResult) MarshalJSON() ([]byte, error) {
-	type alias TaskResultResult
-	out := struct {
-		alias
-		StructuredContent any `json:"structuredContent,omitempty"`
-	}{alias: alias(r), StructuredContent: r.StructuredContent}
+	return json.Marshal(r.wire())
+}
+
+// MarshalJSONTo writes the result into enc by the encoder's own rules, as a
+// TaskResultResult without methods would be written, with structuredContent
+// from RawStructuredContent when it is set.
+func (r TaskResultResult) MarshalJSONTo(enc *jsontext.Encoder) error {
+	return jsonv2.MarshalEncode(enc, r.wire())
+}
+
+// taskResultFields is TaskResultResult without its methods.
+type taskResultFields TaskResultResult
+
+// taskResultWire is a TaskResultResult as it is written: its fields, with
+// structuredContent taken from the raw bytes when there are any.
+type taskResultWire struct {
+	taskResultFields
+	StructuredContent any `json:"structuredContent,omitempty"`
+}
+
+func (r TaskResultResult) wire() *taskResultWire {
+	out := &taskResultWire{taskResultFields: taskResultFields(r), StructuredContent: r.StructuredContent}
 	if len(r.RawStructuredContent) > 0 {
 		out.StructuredContent = r.RawStructuredContent
 	}
-	return json.Marshal(out)
+	return out
 }
 
 // CancelTaskRequest cancels an in-progress task.
