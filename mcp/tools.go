@@ -917,6 +917,12 @@ type ToolArgumentsSchema struct {
 	Properties           map[string]any `json:"properties"`
 	Required             []string       `json:"required,omitempty"`
 	AdditionalProperties any            `json:"additionalProperties,omitempty"`
+	// AdditionalFields holds the top-level JSON Schema keywords the other
+	// fields do not model, such as $schema, title or oneOf. The modeled names
+	// (type, properties, required, additionalProperties, $defs and its alias
+	// definitions) are reserved: an entry under one of them is never written,
+	// even when its field is empty.
+	AdditionalFields map[string]any `json:"-"`
 	// PropertyOrder is the marshal order of the top-level Properties keys.
 	// UnmarshalJSON sets it from the "properties" object. Names that are not
 	// in Properties are skipped, and keys that are not listed follow in
@@ -960,9 +966,24 @@ func (tis *ToolArgumentsSchema) UnmarshalJSON(data []byte) error {
 	return toolArgumentsSchemaUnmarshalJSON(data, tis)
 }
 
+// isModeledToolSchemaKeyword reports whether key is reserved for a field of
+// ToolArgumentsSchema.
+func isModeledToolSchemaKeyword(key string) bool {
+	switch key {
+	case "type", "properties", "required", "additionalProperties", "$defs", "definitions":
+		return true
+	}
+	return false
+}
+
 // toolArgumentsSchemaMarshalJSON handles the fields stored in ToolArgumentsSchema when json.Marshaler is called
 func toolArgumentsSchemaMarshalJSON(tis ToolArgumentsSchema) ([]byte, error) {
-	m := make(map[string]any)
+	m := make(map[string]any, len(tis.AdditionalFields)+6)
+	for key, value := range tis.AdditionalFields {
+		if !isModeledToolSchemaKeyword(key) {
+			m[key] = value
+		}
+	}
 	m["type"] = tis.Type
 	if tis.Type == "" && tis.Types != nil {
 		m["type"] = tis.Types
@@ -1131,6 +1152,19 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 		tis.PropertyOrder = propertyOrder(aux.Properties)
 	}
 
+	var additionalFields map[string]any
+	if err := json.Unmarshal(data, &additionalFields); err != nil {
+		return err
+	}
+	for key := range additionalFields {
+		if isModeledToolSchemaKeyword(key) {
+			delete(additionalFields, key)
+		}
+	}
+	if len(additionalFields) == 0 {
+		additionalFields = nil
+	}
+
 	// If $defs wasn't provided but definitions was, use definitions.
 	// Marshaling re-emits Defs as "$defs", so local "#/definitions/..." $ref
 	// pointers must be rewritten to "#/$defs/..." or the round-tripped schema
@@ -1140,8 +1174,10 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 		rewriteDraft07LocalRefs(tis.Defs)
 		rewriteDraft07LocalRefs(tis.Properties)
 		rewriteDraft07LocalRefs(tis.AdditionalProperties)
+		rewriteDraft07LocalRefs(additionalFields)
 	}
 
+	tis.AdditionalFields = additionalFields
 	return nil
 }
 

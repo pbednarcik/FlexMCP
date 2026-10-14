@@ -452,3 +452,28 @@ func TestInputSchemaValidation_Edges(t *testing.T) {
 		})
 	}
 }
+
+// A top-level keyword the structured schema does not model is validated
+// too: an argument set that breaks a top-level oneOf is refused.
+func TestInputSchemaValidation_AdditionalSchemaKeywords(t *testing.T) {
+	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+	tool := mcp.NewTool("order",
+		mcp.WithString("sku"),
+		mcp.WithNumber("quantity"),
+	)
+	tool.InputSchema.AdditionalFields = map[string]any{
+		"oneOf": []any{
+			map[string]any{"required": []any{"sku"}},
+			map[string]any{"required": []any{"quantity"}},
+		},
+	}
+	srv.AddTool(tool, okHandler)
+
+	requireToolErrorContaining(t, callTool(t, srv, "order", map[string]any{"sku": "a", "quantity": 1}), "oneOf")
+	resp := callTool(t, srv, "order", map[string]any{"sku": "a"})
+	jr, ok := resp.(mcp.JSONRPCResponse)
+	require.True(t, ok, "expected JSON-RPC response, got %T", resp)
+	result, ok := jr.Result.(*mcp.CallToolResult)
+	require.True(t, ok, "expected *mcp.CallToolResult, got %T", jr.Result)
+	require.False(t, result.IsError, "%#v", result)
+}
