@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"sync"
+	"runtime"
 	"testing"
 	"time"
 
@@ -59,17 +59,15 @@ func TestExecuteTaskTool_PanicRecovery(t *testing.T) {
 	s.tasksMu.RUnlock()
 }
 
-// TestScheduleTaskCleanup_GoroutinesExitAfterTTL verifies that cleanup goroutines exit
-// after their TTL expires and do not leak.
-func TestScheduleTaskCleanup_GoroutinesExitAfterTTL(t *testing.T) {
+// A pending TTL parks no goroutine: a server keeping many tasks for a long
+// time pays a timer each, not a stack each.
+func TestScheduleTaskCleanup_ParksNoGoroutine(t *testing.T) {
 	s := NewMCPServer("test", "1.0.0")
 
-	const numTasks = 10
-	var wg sync.WaitGroup
-
+	const numTasks = 100
+	before := runtime.NumGoroutine()
 	for i := range numTasks {
-		taskID := fmt.Sprintf("leak-test-%d", i)
-
+		taskID := fmt.Sprintf("parked-%d", i)
 		entry := &taskEntry{
 			task: mcp.NewTask(taskID),
 			done: make(chan struct{}),
@@ -77,22 +75,12 @@ func TestScheduleTaskCleanup_GoroutinesExitAfterTTL(t *testing.T) {
 		s.tasksMu.Lock()
 		s.tasks[taskID] = entry
 		s.tasksMu.Unlock()
-
-		wg.Go(func() {
-			s.scheduleTaskCleanup(taskID, entry, 50)
-		})
+		// Started as the task goroutine would: a scheduler that parks
+		// shows as a goroutine that stays.
+		go s.scheduleTaskCleanup(taskID, entry, time.Hour.Milliseconds())
 	}
-
-	// All goroutines should exit after TTL (50ms).
-	waitCh := make(chan struct{})
-	go func() { wg.Wait(); close(waitCh) }()
-
-	select {
-	case <-waitCh:
-		// All cleanup goroutines exited.
-	case <-time.After(2 * time.Second):
-		t.Fatal("scheduleTaskCleanup goroutines did not exit after TTL")
-	}
+	assert.Eventually(t, func() bool { return runtime.NumGoroutine()-before < numTasks/10 },
+		time.Second, 10*time.Millisecond, "a goroutine per pending TTL")
 }
 
 // TestScheduleTaskCleanup_CleansUpAfterTTL verifies that a task is removed from storage
@@ -112,7 +100,7 @@ func TestScheduleTaskCleanup_CleansUpAfterTTL(t *testing.T) {
 	s.tasksMu.Unlock()
 
 	// Schedule cleanup with a very short TTL (50ms)
-	go s.scheduleTaskCleanup(taskID, entry, 50)
+	s.scheduleTaskCleanup(taskID, entry, 50)
 
 	// Wait for cleanup to happen
 	time.Sleep(200 * time.Millisecond)
@@ -169,7 +157,7 @@ func TestScheduleTaskCleanup_CancelsRunningTaskOnTTL(t *testing.T) {
 			}
 
 			if tt.expireBeforeStart {
-				s.scheduleTaskCleanup(taskID, entry, 50)
+				s.expireTask(taskID, entry)
 
 				s.tasksMu.RLock()
 				_, exists := s.tasks[taskID]
@@ -270,7 +258,7 @@ func TestScheduleTaskCleanup_CancellationConditions(t *testing.T) {
 				s.tasks[taskID] = entry
 			}
 
-			s.scheduleTaskCleanup(taskID, entry, 1)
+			s.expireTask(taskID, entry)
 
 			if tt.wantCancelled {
 				assert.ErrorIs(t, ctx.Err(), context.Canceled)
@@ -314,8 +302,8 @@ func TestScheduleTaskCleanup_StaleTimerDoesNotCancelReplacementTask(t *testing.T
 	s.tasks[taskID] = newEntry
 	s.tasksMu.Unlock()
 
-	// Trigger cleanup timer bound to oldEntry
-	s.scheduleTaskCleanup(taskID, oldEntry, 1)
+	// Trigger the cleanup bound to oldEntry
+	s.expireTask(taskID, oldEntry)
 
 	// The replacement task must not be cancelled or removed
 	assert.NoError(t, ctxNew.Err(), "stale cleanup timer must not cancel replacement task")

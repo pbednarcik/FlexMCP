@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -251,6 +252,7 @@ type MCPServer struct {
 	tasks                    map[string]*taskEntry
 	expiredTasks             map[string]string // Recently expired task IDs, each with its session
 	maxConcurrentTasks       *int              // Optional limit on concurrent running tasks
+	taskTTL                  time.Duration     // The longest a task is kept; see WithTaskTTL
 	activeTasks              int               // Tasks whose handler may still be running
 	inflightCancels          sync.Map          // Maps request ID -> context.CancelFunc for in-flight requests
 	inputValidator           *inputSchemaValidator
@@ -588,6 +590,19 @@ func WithTaskHooks(taskHooks *TaskHooks) ServerOption {
 func WithMaxConcurrentTasks(limit int) ServerOption {
 	return func(s *MCPServer) {
 		s.maxConcurrentTasks = &limit
+	}
+}
+
+// WithTaskTTL bounds how long a task is kept after its creation: a request
+// asking for a longer TTL, or none, gets this one, and the task reports the
+// TTL it got. A task's result is held in memory until its TTL passes, and a
+// client that polls rather than listens may never fetch it, so a server
+// open to many clients wants a bound. Without the option a task is kept
+// for as long as its request asks, and for good when it asks nothing, as
+// the other SDKs' stores keep theirs; zero or less says the same.
+func WithTaskTTL(d time.Duration) ServerOption {
+	return func(s *MCPServer) {
+		s.taskTTL = d
 	}
 }
 
@@ -2769,6 +2784,8 @@ func (s *MCPServer) handleComplete(
 // createTask creates a new task entry and returns it.
 // Returns an error if the max concurrent tasks limit is exceeded.
 func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName string, ttl *int64, pollInterval *int64) (*taskEntry, error) {
+	ttl = s.taskTTLFor(ttl)
+
 	// Build task entry first (no lock needed)
 	opts := []mcp.TaskOption{}
 	if ttl != nil {
@@ -2837,10 +2854,36 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 
 	// Start TTL cleanup if specified
 	if ttl != nil && *ttl > 0 {
-		go s.scheduleTaskCleanup(taskID, entry, *ttl)
+		s.scheduleTaskCleanup(taskID, entry, *ttl)
 	}
 
 	return entry, nil
+}
+
+// taskTTLFor returns the TTL a task gets for the one its request asked: the
+// request's, cut to the server's; the server's when the request asked none;
+// no TTL only when the server has none and the request asked none. A TTL
+// beyond what a duration holds is cut to the longest, not wrapped; a
+// server TTL under a millisecond is a millisecond, since set, it is a bound.
+func (s *MCPServer) taskTTLFor(requested *int64) *int64 {
+	const longest = int64(math.MaxInt64 / time.Millisecond)
+	serverMs := s.taskTTL.Milliseconds()
+	if s.taskTTL > 0 && serverMs == 0 {
+		serverMs = 1
+	}
+	var ms int64
+	switch {
+	case requested != nil && *requested > 0:
+		ms = min(*requested, longest)
+		if serverMs > 0 {
+			ms = min(ms, serverMs)
+		}
+	case serverMs > 0:
+		ms = serverMs
+	default:
+		return nil
+	}
+	return &ms
 }
 
 // finishCreatedHook records that entry's created hook has returned and runs
@@ -3081,12 +3124,19 @@ func (s *MCPServer) cancelTask(ctx context.Context, taskID string) error {
 	return nil
 }
 
-// scheduleTaskCleanup cancels unfinished task execution and removes the task from
-// storage after its TTL expires so clients have the full TTL window to retrieve results.
-// It only performs cleanup if the stored task entry matches expected.
+// scheduleTaskCleanup arranges for the task to be ended and removed from
+// storage once its TTL passes, so clients have the full TTL window to
+// retrieve results. A timer, not a goroutine: a server keeping many tasks
+// for a long time would park a stack each. It only performs cleanup if the
+// stored task entry still matches expected.
 func (s *MCPServer) scheduleTaskCleanup(taskID string, expected *taskEntry, ttlMs int64) {
-	time.Sleep(time.Duration(ttlMs) * time.Millisecond)
+	time.AfterFunc(time.Duration(ttlMs)*time.Millisecond, func() { s.expireTask(taskID, expected) })
+}
 
+// expireTask ends and removes a task whose TTL has passed, when the stored
+// entry is still expected: a task that was removed and replaced under the
+// same ID is left alone.
+func (s *MCPServer) expireTask(taskID string, expected *taskEntry) {
 	var cancel context.CancelFunc
 	s.tasksMu.Lock()
 	entry, ok := s.tasks[taskID]
