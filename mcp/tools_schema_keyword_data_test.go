@@ -1,0 +1,107 @@
+package mcp
+
+import (
+	"encoding/json"
+	"maps"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// A kept keyword keeps its numbers exactly: a constant past 2^53 is not
+// rounded, and a number no float64 holds is not refused.
+func TestSchemaAdditionalFieldsKeepNumbersExact(t *testing.T) {
+	var schema ToolArgumentsSchema
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"object","const":{"n":9007199254740993},"x-big":1e400}`), &schema))
+	encoded, err := json.Marshal(schema)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"n":9007199254740993`)
+	assert.Contains(t, string(encoded), `"x-big":1e400`)
+}
+
+// Rewriting draft-07 references touches schemas only: a $ref inside a
+// constant, an enum, a default, an example or a vendor keyword is data and
+// stays as written, while a property named like one of those keywords is
+// still a schema.
+func TestSchemaDraft07RefsLeaveDataAlone(t *testing.T) {
+	const literal = `{"$ref":"#/definitions/value"}`
+	var schema ToolArgumentsSchema
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"object","definitions":{"value":true},`+
+		`"const":`+literal+`,"enum":[`+literal+`],"default":`+literal+`,"examples":[`+literal+`],"x-vendor":`+literal+`,`+
+		`"properties":{"const":{"$ref":"#/definitions/value"},"plain":{"type":"object","const":`+literal+`}},`+
+		`"oneOf":[{"$ref":"#/definitions/value"}]}`), &schema))
+	encoded, err := json.Marshal(schema)
+	require.NoError(t, err)
+	var wire map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &wire))
+	var data map[string]any
+	require.NoError(t, json.Unmarshal([]byte(literal), &data))
+	assert.Equal(t, data, wire["const"])
+	assert.Equal(t, []any{data}, wire["enum"])
+	assert.Equal(t, data, wire["default"])
+	assert.Equal(t, []any{data}, wire["examples"])
+	assert.Equal(t, data, wire["x-vendor"])
+	properties := wire["properties"].(map[string]any)
+	assert.Equal(t, "#/$defs/value", properties["const"].(map[string]any)["$ref"])
+	assert.Equal(t, data, properties["plain"].(map[string]any)["const"])
+	assert.Equal(t, "#/$defs/value", wire["oneOf"].([]any)[0].(map[string]any)["$ref"])
+}
+
+// An x-mcp-header is allowed only on a property reached from the root
+// through properties keys alone; anywhere else the tool is refused, whether
+// the schema is typed or raw.
+func TestParamHeaderAnnotationsOnlyThroughProperties(t *testing.T) {
+	annotated := map[string]any{"properties": map[string]any{"x": map[string]any{"type": "string", "x-mcp-header": "X"}}}
+	for _, tt := range []struct {
+		name   string
+		fields map[string]any
+	}{
+		{"allOf", map[string]any{"allOf": []any{annotated}}},
+		{"anyOf", map[string]any{"anyOf": []any{annotated}}},
+		{"not", map[string]any{"not": annotated}},
+		{"if", map[string]any{"if": annotated}},
+		{"definitions", map[string]any{"$defs": map[string]any{"d": annotated}}},
+	} {
+		t.Run(tt.name+" typed", func(t *testing.T) {
+			tool := NewTool("t", WithString("y"))
+			tool.InputSchema.AdditionalFields = tt.fields
+			// $defs is modeled: a typed schema carries it in Defs.
+			if defs, ok := tt.fields["$defs"].(map[string]any); ok {
+				tool.InputSchema.Defs = defs
+			}
+			require.Error(t, ValidateParamHeaderAnnotations(&tool))
+		})
+		t.Run(tt.name+" raw", func(t *testing.T) {
+			raw := map[string]any{"type": "object"}
+			maps.Copy(raw, tt.fields)
+			encoded, err := json.Marshal(raw)
+			require.NoError(t, err)
+			tool := NewToolWithRawSchema("t", "", encoded)
+			require.Error(t, ValidateParamHeaderAnnotations(&tool))
+		})
+	}
+	t.Run("items", func(t *testing.T) {
+		tool := NewToolWithRawSchema("t", "", json.RawMessage(`{"type":"object","properties":{"list":{"type":"array","items":{"type":"string","x-mcp-header":"X"}}}}`))
+		require.Error(t, ValidateParamHeaderAnnotations(&tool))
+	})
+	t.Run("nested properties are fine", func(t *testing.T) {
+		tool := NewToolWithRawSchema("t", "", json.RawMessage(`{"type":"object","properties":{"o":{"type":"object","properties":{"x":{"type":"string","x-mcp-header":"X"}}}},"const":{"x-mcp-header":"data"}}`))
+		require.NoError(t, ValidateParamHeaderAnnotations(&tool))
+	})
+}
+
+// An output schema of kept keywords only is advertised, and set beside a
+// raw output schema it is the same conflict as any other.
+func TestOutputSchemaOfKeptKeywordsOnly(t *testing.T) {
+	tool := NewTool("t")
+	tool.OutputSchema = ToolOutputSchema{AdditionalFields: map[string]any{"title": "Result"}}
+	encoded, err := json.Marshal(tool)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"outputSchema":{`)
+	assert.Contains(t, string(encoded), `"title":"Result"`)
+
+	tool.RawOutputSchema = json.RawMessage(`{"type":"object"}`)
+	_, err = json.Marshal(tool)
+	require.Error(t, err)
+}

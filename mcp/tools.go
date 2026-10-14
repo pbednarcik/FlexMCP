@@ -865,7 +865,7 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 
 	// Determine which input schema to use
 	if t.RawInputSchema != nil {
-		if t.InputSchema.Type != "" || t.InputSchema.Types != nil {
+		if t.InputSchema.Type != "" || t.InputSchema.Types != nil || len(t.InputSchema.AdditionalFields) > 0 {
 			return nil, fmt.Errorf("tool %s has both InputSchema and RawInputSchema set: %w", t.Name, errToolSchemaConflict)
 		}
 		m["inputSchema"] = t.RawInputSchema
@@ -876,11 +876,11 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 
 	// Add output schema if present
 	if t.RawOutputSchema != nil {
-		if t.OutputSchema.Type != "" || t.OutputSchema.Types != nil {
+		if t.OutputSchema.Type != "" || t.OutputSchema.Types != nil || len(t.OutputSchema.AdditionalFields) > 0 {
 			return nil, fmt.Errorf("tool %s has both OutputSchema and RawOutputSchema set: %w", t.Name, errToolSchemaConflict)
 		}
 		m["outputSchema"] = t.RawOutputSchema
-	} else if t.OutputSchema.Type != "" || t.OutputSchema.Types != nil { // If no output schema is specified, do not return anything
+	} else if t.OutputSchema.Type != "" || t.OutputSchema.Types != nil || len(t.OutputSchema.AdditionalFields) > 0 { // If no output schema is specified, do not return anything
 		m["outputSchema"] = t.OutputSchema
 	}
 
@@ -921,7 +921,8 @@ type ToolArgumentsSchema struct {
 	// fields do not model, such as $schema, title or oneOf. The modeled names
 	// (type, properties, required, additionalProperties, $defs and its alias
 	// definitions) are reserved: an entry under one of them is never written,
-	// even when its field is empty.
+	// even when its field is empty. Decoding keeps numbers exact, as
+	// json.Number.
 	AdditionalFields map[string]any `json:"-"`
 	// PropertyOrder is the marshal order of the top-level Properties keys.
 	// UnmarshalJSON sets it from the "properties" object. Names that are not
@@ -1152,8 +1153,12 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 		tis.PropertyOrder = propertyOrder(aux.Properties)
 	}
 
+	// Numbers are kept as written: a const or enum past 2^53 is not rounded,
+	// and a number no float64 holds is not refused.
 	var additionalFields map[string]any
-	if err := json.Unmarshal(data, &additionalFields); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&additionalFields); err != nil {
 		return err
 	}
 	for key := range additionalFields {
@@ -1171,8 +1176,8 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 	// carries dangling references that strict validators reject.
 	if tis.Defs == nil && aux.Definitions != nil {
 		tis.Defs = aux.Definitions
-		rewriteDraft07LocalRefs(tis.Defs)
-		rewriteDraft07LocalRefs(tis.Properties)
+		rewriteDraft07LocalRefsIn(tis.Defs)
+		rewriteDraft07LocalRefsIn(tis.Properties)
 		rewriteDraft07LocalRefs(tis.AdditionalProperties)
 		rewriteDraft07LocalRefs(additionalFields)
 	}
@@ -1182,23 +1187,62 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 }
 
 // rewriteDraft07LocalRefs rewrites local draft-07 "#/definitions/..." $ref
-// pointers to their 2019-09+ "#/$defs/..." equivalent in place. It walks
-// nested maps and slices; non-local refs are left untouched.
-func rewriteDraft07LocalRefs(node any) {
+// pointers to their 2019-09+ "#/$defs/..." equivalent in place, in schema,
+// a schema or an array of schemas, and the schemas inside it. Non-local refs
+// are left untouched, and so is data: the values of const, enum, default,
+// examples and vendor (x-) keywords are instances, not schemas.
+func rewriteDraft07LocalRefs(schema any) {
 	const draft07Prefix = "#/definitions/"
-	switch v := node.(type) {
+	switch v := schema.(type) {
 	case map[string]any:
 		if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, draft07Prefix) {
 			v["$ref"] = "#/$defs/" + ref[len(draft07Prefix):]
 		}
-		for _, child := range v {
-			rewriteDraft07LocalRefs(child)
+		for key, child := range v {
+			switch {
+			case isSchemaDataKeyword(key):
+			case isSchemaMapKeyword(key):
+				rewriteDraft07LocalRefsIn(child)
+			default:
+				rewriteDraft07LocalRefs(child)
+			}
 		}
 	case []any:
 		for _, child := range v {
 			rewriteDraft07LocalRefs(child)
 		}
 	}
+}
+
+// rewriteDraft07LocalRefsIn is rewriteDraft07LocalRefs for each schema of a
+// map from names to schemas, such as properties or $defs, whose keys are
+// names and not keywords.
+func rewriteDraft07LocalRefsIn(named any) {
+	if schemas, ok := named.(map[string]any); ok {
+		for _, schema := range schemas {
+			rewriteDraft07LocalRefs(schema)
+		}
+	}
+}
+
+// isSchemaDataKeyword reports whether the value of key is an instance or
+// vendor data rather than a schema.
+func isSchemaDataKeyword(key string) bool {
+	switch key {
+	case "const", "enum", "default", "examples":
+		return true
+	}
+	return strings.HasPrefix(key, "x-")
+}
+
+// isSchemaMapKeyword reports whether the value of key maps names to
+// schemas.
+func isSchemaMapKeyword(key string) bool {
+	switch key {
+	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+		return true
+	}
+	return false
 }
 
 type ToolAnnotation struct {

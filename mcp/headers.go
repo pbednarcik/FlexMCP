@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -368,10 +370,64 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 		// no Mcp-Param-* header is ever generated from it.
 		return nil
 	}
+	var schema any
+	if remarshal(toolInputSchema(tool), &schema) == nil {
+		if at := misplacedParamHeader(schema, "#", true, false); at != "" {
+			return fmt.Errorf("x-mcp-header at %s: only a property reached from the root through properties alone may carry it", at)
+		}
+	}
 	if len(props) == 0 {
 		return nil
 	}
 	return validateParamHeadersIn(props, "", make(map[string]bool))
+}
+
+// misplacedParamHeader returns the location of the first x-mcp-header in
+// schema, at path, that is not on a property reached from the root through
+// properties keys alone (not through items, a composition keyword, $defs or
+// any other), or "" when there is none. chain says schema is reached that
+// way, property that it is a property. Data (const, enum, default, examples
+// and vendor keywords) is not searched.
+func misplacedParamHeader(schema any, path string, chain, property bool) string {
+	switch v := schema.(type) {
+	case map[string]any:
+		if _, ok := v["x-mcp-header"]; ok && (!chain || !property) {
+			return path
+		}
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			child := v[key]
+			switch {
+			case key == "x-mcp-header" || isSchemaDataKeyword(key):
+			case key == "properties":
+				if properties, ok := child.(map[string]any); ok {
+					for _, name := range slices.Sorted(maps.Keys(properties)) {
+						if at := misplacedParamHeader(properties[name], path+"/properties/"+name, chain, true); at != "" {
+							return at
+						}
+					}
+				}
+			case isSchemaMapKeyword(key):
+				if schemas, ok := child.(map[string]any); ok {
+					for _, name := range slices.Sorted(maps.Keys(schemas)) {
+						if at := misplacedParamHeader(schemas[name], path+"/"+key+"/"+name, false, false); at != "" {
+							return at
+						}
+					}
+				}
+			default:
+				if at := misplacedParamHeader(child, path+"/"+key, false, false); at != "" {
+					return at
+				}
+			}
+		}
+	case []any:
+		for i, child := range v {
+			if at := misplacedParamHeader(child, path+"/"+strconv.Itoa(i), false, false); at != "" {
+				return at
+			}
+		}
+	}
+	return ""
 }
 
 func validateParamHeadersIn(props map[string]headerSchemaProperty, prefix string, seen map[string]bool) error {
