@@ -189,6 +189,7 @@ func TestMultiRoundTrip_RefusesInputTheClientCannotServe(t *testing.T) {
 	roots := &struct {
 		ListChanged bool `json:"listChanged,omitempty"`
 	}{}
+	formElicitation := &mcp.ElicitationCapability{Form: &struct{}{}}
 
 	tests := []struct {
 		name     string
@@ -208,6 +209,18 @@ func TestMultiRoundTrip_RefusesInputTheClientCannotServe(t *testing.T) {
 		{
 			name: "form elicitation is served with elicitation", tool: "confirmThenGreet",
 			declared: mcp.ClientCapabilities{Elicitation: elicitation(false)},
+		},
+		{
+			// ClientFeatures.md row 2: a client that declared URL mode only
+			// is not asked for a form.
+			name: "form elicitation needs elicitation.form when only url is declared", tool: "confirmThenGreet",
+			declared: mcp.ClientCapabilities{Elicitation: elicitation(true)},
+			missing:  "elicitation.form",
+			required: func(c mcp.ClientCapabilities) bool { return c.Elicitation != nil && c.Elicitation.Form != nil },
+		},
+		{
+			name: "form elicitation is served with elicitation.form", tool: "confirmThenGreet",
+			declared: mcp.ClientCapabilities{Elicitation: formElicitation},
 		},
 		{
 			name: "url elicitation needs elicitation.url", tool: "signIn",

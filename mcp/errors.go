@@ -164,9 +164,14 @@ func (e MissingRequiredClientCapabilityError) Error() string {
 func requiredCapabilityNames(c ClientCapabilities) []string {
 	var names []string
 	if c.Elicitation != nil {
+		modes := len(names)
+		if c.Elicitation.Form != nil {
+			names = append(names, "elicitation.form")
+		}
 		if c.Elicitation.URL != nil {
 			names = append(names, "elicitation.url")
-		} else {
+		}
+		if len(names) == modes {
 			names = append(names, "elicitation")
 		}
 	}

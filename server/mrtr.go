@@ -199,8 +199,9 @@ func resolveMultiRoundTrip[T any](
 }
 
 // requiredClientCapabilities is the set of client capabilities the given
-// input requests need: elicitation, with url for a URL-mode elicitation;
-// sampling, with tools when the request carries tools; roots.
+// input requests need: elicitation, with url for a URL-mode elicitation and
+// form for any other; sampling, with tools when the request carries tools;
+// roots.
 func requiredClientCapabilities(requests mcp.InputRequests) mcp.ClientCapabilities {
 	var required mcp.ClientCapabilities
 	for _, request := range requests {
@@ -211,6 +212,8 @@ func requiredClientCapabilities(requests mcp.InputRequests) mcp.ClientCapabiliti
 			}
 			if request.Elicitation != nil && request.Elicitation.Mode == mcp.ElicitationModeURL {
 				required.Elicitation.URL = &struct{}{}
+			} else {
+				required.Elicitation.Form = &struct{}{}
 			}
 		case mcp.MethodSamplingCreateMessage:
 			if required.Sampling == nil {
@@ -231,14 +234,23 @@ func requiredClientCapabilities(requests mcp.InputRequests) mcp.ClientCapabiliti
 }
 
 // clientLacks reports whether the capabilities a request declared fall short
-// of required. A declared elicitation with no modes means form mode only.
+// of required. A declared elicitation with no modes means form mode only
+// (ClientFeatures.md row 1); one with url only is not asked for a form (row
+// 2).
 func clientLacks(info *RequestProtocolInfo, required mcp.ClientCapabilities) bool {
 	declared := &mcp.ClientCapabilities{}
 	if info != nil && info.ClientCapabilities != nil {
 		declared = info.ClientCapabilities
 	}
 	if required.Elicitation != nil {
-		if declared.Elicitation == nil || (required.Elicitation.URL != nil && declared.Elicitation.URL == nil) {
+		if declared.Elicitation == nil {
+			return true
+		}
+		if required.Elicitation.URL != nil && declared.Elicitation.URL == nil {
+			return true
+		}
+		formDeclared := declared.Elicitation.Form != nil || declared.Elicitation.URL == nil
+		if required.Elicitation.Form != nil && !formDeclared {
 			return true
 		}
 	}
