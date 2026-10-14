@@ -51,16 +51,19 @@ func (c *Client) maxRoundTrips() int {
 
 // multiRoundTrip drives the SEP-2322 retry loop for a single request.
 //
-// send issues the request with the given multi round-trip params and returns
-// the decoded result. The loop terminates as soon as a result comes back that
-// does not ask for more input.
+// initial carries the multi round-trip params the caller supplied, so a
+// caller resuming an exchange by hand keeps its request state and answers on
+// the first attempt. send issues the request with the given multi round-trip
+// params and returns the decoded result. The loop terminates as soon as a
+// result comes back that does not ask for more input.
 func multiRoundTrip[T any](
 	ctx context.Context,
 	c *Client,
+	initial mcp.MultiRoundTripParams,
 	send func(context.Context, mcp.MultiRoundTripParams) (*T, error),
 	needsInput func(*T) (mcp.InputRequests, string, bool),
 ) (*T, error) {
-	var params mcp.MultiRoundTripParams
+	params := initial
 	loadShedding := 0
 
 	for attempt := 1; ; attempt++ {
@@ -91,15 +94,16 @@ func multiRoundTrip[T any](
 			return nil, fmt.Errorf("%w (%d)", ErrMaxInputRoundTripsExceeded, c.maxRoundTrips())
 		}
 
-		responses, err := c.fulfillInputRequests(ctx, requests)
-		if err != nil {
-			return nil, err
+		// A load-shedding retry asks for nothing new, so the answers already
+		// gathered go out again; only a fresh set of requests replaces them.
+		if len(requests) > 0 {
+			responses, err := c.fulfillInputRequests(ctx, requests)
+			if err != nil {
+				return nil, err
+			}
+			params.InputResponses = responses
 		}
-
-		params = mcp.MultiRoundTripParams{
-			InputResponses: responses,
-			RequestState:   state,
-		}
+		params.RequestState = state
 	}
 }
 
