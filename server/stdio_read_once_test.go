@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // stdioMembersByUnmarshal is how the read loop read a message before the core
@@ -86,18 +88,23 @@ func TestStdioReadOnceChecksReadWhatAnInitializationHookLeft(t *testing.T) {
 
 // A request over stdio is read once: the core takes the read loop's read. 30
 // allocations when the core read it again, 28 read once, 26 with the core's
-// context layers made in one allocation.
+// context layers made in one allocation, 23 once the response is queued for
+// the writer rather than written here.
 func TestStdioReadOnceAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
 	srv := NewMCPServer("test", "1.0.0")
 	s := NewStdioServer(srv)
+	// The response is queued for the writer, which Listen starts; here it
+	// is taken off the queue instead.
+	s.responses = make(chan mcp.JSONRPCMessage, 1)
 	ctx := srv.WithContext(t.Context(), s.session)
 	line := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{` + readOnceMeta + `}}`
 	allocs := testing.AllocsPerRun(1000, func() {
 		_ = s.processMessage(ctx, line, io.Discard)
 		s.requestWg.Wait()
+		<-s.responses
 	})
-	assert.LessOrEqual(t, allocs, 26.0, "allocations per modern ping over stdio")
+	assert.LessOrEqual(t, allocs, 23.0, "allocations per modern ping over stdio")
 }

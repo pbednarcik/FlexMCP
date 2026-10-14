@@ -909,6 +909,9 @@ func TestStdioServer_AQueuedToolCallDoesNotStartAfterTheInputEnds(t *testing.T) 
 		return mcp.NewToolResultText("ok"), nil
 	})
 	stdioServer := NewStdioServer(mcpServer)
+	// An answer is queued for the writer, which Listen starts; a queued one
+	// is seen here, where a nil queue would hang instead.
+	stdioServer.responses = make(chan mcp.JSONRPCMessage, 1)
 	ended, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -926,7 +929,7 @@ func TestStdioServer_AQueuedToolCallDoesNotStartAfterTheInputEnds(t *testing.T) 
 		stdioServer.workerWg.Add(1)
 		stdioServer.toolCallWorker(ended)
 		require.Zero(t, started, "round %d: a queued call started after the input ended", round)
-		require.Zero(t, output.Len(), "round %d: a queued call was answered after the input ended: %s", round, output.String())
+		require.Zero(t, len(stdioServer.responses), "round %d: a queued call was answered after the input ended", round)
 	}
 }
 
@@ -941,6 +944,7 @@ func TestStdioServer_AToolCallCancelledWhileQueuedIsNotStarted(t *testing.T) {
 		return mcp.NewToolResultText("ok"), nil
 	})
 	stdioServer := NewStdioServer(mcpServer)
+	stdioServer.responses = make(chan mcp.JSONRPCMessage, 1)
 	id := int64(7)
 	stdioServer.cancelled.start(id)
 	stdioServer.cancelled.cancel(id)
@@ -957,7 +961,7 @@ func TestStdioServer_AToolCallCancelledWhileQueuedIsNotStarted(t *testing.T) {
 	stdioServer.workerWg.Add(1)
 	stdioServer.toolCallWorker(t.Context())
 	require.Zero(t, started, "a call cancelled while queued was started")
-	require.Zero(t, output.Len(), "a call cancelled while queued was answered: %s", output.String())
+	require.Zero(t, len(stdioServer.responses), "a call cancelled while queued was answered")
 }
 
 // A tool call that finds the queue full is refused at once, not run on the

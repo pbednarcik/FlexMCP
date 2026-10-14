@@ -44,6 +44,20 @@ type StdioServer struct {
 	queueSize      int
 	writeMu        sync.Mutex // Protects concurrent writes
 
+	// responses carries every response to the one goroutine that writes
+	// stdout, which writes a response after the notifications queued
+	// before it; writerDone closes when that goroutine has written its last.
+	// listenDone is the caller's cancel of Listen: a response waiting to be
+	// queued gives up on it. A failed write ends Listen: the writer keeps
+	// the error in writeErr, closes writeFailed, and stops the input through
+	// stopInput; nothing more is written.
+	responses   chan mcp.JSONRPCMessage
+	writerDone  chan struct{}
+	listenDone  <-chan struct{}
+	writeFailed chan struct{}
+	writeErr    error
+	stopInput   context.CancelFunc
+
 	// cancelled remembers which in-flight requests the client cancelled by
 	// notification, so that nothing more is sent for them.
 	cancelled cancelledRequests
@@ -231,19 +245,62 @@ func (s *StdioServer) SetContextFunc(fn StdioContextFunc) {
 	s.contextFunc = fn
 }
 
-// handleNotifications continuously processes notifications from the session's notification channel
-// and writes them to the provided output. It runs until the context is cancelled.
-// Any errors encountered while writing notifications are logged but do not stop the handler.
-func (s *StdioServer) handleNotifications(ctx context.Context, stdout io.Writer) {
+// writeLoop is the one writer of stdout. It writes the session's
+// notifications as they come, and each response once every notification
+// queued before it is out: a handler's notifications are queued before it
+// returns, so a request's own precede its response, and progress stops
+// with the request that reported it (Patterns.md row 34). It runs until
+// responses is closed, which Listen does once every request is answered,
+// and writes the notifications still queued before it returns.
+func (s *StdioServer) writeLoop(stdout io.Writer) {
+	defer close(s.writerDone)
 	for {
 		select {
 		case notification := <-s.session.notifications:
-			if err := s.writeResponse(notification, stdout); err != nil {
-				s.errLogger.Printf("Error writing notification: %v", err)
+			s.write(notification, stdout)
+		case response, ok := <-s.responses:
+			s.drainNotifications(stdout)
+			if !ok {
+				return
 			}
-		case <-ctx.Done():
-			return
+			s.write(response, stdout)
 		}
+	}
+}
+
+// drainNotifications writes the notifications queued so far: those, and
+// not every one that keeps coming while they are written, precede the
+// response that follows. This goroutine is the channel's one receiver, so
+// what was counted is there to take.
+func (s *StdioServer) drainNotifications(stdout io.Writer) {
+	for range len(s.session.notifications) {
+		s.write(<-s.session.notifications, stdout)
+	}
+}
+
+// write writes one message to stdout. The first failure ends Listen, which
+// returns the error: the client is gone, and nothing more could reach it;
+// what is still queued is dropped.
+func (s *StdioServer) write(message mcp.JSONRPCMessage, stdout io.Writer) {
+	if s.writeErr != nil {
+		return
+	}
+	err := s.writeResponse(message, stdout)
+	if err == nil {
+		return
+	}
+	s.errLogger.Printf("Error writing to stdout, ending Listen: %v", err)
+	s.writeErr = err
+	close(s.writeFailed)
+	s.stopInput()
+}
+
+// queue hands a response to the writer. It gives up when the caller
+// cancelled Listen, which does not wait on a client that stopped reading.
+func (s *StdioServer) queue(response mcp.JSONRPCMessage) {
+	select {
+	case s.responses <- response:
+	case <-s.listenDone:
 	}
 }
 
@@ -337,21 +394,21 @@ func (s *StdioServer) toolCallWorker(ctx context.Context) {
 	}
 }
 
-// answer writes a request's response, unless the client cancelled the
-// request while it ran, in which case nothing is sent for it.
-func (s *StdioServer) answer(id any, response mcp.JSONRPCMessage, writer io.Writer) {
+// answer queues a request's response for the writer, unless the client
+// cancelled the request while it ran, in which case nothing is sent for it.
+func (s *StdioServer) answer(id any, response mcp.JSONRPCMessage, _ io.Writer) {
 	cancelled := s.cancelled.finish(id)
 	if response == nil || cancelled {
 		return
 	}
-	if err := s.writeResponse(response, writer); err != nil {
-		s.errLogger.Printf("Error writing response: %v", err)
-	}
+	s.queue(response)
 }
 
-// Listen starts listening for JSON-RPC messages on the provided input and writes responses to the provided output.
-// It runs until the context is cancelled or an error occurs.
-// Returns an error if there are issues with reading input or writing output.
+// Listen starts listening for JSON-RPC messages on the provided input and
+// writes responses to the provided output. It runs until the input ends,
+// the context is cancelled, or reading the input or writing the output
+// fails, and returns that error: a failed write ends it, since the client
+// is gone.
 func (s *StdioServer) Listen(
 	ctx context.Context,
 	stdin io.Reader,
@@ -359,6 +416,10 @@ func (s *StdioServer) Listen(
 ) error {
 	// Initialize the tool call queue
 	s.toolCallQueue = make(chan *toolCallWork, s.queueSize)
+	s.responses = make(chan mcp.JSONRPCMessage, 16)
+	s.writerDone = make(chan struct{})
+	s.writeFailed = make(chan struct{})
+	s.writeErr = nil
 
 	// The one client's session, for the life of this Listen.
 	if err := s.server.RegisterSession(ctx, s.session); err != nil {
@@ -374,9 +435,12 @@ func (s *StdioServer) Listen(
 
 	// Requests are served on their own goroutines. Cancelling this context when
 	// input processing ends releases any handler still blocked on it, so none
-	// outlives the session it was registered against.
+	// outlives the session it was registered against. The caller's own cancel
+	// is kept apart: it ends the wait for the writer below.
+	callerDone := ctx.Done()
 	ctx, cancelRequests := context.WithCancel(ctx)
 	defer cancelRequests()
+	s.listenDone, s.stopInput = callerDone, cancelRequests
 
 	reader := bufio.NewReader(stdin)
 
@@ -386,24 +450,38 @@ func (s *StdioServer) Listen(
 		go s.toolCallWorker(ctx)
 	}
 
-	// Start notification handler
-	go s.handleNotifications(ctx, stdout)
+	// Start the one writer of stdout
+	go s.writeLoop(stdout)
 
 	// Process input stream
 	err := s.processInputStream(ctx, reader, stdout)
 
-	// Shutdown workers gracefully
+	// Shutdown workers gracefully, then the writer, once nothing more can
+	// be queued: what was queued is still written, unless the caller
+	// cancelled Listen, which asks for the end: a writer stuck on a client
+	// that stopped reading would hold it for good.
 	cancelRequests()
 	close(s.toolCallQueue)
 	s.workerWg.Wait()
 	s.requestWg.Wait()
+	close(s.responses)
+	select {
+	case <-s.writerDone:
+	case <-callerDone:
+	}
 
+	// A failed write ended the input; its error is the one to report.
+	select {
+	case <-s.writeFailed:
+		err = s.writeErr
+	default:
+	}
 	return err
 }
 
-// processMessage handles a single JSON-RPC message and writes the response.
-// It parses the message, processes it through the wrapped MCPServer, and writes any response.
-// Returns an error if there are issues with message processing or response writing.
+// processMessage handles a single JSON-RPC message: it parses the message,
+// has the wrapped MCPServer process it, and queues any response for the
+// writer. Returns an error when the message cannot be taken up.
 func (s *StdioServer) processMessage(
 	ctx context.Context,
 	line string,
@@ -416,8 +494,8 @@ func (s *StdioServer) processMessage(
 
 	rawMessage, ok := stdioMessage(line)
 	if !ok {
-		response := createErrorResponse(nil, mcp.PARSE_ERROR, "Parse error")
-		return s.writeResponse(response, writer)
+		s.queue(createErrorResponse(nil, mcp.PARSE_ERROR, "Parse error"))
+		return nil
 	}
 
 	// Tool calls go to the worker pool, so a slow one never blocks the read loop.
@@ -430,7 +508,8 @@ func (s *StdioServer) processMessage(
 	}
 	id, validID := requestIDValue(baseMessage.RawID)
 	if parsed && !validID {
-		return s.writeResponse(createErrorResponse(nil, mcp.INVALID_REQUEST, "Invalid request id"), writer)
+		s.queue(createErrorResponse(nil, mcp.INVALID_REQUEST, "Invalid request id"))
+		return nil
 	}
 	if parsed && id != nil {
 		s.cancelled.start(id)
@@ -484,9 +563,7 @@ func (s *StdioServer) processMessage(
 
 	// Only write response if there is one (not for notifications)
 	if response != nil {
-		if err := s.writeResponse(response, writer); err != nil {
-			return fmt.Errorf("failed to write response: %w", err)
-		}
+		s.queue(response)
 	}
 
 	return nil
