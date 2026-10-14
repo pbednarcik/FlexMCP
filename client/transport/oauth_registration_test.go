@@ -121,7 +121,8 @@ func TestOAuthHandler_BindsPreconfiguredCredentialsToTheirIssuer(t *testing.T) {
 	secondHTTP := second.start(t)
 	resource, point := switchingResource(t, first.URL)
 
-	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", ClientSecret: "secret", RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+	store := NewMemoryTokenStore()
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", ClientSecret: "secret", RedirectURI: "http://localhost:8085/callback", TokenStore: store})
 	handler.SetBaseURL(resource.URL)
 	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
 	require.NoError(t, err)
@@ -131,6 +132,9 @@ func TestOAuthHandler_BindsPreconfiguredCredentialsToTheirIssuer(t *testing.T) {
 	handler.SetProtectedResourceMetadataURL(resource.URL + "/.well-known/oauth-protected-resource")
 	_, err = handler.GetAuthorizationURL(t.Context(), "state", "challenge")
 	require.ErrorIs(t, err, ErrClientRegisteredElsewhere)
+	// A refresh token the new issuer did issue still does not take the
+	// credentials there.
+	require.NoError(t, store.SaveToken(t.Context(), &Token{RefreshToken: "refresh", Resource: resource.URL, Issuer: secondHTTP.URL}))
 	_, err = handler.RefreshToken(t.Context(), "refresh")
 	require.ErrorIs(t, err, ErrClientRegisteredElsewhere)
 	second.mu.Lock()
@@ -146,7 +150,9 @@ func TestOAuthHandler_ClientIssuerBindsTheCredentialsFromTheStart(t *testing.T) 
 	otherHTTP := other.start(t)
 	resource, _ := switchingResource(t, otherHTTP.URL)
 
-	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", ClientSecret: "secret", ClientIssuer: theirs.URL, RedirectURI: "http://localhost:8085/callback", TokenStore: NewMemoryTokenStore()})
+	store := NewMemoryTokenStore()
+	require.NoError(t, store.SaveToken(t.Context(), &Token{RefreshToken: "refresh", Resource: resource.URL, Issuer: otherHTTP.URL}))
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", ClientSecret: "secret", ClientIssuer: theirs.URL, RedirectURI: "http://localhost:8085/callback", TokenStore: store})
 	handler.SetBaseURL(resource.URL)
 	_, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
 	require.ErrorIs(t, err, ErrClientRegisteredElsewhere)

@@ -158,6 +158,7 @@ func TestOAuthHandler_TokenRequestsNameTheResource(t *testing.T) {
 	httpServer := server.start(t)
 	handler := NewOAuthHandler(OAuthConfig{
 		ClientID:              "client",
+		ClientIssuer:          httpServer.URL,
 		RedirectURI:           "http://localhost:8085/callback",
 		TokenStore:            NewMemoryTokenStore(),
 		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",

@@ -1006,6 +1006,7 @@ func TestOAuthHandler_RefreshToken_GitHubErrorIn200Response(t *testing.T) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 serverURL,
 				"authorization_endpoint": serverURL + "/authorize",
 				"token_endpoint":         serverURL + "/token",
 			})
@@ -1029,6 +1030,7 @@ func TestOAuthHandler_RefreshToken_GitHubErrorIn200Response(t *testing.T) {
 
 	config := OAuthConfig{
 		ClientID:              "test-client",
+		ClientIssuer:          serverURL,
 		ClientSecret:          "test-secret",
 		RedirectURI:           "http://localhost/callback",
 		TokenStore:            tokenStore,
@@ -1065,6 +1067,7 @@ func TestOAuthHandler_RefreshToken_EmptyAccessToken(t *testing.T) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 serverURL,
 				"authorization_endpoint": serverURL + "/authorize",
 				"token_endpoint":         serverURL + "/token",
 			})
@@ -1089,6 +1092,7 @@ func TestOAuthHandler_RefreshToken_EmptyAccessToken(t *testing.T) {
 
 	config := OAuthConfig{
 		ClientID:              "test-client",
+		ClientIssuer:          serverURL,
 		ClientSecret:          "test-secret",
 		RedirectURI:           "http://localhost/callback",
 		TokenStore:            tokenStore,
@@ -1127,6 +1131,7 @@ func TestOAuthHandler_RefreshToken_RefreshTokenRotation(t *testing.T) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 serverURL,
 				"authorization_endpoint": serverURL + "/authorize",
 				"token_endpoint":         serverURL + "/token",
 			})
@@ -1157,6 +1162,7 @@ func TestOAuthHandler_RefreshToken_RefreshTokenRotation(t *testing.T) {
 
 	config := OAuthConfig{
 		ClientID:              "test-client",
+		ClientIssuer:          serverURL,
 		ClientSecret:          "test-secret",
 		RedirectURI:           "http://localhost/callback",
 		TokenStore:            tokenStore,
@@ -1195,6 +1201,7 @@ func TestOAuthHandler_RefreshToken_SingleUseRefreshToken(t *testing.T) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 serverURL,
 				"authorization_endpoint": serverURL + "/authorize",
 				"token_endpoint":         serverURL + "/token",
 			})
@@ -1236,6 +1243,7 @@ func TestOAuthHandler_RefreshToken_SingleUseRefreshToken(t *testing.T) {
 
 	config := OAuthConfig{
 		ClientID:              "test-client",
+		ClientIssuer:          serverURL,
 		ClientSecret:          "test-secret",
 		RedirectURI:           "http://localhost/callback",
 		TokenStore:            tokenStore,
@@ -1337,6 +1345,7 @@ func TestOAuthHandler_RefreshToken_KeepsOldRefreshToken(t *testing.T) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 serverURL,
 				"authorization_endpoint": serverURL + "/authorize",
 				"token_endpoint":         serverURL + "/token",
 			})
@@ -1361,6 +1370,7 @@ func TestOAuthHandler_RefreshToken_KeepsOldRefreshToken(t *testing.T) {
 
 	config := OAuthConfig{
 		ClientID:              "test-client",
+		ClientIssuer:          serverURL,
 		ClientSecret:          "test-secret",
 		RedirectURI:           "http://localhost/callback",
 		TokenStore:            tokenStore,
@@ -1395,6 +1405,7 @@ func TestOAuthHandler_RefreshToken_ProperHTTP400Error(t *testing.T) {
 		if r.URL.Path == "/.well-known/oauth-authorization-server" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 serverURL,
 				"authorization_endpoint": serverURL + "/authorize",
 				"token_endpoint":         serverURL + "/token",
 			})
@@ -1417,6 +1428,7 @@ func TestOAuthHandler_RefreshToken_ProperHTTP400Error(t *testing.T) {
 
 	config := OAuthConfig{
 		ClientID:              "test-client",
+		ClientIssuer:          serverURL,
 		ClientSecret:          "test-secret",
 		RedirectURI:           "http://localhost/callback",
 		TokenStore:            tokenStore,
@@ -1547,10 +1559,11 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 		defer server.Close()
 
 		config := OAuthConfig{
-			ClientID:    "test-client",
-			RedirectURI: server.URL + "/callback",
-			TokenStore:  NewMemoryTokenStore(),
-			PKCEEnabled: true,
+			ClientID:     "test-client",
+			ClientIssuer: server.URL,
+			RedirectURI:  server.URL + "/callback",
+			TokenStore:   NewMemoryTokenStore(),
+			PKCEEnabled:  true,
 		}
 
 		handler := NewOAuthHandler(config)
@@ -1585,10 +1598,11 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 		defer server.Close()
 
 		handler := NewOAuthHandler(OAuthConfig{
-			ClientID:    "test-client",
-			RedirectURI: server.URL + "/callback",
-			TokenStore:  NewMemoryTokenStore(),
-			PKCEEnabled: true,
+			ClientID:     "test-client",
+			ClientIssuer: server.URL,
+			RedirectURI:  server.URL + "/callback",
+			TokenStore:   NewMemoryTokenStore(),
+			PKCEEnabled:  true,
 		})
 		handler.SetBaseURL(server.URL)
 
@@ -1622,9 +1636,10 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 		defer server.Close()
 
 		config := OAuthConfig{
-			ClientID:    "test-client",
-			RedirectURI: server.URL + "/callback",
-			TokenStore:  NewMemoryTokenStore(),
+			ClientID:     "test-client",
+			ClientIssuer: server.URL,
+			RedirectURI:  server.URL + "/callback",
+			TokenStore:   NewMemoryTokenStore(),
 		}
 
 		handler := NewOAuthHandler(config)
@@ -1667,9 +1682,10 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 		defer server.Close()
 
 		config := OAuthConfig{
-			ClientID:    "test-client",
-			RedirectURI: server.URL + "/callback",
-			TokenStore:  NewMemoryTokenStore(),
+			ClientID:     "test-client",
+			ClientIssuer: server.URL,
+			RedirectURI:  server.URL + "/callback",
+			TokenStore:   NewMemoryTokenStore(),
 		}
 
 		handler := NewOAuthHandler(config)
@@ -1719,10 +1735,11 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 		defer server.Close()
 
 		config := OAuthConfig{
-			ClientID:    "test-client",
-			RedirectURI: server.URL + "/callback",
-			TokenStore:  NewMemoryTokenStore(),
-			PKCEEnabled: true,
+			ClientID:     "test-client",
+			ClientIssuer: server.URL,
+			RedirectURI:  server.URL + "/callback",
+			TokenStore:   NewMemoryTokenStore(),
+			PKCEEnabled:  true,
 		}
 
 		handler := NewOAuthHandler(config)
@@ -1774,9 +1791,10 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 		defer server.Close()
 
 		config := OAuthConfig{
-			ClientID:    "test-client",
-			RedirectURI: server.URL + "/callback",
-			TokenStore:  NewMemoryTokenStore(),
+			ClientID:     "test-client",
+			ClientIssuer: server.URL,
+			RedirectURI:  server.URL + "/callback",
+			TokenStore:   NewMemoryTokenStore(),
 		}
 
 		handler := NewOAuthHandler(config)
@@ -1826,9 +1844,10 @@ func TestOAuthHandler_RFC8707_ResourceParameter(t *testing.T) {
 		defer server.Close()
 
 		config := OAuthConfig{
-			ClientID:    "test-client",
-			RedirectURI: server.URL + "/callback",
-			TokenStore:  NewMemoryTokenStore(),
+			ClientID:     "test-client",
+			ClientIssuer: server.URL,
+			RedirectURI:  server.URL + "/callback",
+			TokenStore:   NewMemoryTokenStore(),
 		}
 
 		handler := NewOAuthHandler(config)
@@ -2340,6 +2359,7 @@ func TestOAuthHandler_RefreshToken_201Created(t *testing.T) {
 
 	config := OAuthConfig{
 		ClientID:              "test-client",
+		ClientIssuer:          serverURL,
 		ClientSecret:          "test-secret",
 		RedirectURI:           "http://localhost/callback",
 		TokenStore:            tokenStore,

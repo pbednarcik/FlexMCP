@@ -72,7 +72,8 @@ func singleUseTokens(delay time.Duration) func(http.ResponseWriter, string) {
 }
 
 // newRefreshTestHandler returns a handler whose stored access token has
-// expired and whose refresh token is "single-use".
+// expired and whose refresh token is "single-use", recorded as the
+// server's.
 func newRefreshTestHandler(t *testing.T, server *refreshServer) (*OAuthHandler, *MemoryTokenStore) {
 	t.Helper()
 	store := NewMemoryTokenStore()
@@ -81,6 +82,7 @@ func newRefreshTestHandler(t *testing.T, server *refreshServer) (*OAuthHandler, 
 		TokenType:    "Bearer",
 		RefreshToken: "single-use",
 		ExpiresAt:    time.Now().Add(-time.Minute),
+		Issuer:       server.URL,
 	}))
 	handler := NewOAuthHandler(OAuthConfig{
 		ClientID:              "client",

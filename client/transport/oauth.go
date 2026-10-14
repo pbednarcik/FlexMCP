@@ -95,7 +95,8 @@ type OAuthConfig struct {
 	// that issued them and no other (MCP authorization). When it is empty,
 	// they are bound to the first authorization server they are used with;
 	// set it, from configuration or from GetClientIssuer after a dynamic
-	// registration, to bind them from the first request.
+	// registration, to bind them from the first request. It is also the only
+	// issuer a refresh token saved without Token.Issuer is sent to.
 	ClientIssuer string
 	// TokenEndpointAuthMethod is how the client authenticates at the token
 	// endpoint: "client_secret_basic", "client_secret_post" or "none". Set it
@@ -185,7 +186,8 @@ type Token struct {
 	Resource string `json:"resource,omitempty"`
 	// Issuer is the authorization server that issued the token, the only one
 	// its refresh token is sent to. Empty for a token saved without the
-	// record.
+	// record, whose refresh token goes only to OAuthConfig.ClientIssuer and,
+	// without it, nowhere.
 	Issuer string `json:"issuer,omitempty"`
 }
 
@@ -615,8 +617,18 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 	if resourceURL == "" {
 		return nil, ErrResourceUnknown
 	}
-	if stored.Issuer != "" && stored.Issuer != metadata.Issuer {
-		return nil, fmt.Errorf("%w: the refresh token is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, stored.Issuer, metadata.Issuer)
+	// A refresh token without a record goes only to the issuer ClientIssuer
+	// names: the first issuer the client credentials were used with is not
+	// evidence of where the refresh token came from.
+	issuer := stored.Issuer
+	if issuer == "" {
+		issuer = h.config.ClientIssuer
+	}
+	if issuer == "" {
+		return nil, fmt.Errorf("%w: the refresh token has no record of its issuer, and ClientIssuer is not set", ErrOAuthAuthorizationRequired)
+	}
+	if issuer != metadata.Issuer {
+		return nil, fmt.Errorf("%w: the refresh token is from %q, the token endpoint belongs to %q", ErrIssuerMismatch, issuer, metadata.Issuer)
 	}
 	if !h.tokenIsForThisServer(stored) {
 		return nil, fmt.Errorf("%w: the refresh token is for %q", ErrOAuthAuthorizationRequired, stored.Resource)
@@ -690,7 +702,8 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token) (*Token,
 
 // RefreshToken refreshes a token with refreshToken. When it is the stored
 // token's, the stored record decides where it may go; one brought from
-// elsewhere has none. A token store that cannot be read refuses the refresh.
+// elsewhere has none, and goes only to OAuthConfig.ClientIssuer. A token
+// store that cannot be read refuses the refresh.
 func (h *OAuthHandler) RefreshToken(ctx context.Context, refreshToken string) (*Token, error) {
 	token := &Token{RefreshToken: refreshToken}
 	stored, err := h.config.TokenStore.GetToken(ctx)

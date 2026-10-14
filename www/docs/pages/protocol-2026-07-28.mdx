@@ -287,7 +287,9 @@ need code are marked **(code)**.
   else. `RefreshToken` refuses when the token store cannot be read. A
   transport's requests carry no token while its handler is pointed at another
   server. A token without the record, as one your code stores itself, is used
-  as before.
+  as before, but its refresh token goes only to the issuer `ClientIssuer`
+  names; without `ClientIssuer` the expired token asks for a new
+  authorization. A token store that keeps `Token.Issuer` keeps refreshing.
 - A change of `SetBaseURL` abandons an authorization that is pending or
   starting, and a code is redeemed only for the resource and at the issuer it
   was obtained for (`ErrResourceChanged`, `ErrIssuerMismatch`): one whose

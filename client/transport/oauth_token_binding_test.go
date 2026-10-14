@@ -283,3 +283,47 @@ func TestSSE_AConnectionCarriesOnlyItsRecipientsToken(t *testing.T) {
 	}
 	require.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
 }
+
+// A refresh token saved without a record of its issuer is not sent to
+// whichever authorization server discovery names now: only to the one
+// ClientIssuer names. Without ClientIssuer the handler asks for a new
+// authorization instead.
+func TestOAuthHandler_ARefreshTokenWithoutARecordGoesOnlyToClientIssuer(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		clientIssuer func(server *refreshServer) string
+		refreshed    bool
+	}{
+		{"no ClientIssuer", func(*refreshServer) string { return "" }, false},
+		{"another ClientIssuer", func(*refreshServer) string { return "https://issuer.example" }, false},
+		{"its ClientIssuer", func(s *refreshServer) string { return s.URL }, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newRefreshServer(t, singleUseTokens(0))
+			store := NewMemoryTokenStore()
+			require.NoError(t, store.SaveToken(t.Context(), &Token{
+				AccessToken:  "old-access",
+				RefreshToken: "single-use",
+				ExpiresAt:    time.Now().Add(-time.Minute),
+			}))
+			handler := NewOAuthHandler(OAuthConfig{
+				ClientID:              "client",
+				ClientIssuer:          tt.clientIssuer(server),
+				TokenStore:            store,
+				AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
+			})
+			handler.SetBaseURL(server.URL + "/mcp")
+
+			_, err := handler.GetAuthorizationHeader(t.Context())
+			if tt.refreshed {
+				require.NoError(t, err)
+				assert.Equal(t, int32(1), server.refreshes.Load())
+				return
+			}
+			require.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
+			_, err = handler.RefreshToken(t.Context(), "single-use")
+			require.Error(t, err)
+			assert.Zero(t, server.refreshes.Load(), "a refresh token without a record left the client")
+		})
+	}
+}
