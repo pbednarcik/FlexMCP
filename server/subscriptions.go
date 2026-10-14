@@ -176,23 +176,13 @@ func (s *MCPServer) handleSubscriptionsListen(
 
 	allowed := s.allowedSubscriptions(request.Params.Notifications)
 
-	// Record the filter so notification fan-out can honour the opt-in: a
-	// request's own session holds one filter, a long-lived session one
-	// stream per listen request.
-	if filtered, ok := session.(SessionWithSubscriptionFilter); ok {
-		filtered.SetSubscriptionFilter(allowed)
-		defer filtered.SetSubscriptionFilter(mcp.SubscriptionFilter{})
-	}
-	if streams, ok := session.(SessionWithSubscriptionStreams); ok {
-		streams.OpenSubscriptionStream(id, allowed)
-		defer streams.CloseSubscriptionStream(id)
-		s.closeStreamOnCancel(ctx, id, streams)
-	}
-
 	// Acknowledge the subscription so the client learns which of its requested
 	// notification types were actually established. Every message on the
 	// stream, including this one, is tagged with the subscription ID so the
-	// client can correlate it.
+	// client can correlate it. It is queued before the subscription is
+	// recorded: nothing for the subscription precedes its acknowledgement
+	// (Patterns.md row 15), and a broadcast reaches the subscription only
+	// once it is recorded.
 	ack := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
 		Method:  mcp.MethodNotificationSubscriptionsAcknowledged,
@@ -207,6 +197,19 @@ func (s *MCPServer) handleSubscriptionsListen(
 			code: mcp.INTERNAL_ERROR,
 			err:  fmt.Errorf("sending subscriptions/acknowledged: %w", err),
 		}
+	}
+
+	// Record the filter so notification fan-out can honour the opt-in: a
+	// request's own session holds one filter, a long-lived session one
+	// stream per listen request.
+	if filtered, ok := session.(SessionWithSubscriptionFilter); ok {
+		filtered.SetSubscriptionFilter(allowed)
+		defer filtered.SetSubscriptionFilter(mcp.SubscriptionFilter{})
+	}
+	if streams, ok := session.(SessionWithSubscriptionStreams); ok {
+		streams.OpenSubscriptionStream(id, allowed)
+		defer streams.CloseSubscriptionStream(id)
+		s.closeStreamOnCancel(ctx, id, streams)
 	}
 
 	// Hold the stream open for as long as anything was subscribed. When the
