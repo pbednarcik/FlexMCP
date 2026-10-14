@@ -44,7 +44,20 @@ const (
 	DefaultReadHeaderTimeout  = 10 * time.Second
 	DefaultIdleTimeout        = 2 * time.Minute
 	DefaultRequestBodyTimeout = 30 * time.Second
+	DefaultWriteTimeout       = 30 * time.Second
 )
+
+// WithWriteTimeout bounds each write to a response: a client that stops
+// reading, with the response's SSE events or its body unsent, cannot hold
+// the request, its goroutines, or Shutdown, which waits for requests. A
+// write still unsent when the time is up fails, and nothing more is
+// written for that request. The default is DefaultWriteTimeout; zero or
+// less removes the bound.
+func WithWriteTimeout(d time.Duration) StreamableHTTPOption {
+	return func(s *StreamableHTTPServer) {
+		s.writeTimeout = d
+	}
+}
 
 // WithReadHeaderTimeout sets the http.Server's ReadHeaderTimeout for the
 // server Start builds: how long a client may take to send a request's
@@ -285,6 +298,9 @@ type StreamableHTTPServer struct {
 	// readHeaderTimeout and idleTimeout go to the http.Server Start builds.
 	readHeaderTimeout time.Duration
 	idleTimeout       time.Duration
+	// writeTimeout bounds each write to a response; zero or less is no
+	// bound. See WithWriteTimeout.
+	writeTimeout time.Duration
 
 	tlsCertFile string
 	tlsKeyFile  string
@@ -326,6 +342,7 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 		requestBodyTimeout:  DefaultRequestBodyTimeout,
 		readHeaderTimeout:   DefaultReadHeaderTimeout,
 		idleTimeout:         DefaultIdleTimeout,
+		writeTimeout:        DefaultWriteTimeout,
 		shutdown:            shutdown,
 		endListens:          endListens,
 	}
@@ -464,16 +481,34 @@ type readDeadliner interface {
 // http.ResponseController would follow; unlike the controller it allocates
 // nothing, on a writer without deadlines too.
 func readDeadlinerOf(w http.ResponseWriter) (readDeadliner, bool) {
+	return deadlinerOf[readDeadliner](w)
+}
+
+// writeDeadlinerOf is readDeadlinerOf for the write deadline.
+func writeDeadlinerOf(w http.ResponseWriter) (writeDeadliner, bool) {
+	return deadlinerOf[writeDeadliner](w)
+}
+
+// deadlinerOf finds the D behind w, through the Unwrap chain.
+func deadlinerOf[D any](w http.ResponseWriter) (D, bool) {
 	for {
-		if d, ok := w.(readDeadliner); ok {
+		if d, ok := w.(D); ok {
 			return d, true
 		}
 		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
 		if !ok {
-			return nil, false
+			var none D
+			return none, false
 		}
 		w = u.Unwrap()
 	}
+}
+
+// httpServerOf is the http.Server serving the request whose context ctx
+// is: nil for a request net/http did not start, as through Handle.
+func httpServerOf(ctx context.Context) *http.Server {
+	srv, _ := ctx.Value(http.ServerContextKey).(*http.Server)
+	return srv
 }
 
 // serverHasReadTimeout reports whether the http.Server serving r bounds the
@@ -481,8 +516,18 @@ func readDeadlinerOf(w http.ResponseWriter) (readDeadliner, bool) {
 // on the body: the body deadline neither replaces it with a looser one nor
 // lifts it.
 func serverHasReadTimeout(r *http.Request) bool {
-	srv, ok := r.Context().Value(http.ServerContextKey).(*http.Server)
-	return ok && srv.ReadTimeout > 0
+	srv := httpServerOf(r.Context())
+	return srv != nil && srv.ReadTimeout > 0
+}
+
+// serverHasWriteTimeout reports whether the http.Server serving the request
+// whose context ctx is bounds the whole response itself. Its WriteTimeout
+// is the deployer's bound on the writes: the write deadline, which is set
+// on the same connection, neither replaces it with a looser one nor lifts
+// it.
+func serverHasWriteTimeout(ctx context.Context) bool {
+	srv := httpServerOf(ctx)
+	return srv != nil && srv.WriteTimeout > 0
 }
 
 // errBodyTooLarge is the read error of a POST body over the bound.
@@ -753,6 +798,9 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// most requests send none, and a goroutine per request costs a thread
 	// wakeup each.
 	x.server, x.w, x.ctx, x.canStream, x.listening, x.requestID = s, w, ctx, canStream, listening, requestID
+	if !serverHasWriteTimeout(r.ctx()) {
+		x.writeTimeout = s.writeTimeout
+	}
 	// A handler may keep its context, and with it the exchange, after the
 	// request; the response writer is let go when the request is done.
 	defer func() { x.w = nil }()
@@ -793,11 +841,14 @@ drainLoop:
 			if listening {
 				nt = tagSubscription(nt, requestID)
 			}
-			x.upgrade()
-			if err := writeSSEEvent(w, nt); err != nil {
-				s.logger.Error("Failed to write SSE event during drain", "err", err)
-			}
-			w.Flush()
+			x.deliver(func() error {
+				x.upgrade()
+				if err := writeSSEEvent(w, nt); err != nil {
+					return err
+				}
+				w.Flush()
+				return nil
+			})
 		default:
 			break drainLoop
 		}
@@ -812,12 +863,17 @@ drainLoop:
 	// Also check upgradedHeader: a notification during HandleMessage processing
 	// may have already written SSE headers on this response, so we must continue
 	// in SSE mode to avoid writing JSON on top of SSE data.
+	x.mu.Lock()
+	defer x.mu.Unlock()
 	if (session.upgradeToSSE.Load() && canStream) || x.upgraded {
-		x.upgrade()
-		if err := writeSSEEvent(w, response); err != nil {
-			s.logger.Error("Failed to write final SSE response event", "err", err)
-		}
-		w.Flush()
+		x.deliver(func() error {
+			x.upgrade()
+			if err := writeSSEEvent(w, response); err != nil {
+				return err
+			}
+			w.Flush()
+			return nil
+		})
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		// Protocol version 2026-07-28 maps JSON-RPC error codes onto HTTP
@@ -829,11 +885,10 @@ drainLoop:
 				status = httpStatusForJSONRPCError(errResponse.Error.Code)
 			}
 		}
-		w.WriteHeader(status)
-		err := json.NewEncoder(w).Encode(response)
-		if err != nil {
-			s.logger.Error("Failed to write response", "err", err)
-		}
+		x.deliver(func() error {
+			w.WriteHeader(status)
+			return json.NewEncoder(w).Encode(response)
+		})
 	}
 }
 
@@ -862,6 +917,10 @@ type postExchange struct {
 
 	mu       sync.Mutex // held while a message is written to the response
 	upgraded bool       // the response is committed as SSE
+	// dead, under mu, says a write to the response failed: the client is
+	// gone, and nothing more is written for the request.
+	dead         bool
+	writeTimeout time.Duration
 
 	// done stops the forwarder; forwarderExited lets the response path wait
 	// until it can no longer be holding an undelivered notification.
@@ -914,11 +973,39 @@ func (x *postExchange) write(nt mcp.JSONRPCNotification) {
 		// path remains the buffered JSON reply below.
 		return
 	}
-	defer x.w.Flush()
+	x.deliver(func() error {
+		x.upgrade()
+		if err := writeSSEEvent(x.w, nt); err != nil {
+			return err
+		}
+		x.w.Flush()
+		return nil
+	})
+}
 
-	x.upgrade()
-	if err := writeSSEEvent(x.w, nt); err != nil {
-		x.server.logger.Error("Failed to write SSE event", "err", err)
+// writeDeadliner is the deadline a response writer puts on its writes, as
+// net/http's own and the adapter implement it.
+type writeDeadliner interface {
+	SetWriteDeadline(time.Time) error
+}
+
+// deliver runs write, one write to the response, under the write deadline:
+// a client that stops reading cannot hold the request. A write that fails
+// marks the exchange dead: the client is gone, nothing more is written for
+// the request, and whoever waits on a write moves on. mu is held.
+func (x *postExchange) deliver(write func() error) {
+	if x.dead {
+		return
+	}
+	deadliner, bounded := x.w.(writeDeadliner)
+	bounded = bounded && x.writeTimeout > 0 && deadliner.SetWriteDeadline(time.Now().Add(x.writeTimeout)) == nil
+	err := write()
+	if bounded {
+		_ = deadliner.SetWriteDeadline(time.Time{})
+	}
+	if err != nil {
+		x.dead = true
+		x.server.logger.Error("write to the response failed; the request's remaining output is dropped", "err", err)
 	}
 }
 

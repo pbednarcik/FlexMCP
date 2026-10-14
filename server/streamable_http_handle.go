@@ -137,11 +137,15 @@ func (a *httpResponseWriterAdapter) Flush() {
 	}
 }
 
-// SetWriteDeadline sets a deadline for future writes via
-// http.ResponseController, bounding how long a stalled client can block the
-// server. A zero time clears the deadline.
+// SetWriteDeadline sets a deadline for future writes, as
+// http.ResponseController would but without its allocations, bounding how
+// long a stalled client can block the server. A zero time clears the
+// deadline; a writer without deadlines answers http.ErrNotSupported.
 func (a *httpResponseWriterAdapter) SetWriteDeadline(t time.Time) error {
-	return http.NewResponseController(a.w).SetWriteDeadline(t)
+	if d, ok := writeDeadlinerOf(a.w); ok {
+		return d.SetWriteDeadline(t)
+	}
+	return http.ErrNotSupported
 }
 
 func (a *httpResponseWriterAdapter) CanStream() bool { return a.flusher != nil }

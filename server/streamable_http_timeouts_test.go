@@ -7,11 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // The http.Server Start builds has timeouts: a client that never finishes
@@ -81,4 +84,33 @@ func TestStreamableHTTP_AServersOwnReadTimeoutIsKept(t *testing.T) {
 	resp, err := dripBody(t, ts.Listener.Addr().String())
 	require.NoError(t, err, "the body deadline replaced the server's own ReadTimeout")
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// A server with a WriteTimeout of its own keeps it: the write deadline
+// neither replaces the deployer's bound with a looser one nor lifts it.
+func TestStreamableHTTP_AServersOwnWriteTimeoutIsKept(t *testing.T) {
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(false))
+	mcpServer.AddTool(mcp.NewTool("slow"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+		}
+		return mcp.NewToolResultText("done"), nil
+	})
+	httpServer := NewStreamableHTTPServer(mcpServer)
+	ts := httptest.NewUnstartedServer(httpServer)
+	ts.Config.WriteTimeout = 200 * time.Millisecond
+	ts.Start()
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL,
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow"}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+	require.Error(t, err, "the write deadline replaced the server's own WriteTimeout")
 }
