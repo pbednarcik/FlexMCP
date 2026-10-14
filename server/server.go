@@ -2459,6 +2459,26 @@ func (s *MCPServer) executeRegularToolAsTask(
 		return
 	}
 
+	// A handler may ask the client for more input (SEP-2322). Inside a task
+	// that goes through tasks/update (Tasks.md row 15), which this server
+	// does not serve yet, so the task fails rather than end as an empty
+	// completed task; a client that could not be asked at all gets the
+	// synchronous call's error.
+	if _, err := resolveMultiRoundTrip(taskCtx, result, callToolResultNeedsInput); err != nil {
+		s.completeTask(entry, nil, err)
+		return
+	}
+	if result.NeedsInput() {
+		err := ErrTaskInputUnsupported
+		if len(result.InputRequests) == 0 {
+			// Nothing was asked: the handler sheds load, as the
+			// synchronous path tells a client that cannot be asked.
+			err = ErrLoadShedding
+		}
+		s.completeTask(entry, nil, err)
+		return
+	}
+
 	// Task succeeded - store the CallToolResult directly
 	// When retrieved via tasks/result, this will be returned to the client
 	//

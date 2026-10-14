@@ -48,6 +48,11 @@ var (
 	// and the client predates protocol version 2026-07-28. Callers may map it
 	// to a backpressure response, such as HTTP 503 with Retry-After.
 	ErrLoadShedding = errors.New("the server is busy, retry later")
+
+	// ErrTaskInputUnsupported fails a task whose handler asked the client for
+	// input: mid-task input goes through tasks/update (Tasks.md row 15),
+	// which this server does not serve yet, so the question cannot be put.
+	ErrTaskInputUnsupported = errors.New("the handler asked the client for input, which the server cannot do inside a task")
 )
 
 // errTaskHookPanicked fails a task a hook panicked on while it was created:

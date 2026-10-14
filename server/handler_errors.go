@@ -123,7 +123,7 @@ func handlerError(ctx context.Context, id any, err error) *requestError {
 // error, whose own text names a condition and not the handler's internals,
 // so a client may see it. A handler's wrapping around one is still not sent.
 var knownErrors = []error{
-	ErrInputRequiresModernClient, ErrLoadShedding,
+	ErrInputRequiresModernClient, ErrLoadShedding, ErrTaskInputUnsupported,
 	ErrResourceNotFound, ErrPromptNotFound, ErrToolNotFound, ErrUnsupported,
 	context.Canceled, context.DeadlineExceeded,
 }
