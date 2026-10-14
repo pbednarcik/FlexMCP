@@ -4,14 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
 // The Parse* helpers accept whatever a tool call's arguments decoded to and
-// coerce it to the type the caller asked for. These are the only conversions
-// the library performs; coerce_golden_test.go pins their behaviour to what
-// spf13/cast v1.7.1 answered, which the library used before.
+// coerce it to the type the caller asked for. The to* conversions below are
+// the library's general coercions; coerce_golden_test.go pins their behaviour
+// to what spf13/cast v1.7.1 answered, which the library used before. The
+// integer Parse* wrappers do not use them: cast wraps an out-of-range value
+// and reads "010" as octal, so a tool argument could silently become another
+// number. They go through checkedSigned and checkedUnsigned instead, which
+// read decimal only and hand back the caller's default for anything that
+// does not fit.
 
 var errNegativeUnsigned = errors.New("negative value for an unsigned integer")
 
@@ -170,6 +176,117 @@ func parseInt(s string) (int64, error) {
 		s = s[:i]
 	}
 	return strconv.ParseInt(s, 0, 0)
+}
+
+// checkedSigned converts v to a signed integer of the given width and reports
+// whether it fits. The range is checked before narrowing or crossing
+// signedness. Float bounds are exact powers of two with an exclusive upper
+// bound, because MaxInt64 converted to float64 rounds up to 2^63, which no
+// int64 holds.
+func checkedSigned(v any, bits int) (int64, bool) {
+	switch x := v.(type) {
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(x), 10, bits)
+		return n, err == nil
+	case json.Number:
+		return checkedSigned(string(x), bits)
+	case int64:
+		limit := int64(uint64(1)<<(bits-1) - 1)
+		return x, x >= -limit-1 && x <= limit
+	case uint64:
+		if x > uint64(1)<<(bits-1)-1 {
+			return 0, false
+		}
+		return int64(x), true
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0, false
+		}
+		n := math.Trunc(x)
+		bound := math.Ldexp(1, bits-1)
+		if n < -bound || n >= bound {
+			return 0, false
+		}
+		return int64(n), true
+	case int:
+		return checkedSigned(int64(x), bits)
+	case int8:
+		return checkedSigned(int64(x), bits)
+	case int16:
+		return checkedSigned(int64(x), bits)
+	case int32:
+		return checkedSigned(int64(x), bits)
+	case uint:
+		return checkedSigned(uint64(x), bits)
+	case uint8:
+		return checkedSigned(uint64(x), bits)
+	case uint16:
+		return checkedSigned(uint64(x), bits)
+	case uint32:
+		return checkedSigned(uint64(x), bits)
+	case float32:
+		return checkedSigned(float64(x), bits)
+	case bool:
+		if x {
+			return 1, true
+		}
+		return 0, true
+	}
+	return 0, false
+}
+
+// checkedUnsigned converts v to an unsigned integer of the given width and
+// reports whether it fits. Unsigned sources never pass through int64, so the
+// top half of uint64 survives, and a negative float is refused before
+// truncation would turn -0.5 into a valid 0.
+func checkedUnsigned(v any, bits int) (uint64, bool) {
+	switch x := v.(type) {
+	case string:
+		n, err := strconv.ParseUint(strings.TrimSpace(x), 10, bits)
+		return n, err == nil
+	case json.Number:
+		return checkedUnsigned(string(x), bits)
+	case uint64:
+		return x, x <= ^uint64(0)>>(64-bits)
+	case int64:
+		if x < 0 {
+			return 0, false
+		}
+		return checkedUnsigned(uint64(x), bits)
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0, false
+		}
+		n := math.Trunc(x)
+		if x < 0 || n >= math.Ldexp(1, bits) {
+			return 0, false
+		}
+		return uint64(n), true
+	case int:
+		return checkedUnsigned(int64(x), bits)
+	case int8:
+		return checkedUnsigned(int64(x), bits)
+	case int16:
+		return checkedUnsigned(int64(x), bits)
+	case int32:
+		return checkedUnsigned(int64(x), bits)
+	case uint:
+		return checkedUnsigned(uint64(x), bits)
+	case uint8:
+		return checkedUnsigned(uint64(x), bits)
+	case uint16:
+		return checkedUnsigned(uint64(x), bits)
+	case uint32:
+		return checkedUnsigned(uint64(x), bits)
+	case float32:
+		return checkedUnsigned(float64(x), bits)
+	case bool:
+		if x {
+			return 1, true
+		}
+		return 0, true
+	}
+	return 0, false
 }
 
 func toFloat64E(v any) (float64, error) {

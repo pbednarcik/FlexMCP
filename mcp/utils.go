@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 // ClientRequest types
@@ -1004,64 +1005,122 @@ func ParseBoolean(request CallToolRequest, key string, defaultValue bool) bool {
 }
 
 // ParseInt64 extracts and converts an int64 parameter from a CallToolRequest.
-// If the key is not found in the Arguments map, the defaultValue is returned.
+// It accepts the built-in integer types, floats (truncated toward zero), bools
+// (as 0 or 1), and strings or json.Number holding a base-10 integer with an
+// optional sign and surrounding space; base prefixes, decimal points and
+// exponents are invalid. A missing key, nil, an unsupported type (pointers and
+// named types included), invalid text, NaN, an infinity or a value outside
+// int64's range returns defaultValue.
 func ParseInt64(request CallToolRequest, key string, defaultValue int64) int64 {
-	v := ParseArgument(request, key, defaultValue)
-	return toInt64(v)
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 64)
+	if !ok {
+		return defaultValue
+	}
+	return n
 }
 
 // ParseInt32 extracts and converts an int32 parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int32's range.
 func ParseInt32(request CallToolRequest, key string, defaultValue int32) int32 {
-	v := ParseArgument(request, key, defaultValue)
-	return toInt32(v)
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 32)
+	if !ok {
+		return defaultValue
+	}
+	return int32(n)
 }
 
 // ParseInt16 extracts and converts an int16 parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int16's range.
 func ParseInt16(request CallToolRequest, key string, defaultValue int16) int16 {
-	v := ParseArgument(request, key, defaultValue)
-	return toInt16(v)
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 16)
+	if !ok {
+		return defaultValue
+	}
+	return int16(n)
 }
 
 // ParseInt8 extracts and converts an int8 parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int8's range.
 func ParseInt8(request CallToolRequest, key string, defaultValue int8) int8 {
-	v := ParseArgument(request, key, defaultValue)
-	return toInt8(v)
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 8)
+	if !ok {
+		return defaultValue
+	}
+	return int8(n)
 }
 
 // ParseInt extracts and converts an int parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int's range on the target platform.
 func ParseInt(request CallToolRequest, key string, defaultValue int) int {
-	v := ParseArgument(request, key, defaultValue)
-	return toInt(v)
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), strconv.IntSize)
+	if !ok {
+		return defaultValue
+	}
+	return int(n)
 }
 
-// ParseUInt extracts and converts an uint parameter from a CallToolRequest.
+// ParseUInt extracts and converts a uint parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint's range on the target platform.
 func ParseUInt(request CallToolRequest, key string, defaultValue uint) uint {
-	v := ParseArgument(request, key, defaultValue)
-	return toUint(v)
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), strconv.IntSize)
+	if !ok {
+		return defaultValue
+	}
+	return uint(n)
 }
 
-// ParseUInt64 extracts and converts an uint64 parameter from a CallToolRequest.
+// ParseUInt64 extracts and converts a uint64 parameter from a CallToolRequest.
+// It accepts the built-in integer types, floats (truncated toward zero), bools
+// (as 0 or 1), and strings or json.Number holding an unsigned base-10 integer
+// with surrounding space; a sign, base prefixes, decimal points and exponents
+// are invalid. A missing key, nil, an unsupported type (pointers and named
+// types included), invalid text, any negative number (fractions above -1
+// included), NaN, an infinity or a value outside uint64's range returns
+// defaultValue.
 func ParseUInt64(request CallToolRequest, key string, defaultValue uint64) uint64 {
-	v := ParseArgument(request, key, defaultValue)
-	return toUint64(v)
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 64)
+	if !ok {
+		return defaultValue
+	}
+	return n
 }
 
-// ParseUInt32 extracts and converts an uint32 parameter from a CallToolRequest.
+// ParseUInt32 extracts and converts a uint32 parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint32's range.
 func ParseUInt32(request CallToolRequest, key string, defaultValue uint32) uint32 {
-	v := ParseArgument(request, key, defaultValue)
-	return toUint32(v)
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 32)
+	if !ok {
+		return defaultValue
+	}
+	return uint32(n)
 }
 
-// ParseUInt16 extracts and converts an uint16 parameter from a CallToolRequest.
+// ParseUInt16 extracts and converts a uint16 parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint16's range.
 func ParseUInt16(request CallToolRequest, key string, defaultValue uint16) uint16 {
-	v := ParseArgument(request, key, defaultValue)
-	return toUint16(v)
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 16)
+	if !ok {
+		return defaultValue
+	}
+	return uint16(n)
 }
 
-// ParseUInt8 extracts and converts an uint8 parameter from a CallToolRequest.
+// ParseUInt8 extracts and converts a uint8 parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint8's range.
 func ParseUInt8(request CallToolRequest, key string, defaultValue uint8) uint8 {
-	v := ParseArgument(request, key, defaultValue)
-	return toUint8(v)
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 8)
+	if !ok {
+		return defaultValue
+	}
+	return uint8(n)
 }
 
 // ParseFloat32 extracts and converts a float32 parameter from a CallToolRequest.

@@ -113,8 +113,8 @@ func TestCoerceParityWithCast(t *testing.T) {
 	}
 }
 
-// TestParseHelpersUseCoercion pins that the exported Parse* wrappers go
-// through the same coercion, with the argument map a tool call decodes to.
+// TestParseHelpersUseCoercion pins that the exported Parse* wrappers coerce
+// the argument map a tool call decodes to.
 func TestParseHelpersUseCoercion(t *testing.T) {
 	req := CallToolRequest{}
 	req.Params.Arguments = map[string]any{"n": "42", "b": "1", "f": "2.5", "s": 7, "m": `{"a":1}`}
@@ -125,5 +125,5 @@ func TestParseHelpersUseCoercion(t *testing.T) {
 	assert.Equal(t, 2.5, ParseFloat64(req, "f", 0))
 	assert.Equal(t, "7", ParseString(req, "s", ""))
 	assert.Equal(t, map[string]any{"a": float64(1)}, ParseStringMap(req, "m", nil))
-	assert.Equal(t, int64(9), ParseInt64(req, "missing", 9), "the default comes back through the same coercion")
+	assert.Equal(t, int64(9), ParseInt64(req, "missing", 9), "a missing key returns the default")
 }
