@@ -88,7 +88,7 @@ func TestStdioWriteResponseAllocations(t *testing.T) {
 // An event is written as it always was; one that cannot be encoded writes
 // nothing.
 func TestWriteSSEEventWritesTheEventOrNothing(t *testing.T) {
-	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Notification: mcp.Notification{Method: "notifications/message"}}
+	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/message"}
 	encoded, err := json.Marshal(notification)
 	require.NoError(t, err)
 
@@ -105,7 +105,7 @@ func TestWriteSSEEventAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
-	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Notification: mcp.Notification{Method: "notifications/message"}}
+	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/message"}
 	allocs := testing.AllocsPerRun(1000, func() { _ = writeSSEEvent(io.Discard, notification) })
 	assert.LessOrEqual(t, allocs, 3.0, "allocations per event written")
 }

@@ -47,8 +47,8 @@ func TestClient_NotificationHandlerCanRegisterHandler(t *testing.T) {
 	})
 
 	notification := mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: "test-method"},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  "test-method",
 	}
 	dispatchNotification(t, mockTrans.notificationHandler, notification)
 	assert.Equal(t, []int{1, 2}, callOrder)
@@ -65,8 +65,8 @@ func TestClient_ConcurrentNotificationRegistrationAndDispatch(t *testing.T) {
 	var calls atomic.Int64
 	client.OnNotification(func(mcp.JSONRPCNotification) { calls.Add(1) })
 	notification := mcp.JSONRPCNotification{
-		JSONRPC:      mcp.JSONRPC_VERSION,
-		Notification: mcp.Notification{Method: "test-method"},
+		JSONRPC: mcp.JSONRPC_VERSION,
+		Method:  "test-method",
 	}
 	const registrations = 64
 	start := make(chan struct{})

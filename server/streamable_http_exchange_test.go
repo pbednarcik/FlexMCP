@@ -22,7 +22,7 @@ func TestStreamableHTTPContextFuncKeepsTheHeaderChecks(t *testing.T) {
 		return mcp.NewToolResultText("ran echo"), nil
 	})
 	h := NewStreamableHTTPServer(srv, WithHTTPContextFunc(func(context.Context, *http.Request) context.Context {
-		return context.Background()
+		return t.Context()
 	}))
 	wrong, _ := mcp.EncodeHeaderValue("wrong")
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo",` + readOnceMeta + `}}`
@@ -77,7 +77,6 @@ func TestStreamableHTTPKeptContextReleasesTheWriter(t *testing.T) {
 		Body:    []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`),
 		Context: t.Context(),
 	})
-	w = nil
 	runtime.GC()
 	runtime.GC()
 	require.NotNil(t, kept)
