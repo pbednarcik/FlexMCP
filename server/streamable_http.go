@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 
 	"github.com/mark3labs/mcp-go/internal/jsonrpc"
@@ -33,6 +34,51 @@ func WithEndpointPath(endpointPath string) StreamableHTTPOption {
 		// Normalize the endpoint path to ensure it starts with a slash and doesn't end with one
 		normalizedPath := "/" + strings.Trim(endpointPath, "/")
 		s.endpointPath = normalizedPath
+	}
+}
+
+// The timeouts of the http.Server Start builds, and of a POST body's read,
+// when the options below do not set them. A server given through
+// WithStreamableHTTPServer keeps its own timeouts.
+const (
+	DefaultReadHeaderTimeout  = 10 * time.Second
+	DefaultIdleTimeout        = 2 * time.Minute
+	DefaultRequestBodyTimeout = 30 * time.Second
+)
+
+// WithReadHeaderTimeout sets the http.Server's ReadHeaderTimeout for the
+// server Start builds: how long a client may take to send a request's
+// headers. The default is DefaultReadHeaderTimeout; zero or less leaves
+// net/http's own, which is no timeout.
+func WithReadHeaderTimeout(d time.Duration) StreamableHTTPOption {
+	return func(s *StreamableHTTPServer) {
+		s.readHeaderTimeout = d
+	}
+}
+
+// WithIdleTimeout sets the http.Server's IdleTimeout for the server Start
+// builds: how long a keep-alive connection may sit idle between requests.
+// The default is DefaultIdleTimeout; zero or less leaves net/http's own,
+// which is no timeout.
+func WithIdleTimeout(d time.Duration) StreamableHTTPOption {
+	return func(s *StreamableHTTPServer) {
+		s.idleTimeout = d
+	}
+}
+
+// WithRequestBodyTimeout bounds how long ServeHTTP waits for a POST body to
+// arrive: a body that is still arriving when the time is up is refused with
+// a JSON-RPC parse error, so a client sending one slowly cannot hold the
+// handler and its connection. The deadline is lifted once the body is read,
+// so it never ends a subscriptions/listen stream. An http.Server with a
+// ReadTimeout of its own keeps it: that bounds the body already, and the
+// deadline would replace it. The default is DefaultRequestBodyTimeout,
+// enough for a body at the default size bound over an ordinary link; a
+// server taking large bodies from slow clients raises it. Zero or less
+// removes the bound.
+func WithRequestBodyTimeout(d time.Duration) StreamableHTTPOption {
+	return func(s *StreamableHTTPServer) {
+		s.requestBodyTimeout = d
 	}
 }
 
@@ -233,6 +279,12 @@ type StreamableHTTPServer struct {
 	// maxRequestBodyBytes bounds a POST body read by ServeHTTP; zero or less
 	// is no bound. See WithMaxRequestBodyBytes.
 	maxRequestBodyBytes int64
+	// requestBodyTimeout bounds the wait for a POST body; zero or less is
+	// no bound. See WithRequestBodyTimeout.
+	requestBodyTimeout time.Duration
+	// readHeaderTimeout and idleTimeout go to the http.Server Start builds.
+	readHeaderTimeout time.Duration
+	idleTimeout       time.Duration
 
 	tlsCertFile string
 	tlsKeyFile  string
@@ -271,6 +323,9 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 		endpointPath:        "/mcp",
 		logger:              slog.Default(),
 		maxRequestBodyBytes: DefaultMaxRequestBodyBytes,
+		requestBodyTimeout:  DefaultRequestBodyTimeout,
+		readHeaderTimeout:   DefaultReadHeaderTimeout,
+		idleTimeout:         DefaultIdleTimeout,
 		shutdown:            shutdown,
 		endListens:          endListens,
 	}
@@ -331,6 +386,21 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	var body []byte
 	var bodyErr error
 	if r.Method == http.MethodPost && r.Body != nil {
+		// The bound on a body's size does not bound how long reading it
+		// holds this goroutine and its connection: a body still arriving
+		// when the timeout is up is refused. The deadline is lifted once the
+		// body is read, before anything is written: a listen stream stays
+		// open for as long as the client wants, and net/http's own read,
+		// which tells a closed connection, must not end with it. After a
+		// failed read it stays: net/http drains what is left of a small body
+		// before answering, and that drain would wait for bytes that never
+		// come.
+		var deadline readDeadliner
+		if s.requestBodyTimeout > 0 && !serverHasReadTimeout(r) {
+			if d, ok := readDeadlinerOf(w); ok && d.SetReadDeadline(time.Now().Add(s.requestBodyTimeout)) == nil {
+				deadline = d
+			}
+		}
 		switch limit := s.maxRequestBodyBytes; {
 		case limit <= 0:
 			body, bodyErr = io.ReadAll(r.Body)
@@ -340,6 +410,9 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			bodyErr = errBodyTooLarge
 		default:
 			body, bodyErr = readBounded(r.Body, limit)
+		}
+		if deadline != nil && bodyErr == nil {
+			_ = deadline.SetReadDeadline(time.Time{})
 		}
 	}
 
@@ -361,7 +434,9 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				})
 			return
 		}
-		s.writeJSONRPCError(hw, nil, mcp.PARSE_ERROR, fmt.Sprintf("read request body error: %v", bodyErr))
+		// The cause names addresses and middleware: it stays in the log.
+		s.logger.Debug("request body not read", "err", bodyErr)
+		s.writeJSONRPCError(hw, nil, mcp.PARSE_ERROR, "request body could not be read")
 		return
 	}
 
@@ -377,6 +452,37 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// readDeadliner is the deadline a ResponseWriter puts on reading its
+// request, as net/http's own implement it.
+type readDeadliner interface {
+	SetReadDeadline(time.Time) error
+}
+
+// readDeadlinerOf finds the readDeadliner behind w, through the Unwrap chain
+// http.ResponseController would follow; unlike the controller it allocates
+// nothing, on a writer without deadlines too.
+func readDeadlinerOf(w http.ResponseWriter) (readDeadliner, bool) {
+	for {
+		if d, ok := w.(readDeadliner); ok {
+			return d, true
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil, false
+		}
+		w = u.Unwrap()
+	}
+}
+
+// serverHasReadTimeout reports whether the http.Server serving r bounds the
+// read of the whole request itself. Its ReadTimeout is the deployer's bound
+// on the body: the body deadline neither replaces it with a looser one nor
+// lifts it.
+func serverHasReadTimeout(r *http.Request) bool {
+	srv, ok := r.Context().Value(http.ServerContextKey).(*http.Server)
+	return ok && srv.ReadTimeout > 0
 }
 
 // errBodyTooLarge is the read error of a POST body over the bound.
@@ -424,8 +530,10 @@ func (s *StreamableHTTPServer) Start(addr string) error {
 			mux.Handle(s.protectedResourceMetadataPath, s.protectedResourceMetadataHandler)
 		}
 		s.httpServer = &http.Server{
-			Addr:    addr,
-			Handler: mux,
+			Addr:              addr,
+			Handler:           mux,
+			ReadHeaderTimeout: max(s.readHeaderTimeout, 0),
+			IdleTimeout:       max(s.idleTimeout, 0),
 		}
 	} else {
 		if s.httpServer.Addr == "" {
