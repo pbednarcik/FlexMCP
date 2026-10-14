@@ -108,15 +108,16 @@ func TestOutputSchemaOfKeptKeywordsOnly(t *testing.T) {
 
 // draft-07 dependencies maps property names to schemas: a property named
 // like a keyword is still a schema there, so its refs are rewritten and its
-// annotations checked.
+// annotations checked. (In 2020-12, the default, dependencies is not a
+// keyword.)
 func TestSchemaDependenciesAreSchemas(t *testing.T) {
 	var schema ToolArgumentsSchema
-	require.NoError(t, json.Unmarshal([]byte(`{"type":"object","definitions":{"value":true},"dependencies":{"const":{"$ref":"#/definitions/value"},"list":["a"]}}`), &schema))
+	require.NoError(t, json.Unmarshal([]byte(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","definitions":{"value":true},"dependencies":{"const":{"$ref":"#/definitions/value"},"list":["a"]}}`), &schema))
 	dependencies := schema.AdditionalFields["dependencies"].(map[string]any)
 	assert.Equal(t, "#/$defs/value", dependencies["const"].(map[string]any)["$ref"])
 	assert.Equal(t, []any{"a"}, dependencies["list"])
 
-	tool := NewToolWithRawSchema("t", "", json.RawMessage(`{"type":"object","dependencies":{"const":{"properties":{"x":{"type":"string","x-mcp-header":"X"}}}}}`))
+	tool := NewToolWithRawSchema("t", "", json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","dependencies":{"const":{"properties":{"x":{"type":"string","x-mcp-header":"X"}}}}}`))
 	require.Error(t, ValidateParamHeaderAnnotations(&tool))
 }
 
@@ -164,4 +165,42 @@ func TestGeneratedInputSchemaReplacesKeptKeywords(t *testing.T) {
 			assert.NotContains(t, string(encoded), `"old"`)
 		})
 	}
+}
+
+// Which keywords hold schemas depends on the dialect the schema declares:
+// prefixItems is data in draft-07 and additionalItems is data in 2020-12,
+// the default.
+func TestSchemaKeywordsFollowTheDeclaredDialect(t *testing.T) {
+	const draft07 = `"$schema":"http://json-schema.org/draft-07/schema#",`
+	for _, tt := range []struct {
+		schema  string
+		refused bool
+	}{
+		{`{` + draft07 + `"type":"object","prefixItems":[{"x-mcp-header":"data"}]}`, false},
+		{`{` + draft07 + `"type":"object","additionalItems":{"x-mcp-header":"X"}}`, true},
+		{`{"type":"object","additionalItems":{"x-mcp-header":"data"}}`, false},
+		{`{"type":"object","prefixItems":[{"x-mcp-header":"X"}]}`, true},
+		{`{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"object","additionalItems":{"x-mcp-header":"X"}}`, true},
+	} {
+		tool := NewToolWithRawSchema("t", "", json.RawMessage(tt.schema))
+		err := ValidateParamHeaderAnnotations(&tool)
+		if tt.refused {
+			assert.Error(t, err, tt.schema)
+		} else {
+			assert.NoError(t, err, tt.schema)
+		}
+	}
+	var schema ToolArgumentsSchema
+	require.NoError(t, json.Unmarshal([]byte(`{`+draft07+`"type":"object","definitions":{"v":true},"prefixItems":[{"$ref":"#/definitions/v"}]}`), &schema))
+	assert.Equal(t, "#/definitions/v", schema.AdditionalFields["prefixItems"].([]any)[0].(map[string]any)["$ref"])
+}
+
+// A subschema with its own $id is a resource of its own: its local refs
+// point into it, so adopting the root's definitions does not rewrite them.
+func TestSchemaDraft07RefsStopAtANestedResource(t *testing.T) {
+	var schema ToolArgumentsSchema
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"object","definitions":{"v":false},"allOf":[{"$id":"urn:nested","definitions":{"v":true},"$ref":"#/definitions/v"}]}`), &schema))
+	nested := schema.AdditionalFields["allOf"].([]any)[0].(map[string]any)
+	assert.Equal(t, "#/definitions/v", nested["$ref"])
+	assert.Contains(t, nested, "definitions")
 }

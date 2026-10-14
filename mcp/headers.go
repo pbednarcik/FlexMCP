@@ -372,7 +372,11 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 		return nil
 	}
 	if schema, err := genericSchema(toolInputSchema(tool)); err == nil {
-		if at := misplacedParamHeader(schema, "#", true, false); at != "" {
+		var dialect schemaDialect
+		if root, ok := schema.(map[string]any); ok {
+			dialect = schemaDialectOf(root["$schema"])
+		}
+		if at := misplacedParamHeader(schema, dialect, "#", true, false); at != "" {
 			return fmt.Errorf("x-mcp-header at %s: only a property reached from the root through properties alone may carry it", at)
 		}
 	}
@@ -399,12 +403,12 @@ func genericSchema(schema any) (any, error) {
 }
 
 // misplacedParamHeader returns the location of the first x-mcp-header in
-// schema, at path, that is not on a property reached from the root through
+// schema, of dialect, at path, that is not on a property reached from the root through
 // properties keys alone (not through items, a composition keyword, $defs or
 // any other), or "" when there is none. chain says schema is reached that
 // way, property that it is a property. Only schemas are searched: a keyword
 // whose value holds none (see subschemaKeyword) holds data.
-func misplacedParamHeader(schema any, path string, chain, property bool) string {
+func misplacedParamHeader(schema any, dialect schemaDialect, path string, chain, property bool) string {
 	switch v := schema.(type) {
 	case map[string]any:
 		if _, ok := v["x-mcp-header"]; ok && (!chain || !property) {
@@ -412,11 +416,11 @@ func misplacedParamHeader(schema any, path string, chain, property bool) string 
 		}
 		for _, key := range slices.Sorted(maps.Keys(v)) {
 			child := v[key]
-			switch kind := subschemaKeyword(key); {
+			switch kind := subschemaKeyword(key, dialect); {
 			case key == "properties":
 				if properties, ok := child.(map[string]any); ok {
 					for _, name := range slices.Sorted(maps.Keys(properties)) {
-						if at := misplacedParamHeader(properties[name], path+"/properties/"+name, chain, true); at != "" {
+						if at := misplacedParamHeader(properties[name], dialect, path+"/properties/"+name, chain, true); at != "" {
 							return at
 						}
 					}
@@ -424,20 +428,20 @@ func misplacedParamHeader(schema any, path string, chain, property bool) string 
 			case kind == namedSubschemas:
 				if schemas, ok := child.(map[string]any); ok {
 					for _, name := range slices.Sorted(maps.Keys(schemas)) {
-						if at := misplacedParamHeader(schemas[name], path+"/"+key+"/"+name, false, false); at != "" {
+						if at := misplacedParamHeader(schemas[name], dialect, path+"/"+key+"/"+name, false, false); at != "" {
 							return at
 						}
 					}
 				}
 			case kind == subschemas:
-				if at := misplacedParamHeader(child, path+"/"+key, false, false); at != "" {
+				if at := misplacedParamHeader(child, dialect, path+"/"+key, false, false); at != "" {
 					return at
 				}
 			}
 		}
 	case []any:
 		for i, child := range v {
-			if at := misplacedParamHeader(child, path+"/"+strconv.Itoa(i), false, false); at != "" {
+			if at := misplacedParamHeader(child, dialect, path+"/"+strconv.Itoa(i), false, false); at != "" {
 				return at
 			}
 		}

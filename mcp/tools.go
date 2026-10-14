@@ -1176,10 +1176,13 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 	// carries dangling references that strict validators reject.
 	if tis.Defs == nil && aux.Definitions != nil {
 		tis.Defs = aux.Definitions
-		rewriteDraft07LocalRefsIn(tis.Defs)
-		rewriteDraft07LocalRefsIn(tis.Properties)
-		rewriteDraft07LocalRefs(tis.AdditionalProperties)
-		rewriteDraft07LocalRefs(additionalFields)
+		dialect := schemaDialectOf(additionalFields["$schema"])
+		rewriteDraft07LocalRefsIn(tis.Defs, dialect)
+		rewriteDraft07LocalRefsIn(tis.Properties, dialect)
+		rewriteDraft07LocalRefs(tis.AdditionalProperties, dialect)
+		// The kept keywords are the root's own: its $id does not stop the
+		// rewrite, a nested one does.
+		rewriteDraft07LocalRefsAt(additionalFields, dialect, true)
 	}
 
 	tis.AdditionalFields = additionalFields
@@ -1189,26 +1192,37 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 // rewriteDraft07LocalRefs rewrites local draft-07 "#/definitions/..." $ref
 // pointers to their 2019-09+ "#/$defs/..." equivalent in place, in schema,
 // a schema or an array of schemas, and the schemas inside it. Non-local refs
-// are left untouched, and so is everything that is not a schema: a keyword
-// is followed only when subschemaKeyword names it.
-func rewriteDraft07LocalRefs(schema any) {
+// are left untouched, and so is everything that is not a schema in dialect:
+// a keyword is followed only when subschemaKeyword names it. A subschema
+// with its own $id is a resource of its own, whose local refs point into
+// it, so the rewrite stops there.
+func rewriteDraft07LocalRefs(schema any, dialect schemaDialect) {
+	rewriteDraft07LocalRefsAt(schema, dialect, false)
+}
+
+// rewriteDraft07LocalRefsAt is rewriteDraft07LocalRefs; root says schema is
+// the root resource, whose own $id does not stop the rewrite.
+func rewriteDraft07LocalRefsAt(schema any, dialect schemaDialect, root bool) {
 	const draft07Prefix = "#/definitions/"
 	switch v := schema.(type) {
 	case map[string]any:
+		if _, ok := v["$id"]; ok && !root {
+			return
+		}
 		if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, draft07Prefix) {
 			v["$ref"] = "#/$defs/" + ref[len(draft07Prefix):]
 		}
 		for key, child := range v {
-			switch subschemaKeyword(key) {
+			switch subschemaKeyword(key, dialect) {
 			case subschemas:
-				rewriteDraft07LocalRefs(child)
+				rewriteDraft07LocalRefs(child, dialect)
 			case namedSubschemas:
-				rewriteDraft07LocalRefsIn(child)
+				rewriteDraft07LocalRefsIn(child, dialect)
 			}
 		}
 	case []any:
 		for _, child := range v {
-			rewriteDraft07LocalRefs(child)
+			rewriteDraft07LocalRefs(child, dialect)
 		}
 	}
 }
@@ -1216,12 +1230,37 @@ func rewriteDraft07LocalRefs(schema any) {
 // rewriteDraft07LocalRefsIn is rewriteDraft07LocalRefs for each schema of a
 // map from names to schemas, such as properties or $defs, whose keys are
 // names and not keywords.
-func rewriteDraft07LocalRefsIn(named any) {
+func rewriteDraft07LocalRefsIn(named any, dialect schemaDialect) {
 	if schemas, ok := named.(map[string]any); ok {
 		for _, schema := range schemas {
-			rewriteDraft07LocalRefs(schema)
+			rewriteDraft07LocalRefs(schema, dialect)
 		}
 	}
+}
+
+// schemaDialect is the JSON Schema dialect a schema declares.
+type schemaDialect int
+
+const (
+	// dialect2020 is 2020-12, the dialect of a schema that declares none.
+	dialect2020 schemaDialect = iota
+	dialect2019
+	// dialectDraft07 covers drafts 4, 6 and 7, whose applicators match.
+	dialectDraft07
+)
+
+// schemaDialectOf returns the dialect a root $schema value declares. A
+// schema without $schema is 2020-12, and so is one naming a dialect this
+// package does not know, which validation refuses on its own.
+func schemaDialectOf(schemaURI any) schemaDialect {
+	uri, _ := schemaURI.(string)
+	switch {
+	case strings.Contains(uri, "draft-07"), strings.Contains(uri, "draft-06"), strings.Contains(uri, "draft-04"):
+		return dialectDraft07
+	case strings.Contains(uri, "2019-09"):
+		return dialect2019
+	}
+	return dialect2020
 }
 
 // subschemaKind says what the value of a JSON Schema keyword holds.
@@ -1238,16 +1277,39 @@ const (
 	namedSubschemas
 )
 
-// subschemaKeyword returns what the value of key holds, by the applicator
-// keywords of draft-07 and 2020-12.
-func subschemaKeyword(key string) subschemaKind {
+// subschemaKeyword returns what the value of key holds in dialect, by that
+// dialect's applicator keywords. A keyword another dialect defines is data
+// here.
+func subschemaKeyword(key string, dialect schemaDialect) subschemaKind {
 	switch key {
-	case "items", "additionalItems", "prefixItems", "contains",
-		"additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties",
-		"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "contentSchema":
+	case "contains", "additionalProperties", "propertyNames",
+		"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "items":
 		return subschemas
-	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies":
+	case "properties", "patternProperties":
 		return namedSubschemas
+	}
+	switch dialect {
+	case dialectDraft07:
+		switch key {
+		case "additionalItems":
+			return subschemas
+		case "definitions", "dependencies":
+			return namedSubschemas
+		}
+	case dialect2019:
+		switch key {
+		case "additionalItems", "unevaluatedItems", "unevaluatedProperties", "contentSchema":
+			return subschemas
+		case "$defs", "dependentSchemas":
+			return namedSubschemas
+		}
+	default:
+		switch key {
+		case "prefixItems", "unevaluatedItems", "unevaluatedProperties", "contentSchema":
+			return subschemas
+		case "$defs", "dependentSchemas":
+			return namedSubschemas
+		}
 	}
 	return noSubschema
 }
