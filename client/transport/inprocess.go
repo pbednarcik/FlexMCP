@@ -21,6 +21,8 @@ type InProcessTransport struct {
 	onNotification func(mcp.JSONRPCNotification)
 	notifyMu       sync.RWMutex
 	started        bool
+	starting       bool
+	startDone      chan struct{}
 	closed         bool
 	startedMu      sync.Mutex
 
@@ -38,42 +40,65 @@ func NewInProcessTransport(server *server.MCPServer) *InProcessTransport {
 }
 
 func (c *InProcessTransport) Start(ctx context.Context) error {
-	c.startedMu.Lock()
-	if c.closed {
+	for {
+		c.startedMu.Lock()
+		if c.closed {
+			c.startedMu.Unlock()
+			return ErrTransportClosed
+		}
+		if c.started {
+			c.startedMu.Unlock()
+			return nil
+		}
+		if c.starting {
+			done := c.startDone
+			c.startedMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		c.starting = true
+		c.startDone = make(chan struct{})
 		c.startedMu.Unlock()
-		return ErrTransportClosed
-	}
-	if c.started {
+
+		// Always create and register a session so server-to-client
+		// notifications (progress, list-changed, resource updates, etc.) have
+		// somewhere to land.
+		//
+		// RegisterSession runs the OnRegisterSession hooks synchronously, and a
+		// hook may close this transport, so it runs outside startedMu. Close
+		// only unregisters a session it can see, and the session is published
+		// only after registration, so a Close that lands during registration
+		// is caught by the recheck below and this call unregisters the session
+		// itself. Concurrent Start calls wait on startDone for this attempt.
+		session := server.NewInProcessSession(c.sessionID)
+		err := c.server.RegisterSession(ctx, session)
+
+		c.startedMu.Lock()
+		closed := c.closed
+		if err == nil && !closed {
+			c.session = session
+			c.started = true
+		}
+		c.starting = false
+		close(c.startDone)
 		c.startedMu.Unlock()
+
+		if err != nil {
+			return fmt.Errorf("failed to register session: %w", err)
+		}
+		if closed {
+			c.server.UnregisterSession(context.Background(), c.sessionID)
+			return ErrTransportClosed
+		}
+
+		go c.forwardNotifications()
+
 		return nil
 	}
-
-	// Always create and register a session so server-to-client notifications
-	// (progress, list-changed, resource updates, etc.) have somewhere to land.
-	//
-	// Registration and the c.session/c.started assignments all happen under a
-	// single startedMu hold so that Start and Close are mutually exclusive:
-	// a concurrent Close either runs entirely before this section (observed
-	// via c.closed above, so Start bails out before registering anything) or
-	// entirely after (Close will see c.started and c.session set, and will
-	// unregister the session). There is no window where a session is
-	// registered but Close skips unregistering it. RegisterSession does a
-	// sync.Map store plus runs synchronous OnRegisterSession hooks; neither
-	// re-enters this transport's lock (safe from deadlock); slow user hooks
-	// only extend the lock hold.
-	session := server.NewInProcessSession(c.sessionID)
-	if err := c.server.RegisterSession(ctx, session); err != nil {
-		c.startedMu.Unlock()
-		return fmt.Errorf("failed to register session: %w", err)
-	}
-
-	c.session = session
-	c.started = true
-	c.startedMu.Unlock()
-
-	go c.forwardNotifications()
-
-	return nil
 }
 
 // forwardNotifications drains the session's notification channel and
