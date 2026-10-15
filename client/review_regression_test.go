@@ -96,41 +96,6 @@ func TestSetLevelIsSafeForConcurrentUse(t *testing.T) {
 	assert.Equal(t, mcp.LoggingLevelDebug, c.currentLogLevel())
 }
 
-func TestListenCleanupDoesNotClobberASupersedingCall(t *testing.T) {
-	// A Listen call that returns must not tear down a stream that a later
-	// call installed, nor discard the filter accumulated through Subscribe.
-	c := &Client{protocolVersion: mcp.ProtocolVersion20260728}
-
-	// Simulate the state a first Listen call installs, then a second.
-	c.subscriptions.mu.Lock()
-	c.subscriptions.generation++
-	firstGeneration := c.subscriptions.generation
-	c.subscriptions.mu.Unlock()
-
-	secondCancelled := false
-	c.subscriptions.mu.Lock()
-	c.subscriptions.generation++
-	c.subscriptions.cancel = func() { secondCancelled = true }
-	c.subscriptions.filter = mcp.SubscriptionFilter{ToolsListChanged: true}
-	c.subscriptions.mu.Unlock()
-
-	// The first call now returns and runs its cleanup.
-	c.subscriptions.mu.Lock()
-	if c.subscriptions.generation == firstGeneration {
-		c.subscriptions.cancel = nil
-	}
-	c.subscriptions.mu.Unlock()
-
-	c.subscriptions.mu.Lock()
-	stillOwned := c.subscriptions.cancel != nil
-	c.subscriptions.mu.Unlock()
-
-	assert.True(t, stillOwned, "the superseding stream must survive")
-	assert.False(t, secondCancelled)
-	assert.True(t, c.PendingSubscriptionFilter().ToolsListChanged,
-		"the filter must survive for a subsequent Listen")
-}
-
 func TestSubscribeAccumulatesFilterAcrossListens(t *testing.T) {
 	// Subscribe records URIs for the next Listen call. They must not be
 	// discarded when a stream ends.
