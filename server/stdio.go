@@ -342,6 +342,13 @@ func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Read
 		case line := <-lines:
 			if line.err != nil {
 				if line.err == io.EOF {
+					// A last line without a newline is served before the
+					// end of input ends the loop.
+					if line.text != "" {
+						if err := s.processMessage(ctx, line.text, stdout); err != nil {
+							return err
+						}
+					}
 					return nil
 				}
 				s.errLogger.Printf("Error reading input: %v", line.err)
