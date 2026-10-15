@@ -15,7 +15,8 @@ type HTTPHeaderFunc func(context.Context) map[string]string
 
 // Interface for the transport layer.
 type Interface interface {
-	// Start the connection. Start should only be called once.
+	// Start the connection. The client calls it once; the stdio, SSE and
+	// in-process transports ignore a second call on a started transport.
 	Start(ctx context.Context) error
 
 	// SendRequest sends a json RPC request and returns the response synchronously.

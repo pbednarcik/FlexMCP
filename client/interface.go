@@ -7,6 +7,9 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// Client satisfies MCPClient.
+var _ MCPClient = (*Client)(nil)
+
 // MCPClient represents an MCP client interface
 type MCPClient interface {
 	// Initialize sends the initial connection request to the server

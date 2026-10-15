@@ -145,6 +145,8 @@ func WithHTTPHost(host string) ClientOption {
 
 // NewSSE creates a new SSE-based MCP client with the given base URL.
 // Returns an error if the URL is invalid.
+//
+// The HTTP+SSE transport is Deprecated: new code uses NewStreamableHTTP.
 func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil {
