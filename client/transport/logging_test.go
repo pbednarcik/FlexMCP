@@ -145,7 +145,7 @@ func TestLoggingTransport_BasicInterface(t *testing.T) {
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
 
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 
 	// Should not satisfy optional interfaces.
 	_, isBidir := transport.(BidirectionalInterface)
@@ -204,7 +204,7 @@ func TestLoggingTransport_LogsRequestErrors(t *testing.T) {
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
 
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 	_, err := transport.SendRequest(t.Context(), JSONRPCRequest{
 		JSONRPC: mcp.JSONRPC_VERSION,
 		ID:      mcp.NewRequestId(int64(7)),
@@ -233,7 +233,7 @@ func TestLoggingTransport_LogsJSONRPCError(t *testing.T) {
 	}
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 
 	resp, err := transport.SendRequest(t.Context(), JSONRPCRequest{
 		JSONRPC: mcp.JSONRPC_VERSION,
@@ -256,7 +256,7 @@ func TestLoggingTransport_LogsIncomingNotifications(t *testing.T) {
 	inner := &fakeTransport{}
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 
 	var received mcp.JSONRPCNotification
 	called := make(chan struct{})
@@ -286,7 +286,7 @@ func TestLoggingTransport_NotificationDeliveredWithoutHandler(t *testing.T) {
 	inner := &fakeTransport{}
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 	// Sanity: still wraps even if no user handler.
 	require.NotNil(t, transport)
 	require.NotNil(t, inner.notifyHandler)
@@ -306,7 +306,7 @@ func TestLoggingTransport_BidirectionalPassThrough(t *testing.T) {
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
 
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 	bidir, ok := transport.(BidirectionalInterface)
 	require.True(t, ok, "wrapper around BidirectionalInterface must implement it")
 
@@ -339,7 +339,7 @@ func TestLoggingTransport_BidirectionalHandlerError(t *testing.T) {
 	inner := &fakeBidirTransport{}
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
-	transport := NewLogging(inner, logger).(BidirectionalInterface)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true)).(BidirectionalInterface)
 
 	transport.SetRequestHandler(func(_ context.Context, _ JSONRPCRequest) (*JSONRPCResponse, error) {
 		return nil, fmt.Errorf("nope")
@@ -366,7 +366,7 @@ func TestLoggingTransport_HTTPPassThrough(t *testing.T) {
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
 
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 	httpConn, ok := transport.(HTTPConnection)
 	require.True(t, ok, "wrapper around HTTPConnection must implement it")
 
@@ -383,7 +383,7 @@ func TestLoggingTransport_BidirectionalAndHTTP(t *testing.T) {
 	handler := newCaptureHandler()
 	logger := slog.New(handler)
 
-	transport := NewLogging(inner, logger)
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true))
 	httpConn, ok := transport.(HTTPConnection)
 	require.True(t, ok)
 	bidir, ok := transport.(BidirectionalInterface)
@@ -400,7 +400,7 @@ func TestLoggingTransport_BidirectionalAndHTTP(t *testing.T) {
 
 func TestLoggingTransport_NilLoggerUsesDefault(t *testing.T) {
 	inner := &fakeTransport{requestResp: &JSONRPCResponse{JSONRPC: mcp.JSONRPC_VERSION, ID: mcp.NewRequestId(int64(1))}}
-	transport := NewLogging(inner, nil)
+	transport := NewLogging(inner, nil, WithLoggingPayloads(true))
 
 	_, err := transport.SendRequest(t.Context(), JSONRPCRequest{
 		JSONRPC: mcp.JSONRPC_VERSION,
@@ -415,7 +415,7 @@ func TestLoggingTransport_LevelOption(t *testing.T) {
 	handler := newCaptureHandler()
 	handler.level = slog.LevelInfo
 	logger := slog.New(handler)
-	transport := NewLogging(inner, logger, WithLoggingLevel(slog.LevelInfo))
+	transport := NewLogging(inner, logger, WithLoggingLevel(slog.LevelInfo), WithLoggingPayloads(true))
 
 	_, err := transport.SendRequest(t.Context(), JSONRPCRequest{
 		JSONRPC: mcp.JSONRPC_VERSION,
@@ -538,7 +538,7 @@ func TestLoggingTransport_LevelFilteredEarly(t *testing.T) {
 	handler := newCaptureHandler()
 	handler.level = slog.LevelWarn
 	logger := slog.New(handler)
-	transport := NewLogging(inner, logger) // default debug level
+	transport := NewLogging(inner, logger, WithLoggingPayloads(true)) // default debug level
 
 	_, err := transport.SendRequest(t.Context(), JSONRPCRequest{
 		JSONRPC: mcp.JSONRPC_VERSION,

@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -27,10 +28,12 @@ func WithLoggingLevel(level slog.Level) LoggingOption {
 }
 
 // WithLoggingPayloads controls whether full JSON-RPC payloads (params,
-// result and JSON-RPC error code/message) are included in the structured
-// log records. When disabled, only message metadata (direction, method,
-// id, duration and the bare "← response error" / "→ response error"
-// marker for failed calls) is logged. The default is true.
+// result, JSON-RPC error code/message and a transport error's text, which
+// carries an HTTP response body) are included in the structured log records.
+// When disabled, only message metadata (direction, method, id, duration and
+// the bare "← response error" / "→ response error" marker for failed
+// calls) is logged. The default is false: tool arguments and results, and
+// the user's answers to a server's requests, reach a log only on request.
 func WithLoggingPayloads(enabled bool) LoggingOption {
 	return func(c *loggingConfig) {
 		c.payloads = enabled
@@ -41,7 +44,9 @@ func WithLoggingPayloads(enabled bool) LoggingOption {
 // message that flows through it using a slog.Logger. It is a transparent
 // decorator: NewLogging returns a wrapper whose interface set mirrors the
 // inner transport, so type assertions against BidirectionalInterface or
-// HTTPConnection continue to behave as expected.
+// HTTPConnection continue to behave as expected, and the optional methods the
+// client looks for (RequiresLegacyProtocol, SetConnectionLostHandler, Stderr)
+// reach the inner transport when it has them.
 type LoggingTransport struct {
 	inner  Interface
 	logger *slog.Logger
@@ -87,7 +92,7 @@ func NewLogging(inner Interface, logger *slog.Logger, opts ...LoggingOption) Int
 }
 
 func newLoggingTransport(inner Interface, logger *slog.Logger, opts ...LoggingOption) *LoggingTransport {
-	cfg := loggingConfig{level: slog.LevelDebug, payloads: true}
+	cfg := loggingConfig{level: slog.LevelDebug}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -115,6 +120,9 @@ func (l *LoggingTransport) Start(ctx context.Context) error {
 // SendRequest forwards the request to the wrapped transport while logging
 // both the outgoing request and the incoming response (or error).
 func (l *LoggingTransport) SendRequest(ctx context.Context, request JSONRPCRequest) (*JSONRPCResponse, error) {
+	if !l.enabled(ctx) {
+		return l.inner.SendRequest(ctx, request)
+	}
 	attrs := []slog.Attr{
 		slog.String("method", request.Method),
 		slog.Any("id", request.ID),
@@ -134,7 +142,9 @@ func (l *LoggingTransport) SendRequest(ctx context.Context, request JSONRPCReque
 		slog.Duration("duration", duration),
 	}
 	if err != nil {
-		respAttrs = append(respAttrs, slog.String("error", err.Error()))
+		if l.logRaw {
+			respAttrs = append(respAttrs, slog.String("error", err.Error()))
+		}
 		l.log(ctx, "← response error", respAttrs...)
 		return nil, err
 	}
@@ -158,6 +168,9 @@ func (l *LoggingTransport) SendRequest(ctx context.Context, request JSONRPCReque
 // SendNotification forwards a notification to the wrapped transport and logs
 // the outgoing message.
 func (l *LoggingTransport) SendNotification(ctx context.Context, notification mcp.JSONRPCNotification) error {
+	if !l.enabled(ctx) {
+		return l.inner.SendNotification(ctx, notification)
+	}
 	attrs := []slog.Attr{slog.String("method", notification.Method)}
 	if l.logRaw {
 		if data, err := json.Marshal(notification.Params); err == nil && len(data) > 0 && string(data) != "null" {
@@ -167,10 +180,11 @@ func (l *LoggingTransport) SendNotification(ctx context.Context, notification mc
 	l.log(ctx, "→ notification", attrs...)
 
 	if err := l.inner.SendNotification(ctx, notification); err != nil {
-		l.log(ctx, "→ notification error",
-			slog.String("method", notification.Method),
-			slog.String("error", err.Error()),
-		)
+		errAttrs := []slog.Attr{slog.String("method", notification.Method)}
+		if l.logRaw {
+			errAttrs = append(errAttrs, slog.String("error", err.Error()))
+		}
+		l.log(ctx, "→ notification error", errAttrs...)
 		return err
 	}
 	return nil
@@ -195,7 +209,35 @@ func (l *LoggingTransport) GetSessionId() string {
 	return l.inner.GetSessionId()
 }
 
+// RequiresLegacyProtocol reports the wrapped transport's answer, or false
+// when it has none to give.
+func (l *LoggingTransport) RequiresLegacyProtocol() bool {
+	legacy, ok := l.inner.(interface{ RequiresLegacyProtocol() bool })
+	return ok && legacy.RequiresLegacyProtocol()
+}
+
+// SetConnectionLostHandler hands the handler to the wrapped transport when
+// it takes one.
+func (l *LoggingTransport) SetConnectionLostHandler(handler func(error)) {
+	if setter, ok := l.inner.(interface{ SetConnectionLostHandler(func(error)) }); ok {
+		setter.SetConnectionLostHandler(handler)
+	}
+}
+
+// Stderr returns the wrapped transport's stderr reader, or nil when it has
+// none.
+func (l *LoggingTransport) Stderr() io.Reader {
+	if stderrer, ok := l.inner.(interface{ Stderr() io.Reader }); ok {
+		return stderrer.Stderr()
+	}
+	return nil
+}
+
 func (l *LoggingTransport) handleNotification(notification mcp.JSONRPCNotification) {
+	if !l.enabled(context.Background()) {
+		l.forwardNotification(notification)
+		return
+	}
 	attrs := []slog.Attr{slog.String("method", notification.Method)}
 	if l.logRaw {
 		if data, err := json.Marshal(notification.Params); err == nil && len(data) > 0 && string(data) != "null" {
@@ -203,13 +245,22 @@ func (l *LoggingTransport) handleNotification(notification mcp.JSONRPCNotificati
 		}
 	}
 	l.log(context.Background(), "← notification", attrs...)
+	l.forwardNotification(notification)
+}
 
+func (l *LoggingTransport) forwardNotification(notification mcp.JSONRPCNotification) {
 	l.notifyMu.RLock()
 	h := l.onNotification
 	l.notifyMu.RUnlock()
 	if h != nil {
 		h(notification)
 	}
+}
+
+// enabled reports whether the logger would write a record at the
+// transport's level: when it would not, no record is prepared.
+func (l *LoggingTransport) enabled(ctx context.Context) bool {
+	return l.logger.Enabled(ctx, l.level)
 }
 
 func (l *LoggingTransport) log(ctx context.Context, msg string, attrs ...slog.Attr) {
@@ -235,6 +286,9 @@ func (l *loggingBidirTransport) SetRequestHandler(handler RequestHandler) {
 		return
 	}
 	wrapped := func(ctx context.Context, req JSONRPCRequest) (*JSONRPCResponse, error) {
+		if !l.enabled(ctx) {
+			return handler(ctx, req)
+		}
 		attrs := []slog.Attr{
 			slog.String("method", req.Method),
 			slog.Any("id", req.ID),
@@ -254,7 +308,9 @@ func (l *loggingBidirTransport) SetRequestHandler(handler RequestHandler) {
 			slog.Duration("duration", duration),
 		}
 		if err != nil {
-			respAttrs = append(respAttrs, slog.String("error", err.Error()))
+			if l.logRaw {
+				respAttrs = append(respAttrs, slog.String("error", err.Error()))
+			}
 			l.log(ctx, "→ response error", respAttrs...)
 			return nil, err
 		}
