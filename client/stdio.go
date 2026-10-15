@@ -12,8 +12,9 @@ import (
 // It launches the specified command with given arguments and sets up stdin/stdout pipes for communication.
 // Returns an error if the subprocess cannot be started or the pipes cannot be created.
 //
-// NOTICE: NewStdioMCPClient will start the connection automatically.
-// This is for backward compatibility.
+// NOTICE: NewStdioMCPClient starts the client, so the returned client is
+// ready to Initialize and receives the server's notifications. This is for
+// backward compatibility.
 func NewStdioMCPClient(
 	command string,
 	env []string,
@@ -27,7 +28,8 @@ func NewStdioMCPClient(
 // Optional configuration functions can be provided to customize the transport before it starts,
 // such as setting a custom command function.
 //
-// NOTICE: NewStdioMCPClientWithOptions automatically starts the underlying transport.
+// NOTICE: NewStdioMCPClientWithOptions starts the client, so the returned
+// client is ready to Initialize and receives the server's notifications.
 // This is for backward compatibility.
 func NewStdioMCPClientWithOptions(
 	command string,
@@ -37,11 +39,15 @@ func NewStdioMCPClientWithOptions(
 ) (*Client, error) {
 	stdioTransport := transport.NewStdioWithOptions(command, env, args, opts...)
 
-	if err := stdioTransport.Start(context.Background()); err != nil {
+	// The client, not the transport alone, is started: Start also installs
+	// the notification and request handlers, without which nothing the
+	// server sends reaches the handlers registered with OnNotification.
+	c := NewClient(stdioTransport)
+	if err := c.Start(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to start stdio transport: %w", err)
 	}
 
-	return NewClient(stdioTransport), nil
+	return c, nil
 }
 
 // GetStderr returns a reader for the stderr output of the subprocess.
