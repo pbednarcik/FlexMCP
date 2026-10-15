@@ -108,8 +108,12 @@ func (c *Client) ListenAsync(
 	done := make(chan struct{})
 
 	go func() {
-		defer close(done)
-		if err := c.Listen(ctx, filter); err != nil && ctx.Err() == nil && onError != nil {
+		err := c.Listen(ctx, filter)
+		// The stream has stopped before its error is reported: done is closed
+		// first, so the error handler may call the returned stop (upstream
+		// #1070). stop does not wait for a running onError.
+		close(done)
+		if err != nil && ctx.Err() == nil && onError != nil {
 			onError(err)
 		}
 	}()
