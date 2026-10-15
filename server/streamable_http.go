@@ -874,8 +874,7 @@ drainLoop:
 				if err := writeSSEEvent(w, nt); err != nil {
 					return err
 				}
-				w.Flush()
-				return nil
+				return flush(w)
 			})
 		default:
 			break drainLoop
@@ -899,8 +898,7 @@ drainLoop:
 			if err := writeSSEEvent(w, response); err != nil {
 				return err
 			}
-			w.Flush()
-			return nil
+			return flush(w)
 		})
 	} else {
 		w.Header().Set("Content-Type", "application/json")
@@ -1016,8 +1014,7 @@ func (x *postExchange) write(nt mcp.JSONRPCNotification) {
 		if err := writeSSEEvent(x.w, nt); err != nil {
 			return err
 		}
-		x.w.Flush()
-		return nil
+		return flush(x.w)
 	})
 }
 
@@ -1033,8 +1030,7 @@ func (x *postExchange) comment() {
 		if _, err := io.WriteString(x.w, ": keep-alive\n\n"); err != nil {
 			return err
 		}
-		x.w.Flush()
-		return nil
+		return flush(x.w)
 	})
 }
 
@@ -1044,10 +1040,23 @@ type writeDeadliner interface {
 	SetWriteDeadline(time.Time) error
 }
 
-// deliver runs write, one write to the response, under the write deadline:
-// a client that stops reading cannot hold the request. A write that fails
-// marks the exchange dead: the client is gone, nothing more is written for
-// the request, and whoever waits on a write moves on. mu is held.
+// flush forwards w's buffered bytes to the client, and reports a flush that
+// failed when w can tell: an SSE event smaller than net/http's buffer reaches
+// the socket only in the flush, so a client that stopped reading, the write
+// deadline passing, is seen there.
+func flush(w HTTPResponseWriter) error {
+	if f, ok := w.(interface{ FlushError() error }); ok {
+		return f.FlushError()
+	}
+	w.Flush()
+	return nil
+}
+
+// deliver runs write, one write to the response and its flush, under the
+// write deadline: a client that stops reading cannot hold the request. A
+// write that fails marks the exchange dead: the client is gone, nothing more
+// is written for the request, and whoever waits on a write moves on. mu is
+// held.
 func (x *postExchange) deliver(write func() error) {
 	if x.dead {
 		return

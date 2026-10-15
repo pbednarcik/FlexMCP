@@ -104,7 +104,9 @@ type HTTPResponseWriter interface {
 	Write(p []byte) (int, error)
 	// Flush forwards any buffered bytes to the client. Implementations whose
 	// underlying transport cannot stream may make this a no-op, but in that
-	// case CanStream MUST return false.
+	// case CanStream MUST return false. An implementation that can tell a
+	// flush failed may also provide FlushError() error, as net/http's writer
+	// does; the server prefers it, and ends the request's output on failure.
 	Flush()
 	// CanStream reports whether Flush actually delivers bytes to the client
 	// immediately. When false, the server will not upgrade POST responses to
@@ -134,6 +136,29 @@ func (a *httpResponseWriterAdapter) Write(p []byte) (int, error) { return a.w.Wr
 func (a *httpResponseWriterAdapter) Flush() {
 	if a.flusher != nil {
 		a.flusher.Flush()
+	}
+}
+
+// FlushError flushes as Flush does and reports a flush that failed, which
+// net/http's writer does for a write deadline that passed with the bytes
+// still buffered. It flushes the outermost writer that can, as
+// http.ResponseController does: at each layer FlushError, then Flush, then
+// the layer beneath, so a buffering wrapper's own Flush is not stepped
+// over; through a writer that cannot tell, it reports nothing.
+func (a *httpResponseWriterAdapter) FlushError() error {
+	w := a.w
+	for {
+		switch t := w.(type) {
+		case interface{ FlushError() error }:
+			return t.FlushError()
+		case http.Flusher:
+			t.Flush()
+			return nil
+		case interface{ Unwrap() http.ResponseWriter }:
+			w = t.Unwrap()
+		default:
+			return nil
+		}
 	}
 }
 
