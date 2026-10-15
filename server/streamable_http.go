@@ -237,6 +237,12 @@ func WithStreamableHTTPCORS(opts ...CORSOption) StreamableHTTPOption {
 // from the server names them. A host is compared without its port,
 // case-insensitively and without a trailing dot; an IP literal as an
 // address. See WithDisableLocalhostProtection.
+//
+// On a public address Origin is left to the CORS allow list, when one is
+// configured: only a browser can be rebound, a browser's cross-origin POST
+// is already stopped by the content type the server requires and by the
+// absent preflight answer, and an allow list there would turn away every
+// unlisted browser client.
 func WithAllowedHosts(hosts ...string) StreamableHTTPOption {
 	return func(s *StreamableHTTPServer) {
 		s.allowedHosts = append(s.allowedHosts, hosts...)

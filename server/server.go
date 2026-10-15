@@ -1138,7 +1138,9 @@ func (s *MCPServer) implicitlyRegisterCapabilities(check func() bool, register f
 	s.capabilitiesMu.Unlock()
 }
 
-// AddTools registers multiple tools at once
+// AddTools registers multiple tools at once. The batch is checked, and its
+// schemas compiled, under the tools lock, so a rejected entry leaves the
+// registry untouched; the cost falls on registration alone.
 func (s *MCPServer) AddTools(tools ...ServerTool) {
 	s.implicitlyRegisterToolCapabilities()
 

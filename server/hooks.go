@@ -68,8 +68,10 @@ type OnSuccessHookFunc func(ctx context.Context, id any, method mcp.MCPMethod, m
 //	})
 type OnErrorHookFunc func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error)
 
-// OnRequestInitializationFunc is a function that called before handle diff request method
-// Should any errors arise during func execution, the service will promptly return the corresponding error message.
+// OnRequestInitializationFunc is called before a request is dispatched to
+// its handler; an error it returns is answered to the client as an invalid
+// request. Notifications are not passed through it: they carry no id and
+// have no error path, and what one may touch is bounded by its session.
 type OnRequestInitializationFunc func(ctx context.Context, id any, message any) error
 
 type OnBeforeInitializeFunc func(ctx context.Context, id any, message *mcp.InitializeRequest)
@@ -156,7 +158,8 @@ type OnAfterCompleteFunc func(ctx context.Context, id any, message *mcp.Complete
 // Hooks fire synchronously in the request goroutine, in the order they were
 // registered with the corresponding Add* method. A long-running hook will
 // delay the response to the client; offload heavy work to a separate
-// goroutine if needed.
+// goroutine if needed. Register hooks before serving: the Add* methods and
+// the dispatch share the lists without a lock.
 type Hooks struct {
 	OnRegisterSession             []OnRegisterSessionHookFunc
 	OnUnregisterSession           []OnUnregisterSessionHookFunc
