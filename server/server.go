@@ -2246,7 +2246,8 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	// The arguments are validated as on the synchronous path (Tools.md row
 	// 23): ones that fail never reach the handler. The task is still
 	// created, so the client fetches the same tool error through
-	// tasks/result.
+	// tasks/result; it takes no concurrency slot, since no handler runs for
+	// it, so the limit does not hide the validation error.
 	var invalid error
 	if s.inputValidator != nil {
 		toolDef := regularTool.Tool
@@ -2268,7 +2269,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	}
 
 	// Create task entry (pollInterval is nil - server doesn't set a default)
-	entry, err := s.createTask(ctx, taskID, request.Params.Name, ttl, nil)
+	entry, err := s.newTask(ctx, taskID, request.Params.Name, ttl, nil, invalid == nil)
 	if err != nil {
 		return nil, &requestError{
 			id:   id,
@@ -2278,11 +2279,9 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	}
 
 	if invalid != nil {
-		// No handler runs for this task, so nothing else gives its slot back;
-		// a hook may have cancelled it meanwhile, which completeTask leaves
-		// as it is, and the slot is given back all the same.
+		// No handler runs for this task: it is completed here. A hook may
+		// have cancelled it meanwhile, which completeTask leaves as it is.
 		s.completeTask(entry, validationToolResult(invalid), nil)
-		s.releaseTaskSlot(entry)
 		s.tasksMu.RLock()
 		taskCopy := entry.task
 		s.tasksMu.RUnlock()
@@ -2962,6 +2961,12 @@ func (s *MCPServer) handleComplete(
 // createTask creates a new task entry and returns it.
 // Returns an error if the max concurrent tasks limit is exceeded.
 func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName string, ttl *int64, pollInterval *int64) (*taskEntry, error) {
+	return s.newTask(ctx, taskID, toolName, ttl, pollInterval, true)
+}
+
+// newTask is createTask, with or without a concurrency slot: a task that
+// runs no handler takes none, and is not refused for the limit.
+func (s *MCPServer) newTask(ctx context.Context, taskID string, toolName string, ttl *int64, pollInterval *int64, withSlot bool) (*taskEntry, error) {
 	ttl = s.taskTTLFor(ttl)
 
 	// Build task entry first (no lock needed)
@@ -2986,16 +2991,21 @@ func (s *MCPServer) createTask(ctx context.Context, taskID string, toolName stri
 	// Single critical section for check + increment + insert
 	s.tasksMu.Lock()
 
-	// Check concurrent task limit
-	if s.maxConcurrentTasks != nil && *s.maxConcurrentTasks > 0 {
-		if s.activeTasks >= *s.maxConcurrentTasks {
-			s.tasksMu.Unlock()
-			return nil, fmt.Errorf("max concurrent tasks limit reached (%d)", *s.maxConcurrentTasks)
+	if withSlot {
+		// Check concurrent task limit
+		if s.maxConcurrentTasks != nil && *s.maxConcurrentTasks > 0 {
+			if s.activeTasks >= *s.maxConcurrentTasks {
+				s.tasksMu.Unlock()
+				return nil, fmt.Errorf("max concurrent tasks limit reached (%d)", *s.maxConcurrentTasks)
+			}
 		}
+		s.activeTasks++
+	} else {
+		// Nothing to give back.
+		entry.slotReleased = true
 	}
 
-	// Increment active task counter and insert task atomically
-	s.activeTasks++
+	// Insert the task atomically with the count
 	s.tasks[taskID] = entry
 	// With no hooks there is nothing to wait for.
 	entry.createdHookDone = s.taskHooks == nil
