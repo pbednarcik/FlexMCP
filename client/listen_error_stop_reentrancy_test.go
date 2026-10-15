@@ -28,7 +28,7 @@ func (*failedListenTransport) SendRequest(context.Context, transport.JSONRPCRequ
 func TestListenAsyncErrorHandlerCanStopListener(t *testing.T) {
 	c := NewClient(&failedListenTransport{})
 	c.initialized.Store(true)
-	c.protocolVersion = mcp.ProtocolVersion20260728
+	c.updateEra(func(e *era) { e.version = mcp.ProtocolVersion20260728 })
 	ready := make(chan struct{})
 	observed := make(chan struct{})
 	var stop func()

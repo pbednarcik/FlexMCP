@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -588,22 +589,22 @@ func (c *SSE) SendRequest(
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set headers
+	// The request's own headers go first, so the version of its era is the
+	// one sent; the transport fills in what the request leaves out, and its
+	// static headers are set over them, as on Streamable HTTP.
+	maps.Copy(req.Header, request.Header)
 	req.Header.Set("Content-Type", "application/json")
-	// Set protocol version header if negotiated
-	if v := c.protocolVersion.Load(); v != nil {
-		if version, ok := v.(string); ok && version != "" {
-			req.Header.Set(HeaderKeyProtocolVersion, version)
+	// The negotiated version fills in the header on a request without one;
+	// a request that carries its era's version keeps it.
+	if req.Header.Get(HeaderKeyProtocolVersion) == "" {
+		if v := c.protocolVersion.Load(); v != nil {
+			if version, ok := v.(string); ok && version != "" {
+				req.Header.Set(HeaderKeyProtocolVersion, version)
+			}
 		}
 	}
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
-	}
-
-	for k, v := range request.Header {
-		if _, ok := req.Header[k]; !ok {
-			req.Header[k] = v
-		}
 	}
 
 	// Set custom Host header if provided
@@ -800,10 +801,13 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	// Set protocol version header if negotiated
-	if v := c.protocolVersion.Load(); v != nil {
-		if version, ok := v.(string); ok && version != "" {
-			req.Header.Set(HeaderKeyProtocolVersion, version)
+	// The negotiated version fills in the header on a request without one;
+	// a request that carries its era's version keeps it.
+	if req.Header.Get(HeaderKeyProtocolVersion) == "" {
+		if v := c.protocolVersion.Load(); v != nil {
+			if version, ok := v.(string); ok && version != "" {
+				req.Header.Set(HeaderKeyProtocolVersion, version)
+			}
 		}
 	}
 	// Set custom HTTP headers

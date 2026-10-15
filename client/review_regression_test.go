@@ -73,7 +73,7 @@ func TestFulfillInputRequestRejectsNilHandlerResult(t *testing.T) {
 func TestSetLevelIsSafeForConcurrentUse(t *testing.T) {
 	// SetLevel writes the level that applyRequestMeta stamps into every
 	// outbound request. The two must not race.
-	c := &Client{protocolVersion: mcp.ProtocolVersion20260728}
+	c := clientAtVersion(mcp.ProtocolVersion20260728)
 
 	var wg sync.WaitGroup
 	for range 8 {
@@ -86,7 +86,7 @@ func TestSetLevelIsSafeForConcurrentUse(t *testing.T) {
 		})
 		wg.Go(func() {
 			for range 50 {
-				c.applyRequestMeta(map[string]any{"name": "tool"})
+				c.applyRequestMeta(c.currentEra(), map[string]any{"name": "tool"})
 			}
 		})
 	}
@@ -98,7 +98,7 @@ func TestSetLevelIsSafeForConcurrentUse(t *testing.T) {
 func TestSubscribeAccumulatesFilterAcrossListens(t *testing.T) {
 	// Subscribe records URIs for the next Listen call. They must not be
 	// discarded when a stream ends.
-	c := &Client{protocolVersion: mcp.ProtocolVersion20260728}
+	c := clientAtVersion(mcp.ProtocolVersion20260728)
 
 	require.NoError(t, c.Subscribe(t.Context(), mcp.SubscribeRequest{
 		Params: mcp.SubscribeParams{URI: "file:///a"},

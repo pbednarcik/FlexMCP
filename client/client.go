@@ -21,13 +21,16 @@ import (
 type Client struct {
 	transport transport.Interface
 
-	initialized        atomic.Bool
-	notifications      []func(mcp.JSONRPCNotification)
-	notifyMu           sync.RWMutex
-	requestID          atomic.Int64
-	clientCapabilities mcp.ClientCapabilities
-	serverCapabilities mcp.ServerCapabilities
-	protocolVersion    string
+	initialized   atomic.Bool
+	notifications []func(mcp.JSONRPCNotification)
+	notifyMu      sync.RWMutex
+	requestID     atomic.Int64
+
+	// era is the connection's negotiated state: the protocol version, the
+	// client's identity and capabilities, the server's capabilities. Every
+	// request reads it as one snapshot; Initialize swaps it once.
+	era atomic.Pointer[era]
+
 	samplingHandler    SamplingHandler
 	rootsHandler       RootsHandler
 	elicitationHandler ElicitationHandler
@@ -37,10 +40,6 @@ type Client struct {
 	// metaInjects is set when a real meta propagator is installed: only then
 	// is a request's Meta copied for injection.
 	metaInjects bool
-
-	// clientInfo identifies this client. Protocol version 2026-07-28 asks
-	// clients to repeat it in the _meta of every request.
-	clientInfo mcp.Implementation
 
 	// preferredVersion pins the protocol version to negotiate. Empty means
 	// "prefer the newest this SDK implements".
@@ -77,7 +76,7 @@ type ClientOption func(*Client)
 // WithClientCapabilities sets the client capabilities for the client.
 func WithClientCapabilities(capabilities mcp.ClientCapabilities) ClientOption {
 	return func(c *Client) {
-		c.clientCapabilities = capabilities
+		c.updateEra(func(e *era) { e.clientCapabilities = capabilities })
 	}
 }
 
@@ -173,8 +172,8 @@ func NewClient(transport transport.Interface, options ...ClientOption) *Client {
 		transport:  transport,
 		tracer:     tracing.NoopTracer(),
 		propagator: tracing.NoopPropagator(),
-		clientInfo: defaultClientInfo(),
 	}
+	client.era.Store(&era{clientInfo: defaultClientInfo()})
 
 	for _, opt := range options {
 		opt(client)
@@ -250,6 +249,18 @@ func (c *Client) sendRequest(
 	params any,
 	header http.Header,
 ) (*json.RawMessage, error) {
+	return c.sendRequestIn(ctx, c.currentEra(), method, params, header)
+}
+
+// sendRequestIn sends a request as a request of era e: the era in effect,
+// or the one a probe tries.
+func (c *Client) sendRequestIn(
+	ctx context.Context,
+	e *era,
+	method string,
+	params any,
+	header http.Header,
+) (*json.RawMessage, error) {
 	if !c.initialized.Load() && method != "initialize" && method != string(mcp.MethodServerDiscover) {
 		return nil, fmt.Errorf("client not initialized")
 	}
@@ -258,8 +269,8 @@ func (c *Client) sendRequest(
 	// identity, and client capabilities in the _meta of every request, and
 	// mirrors the method and name into HTTP headers (SEP-2575, SEP-2243).
 	// Both are no-ops on legacy connections.
-	params = c.applyRequestMeta(params)
-	header = c.applyStandardHeaders(header, method, params)
+	params = c.applyRequestMeta(e, params)
+	header = c.applyStandardHeaders(e, header, method, params)
 
 	id := c.requestID.Add(1)
 
@@ -389,10 +400,15 @@ func (c *Client) Initialize(
 	ctx context.Context,
 	request mcp.InitializeRequest,
 ) (*mcp.InitializeResult, error) {
+	// The negotiation works on a copy of the era, published once it is
+	// settled: a request in flight beside it sees the era before or after,
+	// never the probe's.
+	next := *c.currentEra()
 	if request.Params.ClientInfo.Name != "" {
-		c.clientInfo = request.Params.ClientInfo
+		next.clientInfo = request.Params.ClientInfo
 	}
-	c.clientCapabilities = mergeClientCapabilities(c.clientCapabilities, request.Params.Capabilities)
+	next.clientCapabilities = mergeClientCapabilities(next.clientCapabilities, request.Params.Capabilities)
+	header := outboundHeader(request.Header, request.Method)
 
 	preferred := request.Params.ProtocolVersion
 	if preferred == "" {
@@ -403,12 +419,13 @@ func (c *Client) Initialize(
 	// earlier revision or configured the transport in a way that rules it out.
 	if !c.legacyOnly && !c.transportRequiresLegacyProtocol() &&
 		(preferred == "" || mcp.IsModernProtocol(preferred)) {
-		discovered, modern, err := c.negotiateModern(ctx, preferred)
+		discovered, modern, err := c.negotiateModern(ctx, preferred, &next, header)
 		if err == nil {
-			c.serverCapabilities = discovered.Capabilities
-			c.applyNegotiatedVersion(c.protocolVersion)
+			next.serverCapabilities = discovered.Capabilities
+			c.era.Store(&next)
+			c.setTransportVersion(next.version)
 			c.initialized.Store(true)
-			return initializeResultFromDiscover(c.protocolVersion, discovered), nil
+			return initializeResultFromDiscover(next.version, discovered), nil
 		}
 		if modern {
 			return nil, err
@@ -416,7 +433,7 @@ func (c *Client) Initialize(
 		// Fall through to the handshake: the server is not modern.
 	}
 
-	return c.initializeLegacy(ctx, request, preferred)
+	return c.initializeLegacy(ctx, request, preferred, &next, header)
 }
 
 // initializeLegacy performs the initialize/initialized handshake used by
@@ -425,8 +442,10 @@ func (c *Client) initializeLegacy(
 	ctx context.Context,
 	request mcp.InitializeRequest,
 	preferred string,
+	next *era,
+	header http.Header,
 ) (*mcp.InitializeResult, error) {
-	capabilities := c.effectiveCapabilities()
+	capabilities := c.effectiveCapabilities(next)
 
 	// Ensure we send a params object with all required fields
 	params := struct {
@@ -445,7 +464,10 @@ func (c *Client) initializeLegacy(
 		params.ProtocolVersion = mcp.LATEST_LEGACY_PROTOCOL_VERSION
 	}
 
-	response, err := c.sendRequest(ctx, "initialize", params, outboundHeader(request.Header, request.Method))
+	// The handshake is a legacy request, carrying no per-request metadata.
+	handshake := *next
+	handshake.version = ""
+	response, err := c.sendRequestIn(ctx, &handshake, "initialize", params, header)
 	if err != nil {
 		return nil, err
 	}
@@ -460,9 +482,11 @@ func (c *Client) initializeLegacy(
 		return nil, mcp.UnsupportedProtocolVersionError{Version: result.ProtocolVersion}
 	}
 
-	// Store serverCapabilities and protocol version
-	c.serverCapabilities = result.Capabilities
-	c.applyNegotiatedVersion(result.ProtocolVersion)
+	// Publish the era: the server's capabilities and the negotiated version.
+	next.serverCapabilities = result.Capabilities
+	next.version = result.ProtocolVersion
+	c.era.Store(next)
+	c.setTransportVersion(next.version)
 
 	// Send initialized notification
 	notification := mcp.JSONRPCNotification{
@@ -482,10 +506,9 @@ func (c *Client) initializeLegacy(
 	return &result, nil
 }
 
-// applyNegotiatedVersion records the protocol version in effect and propagates
-// it to HTTP transports, which mirror it in the Mcp-Protocol-Version header.
-func (c *Client) applyNegotiatedVersion(version string) {
-	c.protocolVersion = version
+// setTransportVersion propagates the protocol version in effect to HTTP
+// transports, which mirror it in the Mcp-Protocol-Version header.
+func (c *Client) setTransportVersion(version string) {
 	if httpConn, ok := c.transport.(transport.HTTPConnection); ok {
 		httpConn.SetProtocolVersion(version)
 	}
@@ -840,10 +863,11 @@ func checkResultType(resultType mcp.ResultType, tasks bool) error {
 // tasks capability of that era is the client's own, for the requests it
 // receives, so a handshake-era server is never answered with a task.
 func (c *Client) acceptsTasks() bool {
-	if !c.isModern() {
+	e := c.currentEra()
+	if !mcp.IsModernProtocol(e.version) {
 		return false
 	}
-	_, ok := c.clientCapabilities.Extensions[mcp.ExtensionTasks]
+	_, ok := e.clientCapabilities.Extensions[mcp.ExtensionTasks]
 	return ok
 }
 
@@ -1091,12 +1115,12 @@ func (c *Client) GetTransport() transport.Interface {
 
 // GetServerCapabilities returns the server capabilities.
 func (c *Client) GetServerCapabilities() mcp.ServerCapabilities {
-	return c.serverCapabilities
+	return c.currentEra().serverCapabilities
 }
 
 // GetClientCapabilities returns the client capabilities.
 func (c *Client) GetClientCapabilities() mcp.ClientCapabilities {
-	return c.clientCapabilities
+	return c.currentEra().clientCapabilities
 }
 
 // GetSessionId returns the session ID of the transport.

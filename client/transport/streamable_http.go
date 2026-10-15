@@ -641,10 +641,13 @@ func (c *StreamableHTTP) sendHTTP(
 		sentSession = sessionID
 		req.Header.Set(HeaderKeySessionID, sessionID)
 	}
-	// Set protocol version header if negotiated
-	if v := c.protocolVersion.Load(); v != nil {
-		if version, ok := v.(string); ok && version != "" {
-			req.Header.Set(HeaderKeyProtocolVersion, version)
+	// The negotiated version fills in the header on a request without one;
+	// a request that carries its era's version keeps it.
+	if req.Header.Get(HeaderKeyProtocolVersion) == "" {
+		if v := c.protocolVersion.Load(); v != nil {
+			if version, ok := v.(string); ok && version != "" {
+				req.Header.Set(HeaderKeyProtocolVersion, version)
+			}
 		}
 	}
 	for k, v := range c.headers {

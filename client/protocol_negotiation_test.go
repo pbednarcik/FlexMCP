@@ -148,8 +148,8 @@ func TestProtocolVersionNegotiation(t *testing.T) {
 					t.Errorf("unexpected error: %v", err)
 				}
 				// Verify the protocol version was stored
-				if client.protocolVersion != tt.serverVersion {
-					t.Errorf("expected protocol version %q, got %q", tt.serverVersion, client.protocolVersion)
+				if client.ProtocolVersion() != tt.serverVersion {
+					t.Errorf("expected protocol version %q, got %q", tt.serverVersion, client.ProtocolVersion())
 				}
 			}
 		})

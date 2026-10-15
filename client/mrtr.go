@@ -235,7 +235,7 @@ func (c *Client) checkElicitation(params mcp.ElicitationParams) error {
 		return fmt.Errorf("invalid elicitation params: %w", err)
 	}
 	if params.Mode == mcp.ElicitationModeURL {
-		declared := c.effectiveCapabilities().Elicitation
+		declared := c.effectiveCapabilities(c.currentEra()).Elicitation
 		if declared == nil || declared.URL == nil {
 			return errors.New("elicitation in url mode was not declared by this client")
 		}

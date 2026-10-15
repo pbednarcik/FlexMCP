@@ -31,9 +31,38 @@ const defaultDiscoverProbeTimeout = 5 * time.Second
 // fails with anything other than a recognized modern error, it falls back to
 // initialize and stays on the legacy revision for the rest of the connection.
 
+// era is the state a connection settled on: the protocol version in effect
+// ("" before Initialize), this client's identity and capabilities, and the
+// server's capabilities. A Client holds one behind an atomic pointer and
+// every request reads one snapshot of it; Initialize works on a copy and
+// publishes it once, so a request beside a re-Initialize sees the era
+// before or after, never the probe's.
+type era struct {
+	version            string
+	clientInfo         mcp.Implementation
+	clientCapabilities mcp.ClientCapabilities
+	serverCapabilities mcp.ServerCapabilities
+}
+
+// currentEra is the era in effect; a Client built as a literal has an
+// empty one.
+func (c *Client) currentEra() *era {
+	if e := c.era.Load(); e != nil {
+		return e
+	}
+	return &era{}
+}
+
+// updateEra publishes a copy of the era changed by update.
+func (c *Client) updateEra(update func(*era)) {
+	next := *c.currentEra()
+	update(&next)
+	c.era.Store(&next)
+}
+
 // isModern reports whether the client is speaking the stateless protocol core.
 func (c *Client) isModern() bool {
-	return mcp.IsModernProtocol(c.protocolVersion)
+	return mcp.IsModernProtocol(c.currentEra().version)
 }
 
 // modulePath is this SDK's module, as its build information names it.
@@ -101,13 +130,15 @@ func (c *Client) transportRequiresLegacyProtocol() bool {
 // ProtocolVersion returns the protocol version in effect for this client, or
 // "" before the connection has been established.
 func (c *Client) ProtocolVersion() string {
-	return c.protocolVersion
+	return c.currentEra().version
 }
 
-// effectiveCapabilities returns the client capabilities to declare, merging
-// the configured set with the capabilities implied by the registered handlers.
-func (c *Client) effectiveCapabilities() mcp.ClientCapabilities {
-	capabilities := c.clientCapabilities
+// effectiveCapabilities returns the client capabilities to declare in era e,
+// merging the configured set with the capabilities implied by the registered
+// handlers.
+func (c *Client) effectiveCapabilities(e *era) mcp.ClientCapabilities {
+	modern := mcp.IsModernProtocol(e.version)
+	capabilities := e.clientCapabilities
 	if c.samplingHandler != nil && capabilities.Sampling == nil {
 		capabilities.Sampling = &mcp.SamplingCapability{}
 	}
@@ -118,8 +149,8 @@ func (c *Client) effectiveCapabilities() mcp.ClientCapabilities {
 	case c.rootsHandler != nil && capabilities.Roots == nil:
 		capabilities.Roots = &struct {
 			ListChanged bool `json:"listChanged,omitempty"`
-		}{ListChanged: !c.isModern()}
-	case capabilities.Roots != nil && capabilities.Roots.ListChanged && c.isModern():
+		}{ListChanged: !modern}
+	case capabilities.Roots != nil && capabilities.Roots.ListChanged && modern:
 		capabilities.Roots = &struct {
 			ListChanged bool `json:"listChanged,omitempty"`
 		}{}
@@ -131,12 +162,15 @@ func (c *Client) effectiveCapabilities() mcp.ClientCapabilities {
 }
 
 // applyRequestMeta merges the per-request protocol metadata that protocol
-// version 2026-07-28 requires into a request's params.
+// version 2026-07-28 requires into a request's params, as a request of era
+// e.
 //
 // It is a no-op for legacy connections, whose protocol version, identity, and
-// capabilities were fixed by the initialize handshake.
-func (c *Client) applyRequestMeta(params any) any {
-	if !c.isModern() {
+// capabilities were fixed by the initialize handshake. The caller's own
+// _meta entries are carried as the bytes they encode to, so an integer
+// progress token keeps every digit.
+func (c *Client) applyRequestMeta(e *era, params any) any {
+	if !mcp.IsModernProtocol(e.version) {
 		return params
 	}
 
@@ -152,17 +186,22 @@ func (c *Client) applyRequestMeta(params any) any {
 		}
 	}
 
-	meta := map[string]any{}
+	meta := map[string]json.RawMessage{}
 	if raw, ok := fields["_meta"]; ok {
 		_ = json.Unmarshal(raw, &meta)
 	}
-	meta[mcp.MetaKeyProtocolVersion] = c.protocolVersion
-	meta[mcp.MetaKeyClientCapabilities] = c.effectiveCapabilities()
-	if c.clientInfo.Name != "" {
-		meta[mcp.MetaKeyClientInfo] = c.clientInfo
+	set := func(key string, value any) {
+		if encoded, err := json.Marshal(value); err == nil {
+			meta[key] = encoded
+		}
+	}
+	set(mcp.MetaKeyProtocolVersion, e.version)
+	set(mcp.MetaKeyClientCapabilities, c.effectiveCapabilities(e))
+	if e.clientInfo.Name != "" {
+		set(mcp.MetaKeyClientInfo, e.clientInfo)
 	}
 	if level := c.currentLogLevel(); level != "" {
-		meta[mcp.MetaKeyLogLevel] = level
+		set(mcp.MetaKeyLogLevel, level)
 	}
 
 	encodedMeta, err := json.Marshal(meta)
@@ -180,13 +219,29 @@ func (c *Client) currentLogLevel() mcp.LoggingLevel {
 	return c.logLevel
 }
 
-// applyStandardHeaders adds the Mcp-Method and Mcp-Name headers that protocol
-// version 2026-07-28 requires on Streamable HTTP requests (SEP-2243).
+// applyStandardHeaders adds the Mcp-Protocol-Version header of era e, and
+// the Mcp-Method and Mcp-Name headers that protocol version 2026-07-28
+// requires on Streamable HTTP requests (SEP-2243), as a request of era e.
 //
-// Transports other than Streamable HTTP ignore them, so they are set
-// unconditionally for modern connections.
-func (c *Client) applyStandardHeaders(header http.Header, method string, params any) http.Header {
-	if !c.isModern() {
+// Transports other than Streamable HTTP ignore them, so on a modern
+// connection they are set unconditionally. The version goes on a request
+// of any era that has one when the transport is an HTTP connection, so the
+// transport's own copy never stands in for it: a probe sets that copy to
+// the version it tries while requests of the era in effect are in flight,
+// and a probe goes out before any version was negotiated.
+func (c *Client) applyStandardHeaders(e *era, header http.Header, method string, params any) http.Header {
+	if e.version == "" {
+		return header
+	}
+	if !mcp.IsModernProtocol(e.version) {
+		if _, ok := c.transport.(transport.HTTPConnection); !ok {
+			return header
+		}
+		header = header.Clone()
+		if header == nil {
+			header = make(http.Header, 1)
+		}
+		header.Set(mcp.HeaderProtocolVersion, e.version)
 		return header
 	}
 
@@ -195,16 +250,13 @@ func (c *Client) applyStandardHeaders(header http.Header, method string, params 
 		return header
 	}
 
-	standard := mcp.StandardHeaders(c.protocolVersion, mcp.MCPMethod(method), encoded)
-	if len(standard) == 0 {
-		return header
-	}
-
+	standard := mcp.StandardHeaders(e.version, mcp.MCPMethod(method), encoded)
 	if header == nil {
-		header = make(http.Header, len(standard))
+		header = make(http.Header, len(standard)+1)
 	} else {
 		header = header.Clone()
 	}
+	header.Set(mcp.HeaderProtocolVersion, e.version)
 	for name, value := range standard {
 		header.Set(name, value)
 	}
@@ -255,13 +307,24 @@ func (c *Client) withoutInvalidHeaderTools(ctx context.Context, tools []mcp.Tool
 		return tools
 	}
 	valid := make([]mcp.Tool, 0, len(tools))
+	var excluded int
+	var first string
+	var firstErr error
 	for _, tool := range tools {
 		if err := mcp.ValidateParamHeaderAnnotations(&tool); err != nil {
-			slog.WarnContext(ctx, "mcp: excluding a tool with invalid x-mcp-header annotations", "tool", tool.Name, "err", err)
+			if excluded == 0 {
+				first, firstErr = tool.Name, err
+			}
+			excluded++
 			c.forgetTool(tool.Name)
 			continue
 		}
 		valid = append(valid, tool)
+	}
+	if excluded > 0 {
+		// One record per listing, whatever a server lists: the first name and
+		// its reason stand for the rest.
+		slog.WarnContext(ctx, "mcp: excluding tools with invalid x-mcp-header annotations", "excluded", excluded, "first", first, "err", firstErr)
 	}
 	return valid
 }
@@ -297,12 +360,20 @@ func (c *Client) rememberTools(tools []mcp.Tool) {
 // method. Against an older server it fails, which is how [Client.Initialize]
 // detects that it must fall back to the handshake.
 func (c *Client) Discover(ctx context.Context, request mcp.DiscoverRequest) (*mcp.DiscoverResult, error) {
-	response, err := c.sendRequest(
-		ctx,
-		string(mcp.MethodServerDiscover),
-		c.applyRequestMeta(request.Params),
-		outboundHeader(request.Header, request.Method),
-	)
+	// Before a version is in effect the probe asks at the newest this client
+	// speaks; the era in effect is left as it is.
+	e := c.currentEra()
+	if !mcp.IsModernProtocol(e.version) {
+		probe := *e
+		probe.version = mcp.LATEST_PROTOCOL_VERSION
+		e = &probe
+	}
+	return c.discoverIn(ctx, e, request.Params, outboundHeader(request.Header, request.Method))
+}
+
+// discoverIn sends server/discover as a request of era e.
+func (c *Client) discoverIn(ctx context.Context, e *era, params mcp.DiscoverParams, header http.Header) (*mcp.DiscoverResult, error) {
+	response, err := c.sendRequestIn(ctx, e, string(mcp.MethodServerDiscover), params, header)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +459,7 @@ func validateDiscoverResult(data json.RawMessage) error {
 // The probe is bounded by a timeout: a well-behaved JSON-RPC server answers an
 // unknown method with MethodNotFound, but a server predating this method may
 // simply ignore it, which on stdio would otherwise block forever.
-func (c *Client) negotiateModern(ctx context.Context, preferred string) (*mcp.DiscoverResult, bool, error) {
+func (c *Client) negotiateModern(ctx context.Context, preferred string, next *era, header http.Header) (*mcp.DiscoverResult, bool, error) {
 	if preferred == "" {
 		preferred = mcp.LATEST_PROTOCOL_VERSION
 	}
@@ -401,28 +472,40 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string) (*mcp.Di
 	}
 
 	// The version travels in each request's _meta and, over HTTP, in the
-	// Mcp-Protocol-Version header, which must agree. Both must therefore be in
-	// place before the probe is sent; they are restored on failure.
-	previous := c.protocolVersion
-	c.applyNegotiatedVersion(preferred)
+	// Mcp-Protocol-Version header, which must agree: the probe's era carries
+	// it, and the transport's copy is set for the probe and restored on
+	// failure. The era in effect is left alone until the caller publishes
+	// next.
+	previous := next.version
+	probe := *next
+	probe.version = preferred
+	c.setTransportVersion(preferred)
 
 	var err error
 	modern := false
 	for attempt := range 2 {
 		var result *mcp.DiscoverResult
-		result, err = c.Discover(probeCtx, mcp.DiscoverRequest{})
+		result, err = c.discoverIn(probeCtx, &probe, mcp.DiscoverParams{}, header)
 		if err == nil {
-			version := discoveredVersion(c.protocolVersion, result.SupportedVersions)
+			version := discoveredVersion(probe.version, result.SupportedVersions)
 			if version == "" {
 				// A server that answers server/discover is modern; it is
 				// reached through the handshake only when it lists a legacy
 				// version this client speaks, and never once a rejection has
 				// named a modern version both sides support.
-				c.applyNegotiatedVersion(previous)
-				return nil, modern || !listsSharedVersion(result.SupportedVersions), fmt.Errorf("server/discover result lists no modern version this client supports: %v", result.SupportedVersions)
+				c.setTransportVersion(previous)
+				return nil, modern || !listsSharedVersion(result.SupportedVersions), fmt.Errorf("server/discover result lists no modern version this client supports: %s", summarizeVersions(result.SupportedVersions))
 			}
-			c.applyNegotiatedVersion(version)
+			next.version = version
 			return result, true, nil
+		}
+
+		// A modern error other than a version rejection is a modern server's
+		// answer (Transports.md rows 10 and 41): it is the caller's to see.
+		var mismatch mcp.HeaderMismatchError
+		if errors.As(err, &mismatch) || mcp.IsMissingRequiredClientCapability(err) {
+			modern = true
+			break
 		}
 
 		// A rejection naming a modern version both sides support identifies a
@@ -441,11 +524,22 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string) (*mcp.Di
 			break
 		}
 		modern = true
-		c.applyNegotiatedVersion(negotiated)
+		probe.version = negotiated
+		c.setTransportVersion(negotiated)
 	}
 
-	c.applyNegotiatedVersion(previous)
+	c.setTransportVersion(previous)
 	return nil, modern, err
+}
+
+// summarizeVersions names the first few of a server's versions and the
+// count of the rest, so a server's list is not copied into an error whole.
+func summarizeVersions(versions []string) string {
+	const shown = 5
+	if len(versions) <= shown {
+		return fmt.Sprintf("%q", versions)
+	}
+	return fmt.Sprintf("%q and %d more", versions[:shown], len(versions)-shown)
 }
 
 // listsSharedVersion reports whether supported names any version this client
