@@ -33,6 +33,9 @@ func WithHTTPHost(host string) transport.ClientOption {
 // NewSSEMCPClient creates a new SSE-based MCP client with the given base URL.
 // Returns an error if the URL is invalid.
 //
+// The HTTP+SSE transport is Deprecated: new code uses
+// NewStreamableHttpClient.
+//
 // Example:
 //
 //	c, err := client.NewSSEMCPClient("http://localhost:8080/mcp/sse")
@@ -51,11 +54,12 @@ func NewSSEMCPClient(baseURL string, options ...transport.ClientOption) (*Client
 	return NewClient(sseTransport), nil
 }
 
-// GetEndpoint returns the current endpoint URL for the SSE connection.
-//
-// Note: This method only works with SSE transport, or it will panic.
+// GetEndpoint returns the current endpoint URL for the SSE connection, or
+// nil when the client's transport is not SSE.
 func GetEndpoint(c *Client) *url.URL {
-	t := c.GetTransport()
-	sse := t.(*transport.SSE)
+	sse, ok := c.GetTransport().(*transport.SSE)
+	if !ok {
+		return nil
+	}
 	return sse.GetEndpoint()
 }

@@ -68,7 +68,9 @@ func GetStderr(c *Client) (io.Reader, bool) {
 		Stderr() io.Reader
 	}
 	if s, ok := t.(stderrer); ok {
-		return s.Stderr(), true
+		if r := s.Stderr(); r != nil {
+			return r, true
+		}
 	}
 	return nil, false
 }
