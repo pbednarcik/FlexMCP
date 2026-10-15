@@ -29,14 +29,18 @@ func (t ResultType) IsComplete() bool {
 	return t == "" || t == ResultTypeComplete
 }
 
-// Accepted reports whether a client accepts the result type: the core values
-// and an absent one always, the Tasks extension's "task" only when tasks
-// says the request may be answered with one (the connection declared the
-// extension, and the request is tools/call). Any other value is invalid.
-func (t ResultType) Accepted(tasks bool) bool {
+// Accepted reports whether a client accepts the result type: "complete" and
+// an absent one always; "input_required" only when input says the request
+// may be answered with one (tools/call, prompts/get and resources/read,
+// Patterns.md row 2); the Tasks extension's "task" only when tasks says the
+// request may be answered with one (the connection declared the extension,
+// and the request is tools/call). Any other value is invalid.
+func (t ResultType) Accepted(tasks, input bool) bool {
 	switch t {
-	case "", ResultTypeComplete, ResultTypeInputRequired:
+	case "", ResultTypeComplete:
 		return true
+	case ResultTypeInputRequired:
+		return input
 	case ResultTypeTask:
 		return tasks
 	}

@@ -138,8 +138,9 @@ func WithLegacyProtocolOnly() ClientOption {
 	}
 }
 
-// WithMaxInputRoundTrips bounds how many times the client will fulfil a
-// server's input requests and retry the original call before giving up.
+// WithMaxInputRoundTrips bounds how many requests one call sends, the first
+// included, while the server keeps asking for input; past it the call fails
+// with ErrMaxInputRoundTripsExceeded.
 //
 // The default is 10. See the multi round-trip request pattern (SEP-2322).
 func WithMaxInputRoundTrips(limit int) ClientOption {
@@ -753,6 +754,7 @@ func (c *Client) ListTools(
 	request mcp.ListToolsRequest,
 ) (*mcp.ListToolsResult, error) {
 	seen := seenCursors(request.Params.Cursor)
+	whole := request.Params.Cursor == nil
 	result, err := c.ListToolsByPage(ctx, request)
 	if err != nil {
 		return nil, err
@@ -773,6 +775,12 @@ func (c *Client) ListTools(
 			result.Tools = append(result.Tools, newPageRes.Tools...)
 			result.NextCursor = newPageRes.NextCursor
 		}
+	}
+	// A walk from the first page is the server's whole list: the cache
+	// becomes it, and a tool the server stopped listing is forgotten. A walk
+	// from a caller's cursor is part of the list; its pages merged in.
+	if whole {
+		c.replaceTools(result.Tools)
 	}
 	return result, nil
 }
@@ -840,21 +848,32 @@ func (c *Client) Complete(
 // answers tools/call alone (see checkToolResultType); any other value is
 // invalid rather than complete.
 func (c *Client) checkResultType(resultType mcp.ResultType) error {
-	return checkResultType(resultType, false)
+	return checkResultType(resultType, false, false)
+}
+
+// checkInputResultType is checkResultType for prompts/get and
+// resources/read, which the multi round-trip pattern may answer with
+// "input_required".
+func (c *Client) checkInputResultType(resultType mcp.ResultType) error {
+	return checkResultType(resultType, false, true)
 }
 
 // checkToolResultType is checkResultType for the answer to tools/call, the
 // one request the Tasks extension may answer with a task: "task" is accepted
 // when this connection declared the extension.
 func (c *Client) checkToolResultType(resultType mcp.ResultType) error {
-	return checkResultType(resultType, c.acceptsTasks())
+	return checkResultType(resultType, c.acceptsTasks(), true)
 }
 
-func checkResultType(resultType mcp.ResultType, tasks bool) error {
-	if resultType.Accepted(tasks) {
+// errUnacceptedResultType marks a result whose resultType this request may
+// not be answered with: a modern server's answer, however wrong.
+var errUnacceptedResultType = errors.New("unaccepted resultType")
+
+func checkResultType(resultType mcp.ResultType, tasks, input bool) error {
+	if resultType.Accepted(tasks, input) {
 		return nil
 	}
-	return fmt.Errorf("unaccepted resultType %q in the result", resultType)
+	return fmt.Errorf("%w %q in the result", errUnacceptedResultType, resultType)
 }
 
 // acceptsTasks reports whether this connection declared the Tasks extension:

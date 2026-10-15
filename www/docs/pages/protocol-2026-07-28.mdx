@@ -179,9 +179,9 @@ c := client.NewClient(httpTransport,
 result, err := c.CallTool(ctx, req)
 ```
 
-To drive the exchange yourself, disable nothing — just check
-`result.NeedsInput()` and pass `InputResponses` and `RequestState` on the next
-call.
+The result you get is the final one: an `input_required` result never reaches
+the caller, and a server that keeps asking past the bound fails the call with
+`ErrMaxInputRoundTripsExceeded`.
 
 ### Subscriptions
 

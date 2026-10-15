@@ -300,10 +300,7 @@ func (c *Client) toolForCall(params json.RawMessage) *mcp.Tool {
 // headers mirrored from it. Other transports may ignore the annotations, and
 // connections before protocol version 2026-07-28 do not mirror them at all.
 func (c *Client) withoutInvalidHeaderTools(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
-	if !c.isModern() {
-		return tools
-	}
-	if _, ok := c.transport.(transport.HTTPConnection); !ok {
+	if !c.mirrorsHeaders() {
 		return tools
 	}
 	valid := make([]mcp.Tool, 0, len(tools))
@@ -336,10 +333,22 @@ func (c *Client) forgetTool(name string) {
 	delete(c.knownTools, name)
 }
 
-// rememberTools caches tool definitions so that subsequent tools/call requests
-// can mirror x-mcp-header annotated parameters into HTTP headers.
+// mirrorsHeaders reports whether this connection mirrors tool parameters
+// into Mcp-Param-* headers: a modern connection over Streamable HTTP. Only
+// such a connection keeps tool definitions for it.
+func (c *Client) mirrorsHeaders() bool {
+	if !c.isModern() {
+		return false
+	}
+	_, ok := c.transport.(transport.HTTPConnection)
+	return ok
+}
+
+// rememberTools caches the tool definitions of one page so that subsequent
+// tools/call requests can mirror x-mcp-header annotated parameters into HTTP
+// headers; a connection that mirrors none keeps none.
 func (c *Client) rememberTools(tools []mcp.Tool) {
-	if len(tools) == 0 {
+	if len(tools) == 0 || !c.mirrorsHeaders() {
 		return
 	}
 	c.toolsMu.Lock()
@@ -350,6 +359,21 @@ func (c *Client) rememberTools(tools []mcp.Tool) {
 	for _, tool := range tools {
 		c.knownTools[tool.Name] = tool
 	}
+}
+
+// replaceTools makes the cache the server's whole list, as a complete walk
+// of tools/list gave it: definitions the server no longer lists go.
+func (c *Client) replaceTools(tools []mcp.Tool) {
+	if !c.mirrorsHeaders() {
+		return
+	}
+	known := make(map[string]mcp.Tool, len(tools))
+	for _, tool := range tools {
+		known[tool.Name] = tool
+	}
+	c.toolsMu.Lock()
+	defer c.toolsMu.Unlock()
+	c.knownTools = known
 }
 
 // Discover asks the server which protocol versions it supports, what its
@@ -378,16 +402,18 @@ func (c *Client) discoverIn(ctx context.Context, e *era, params mcp.DiscoverPara
 		return nil, err
 	}
 
-	if err := validateDiscoverResult(*response); err != nil {
-		return nil, fmt.Errorf("invalid server/discover result: %w", err)
-	}
-
+	// The result type is judged before the shape: a type the request may
+	// not be answered with is a modern server's answer, where a result
+	// without the discover fields may be a legacy server's.
 	var result mcp.DiscoverResult
 	if err := json.Unmarshal(*response, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal discover result: %w", err)
 	}
 	if err := c.checkResultType(result.ResultType); err != nil {
 		return nil, err
+	}
+	if err := validateDiscoverResult(*response); err != nil {
+		return nil, fmt.Errorf("invalid server/discover result: %w", err)
 	}
 	return &result, nil
 }
@@ -500,10 +526,12 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string, next *er
 			return result, true, nil
 		}
 
-		// A modern error other than a version rejection is a modern server's
-		// answer (Transports.md rows 10 and 41): it is the caller's to see.
+		// A modern error other than a version rejection, or a discover
+		// result of a type the request may not be answered with, is a modern
+		// server's answer (Transports.md rows 10 and 41): it is the caller's
+		// to see.
 		var mismatch mcp.HeaderMismatchError
-		if errors.As(err, &mismatch) || mcp.IsMissingRequiredClientCapability(err) {
+		if errors.As(err, &mismatch) || mcp.IsMissingRequiredClientCapability(err) || errors.Is(err, errUnacceptedResultType) {
 			modern = true
 			break
 		}

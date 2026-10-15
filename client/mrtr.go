@@ -24,16 +24,15 @@ import (
 //
 // The retry loop is transparent: callers of CallTool, GetPrompt, and
 // ReadResource see only the final result. Set [WithMaxInputRoundTrips] to
-// bound it, or inspect CallToolResult.NeedsInput to drive the exchange
-// manually.
+// bound it.
 
 const (
-	// defaultMaxInputRoundTrips bounds how many times a single call may be
-	// retried with fulfilled input before the client gives up.
+	// defaultMaxInputRoundTrips bounds how many requests one call sends, the
+	// first included, while the server keeps asking for input.
 	defaultMaxInputRoundTrips = 10
 
-	// maxLoadSheddingRoundTrips bounds consecutive retries where the server
-	// asked for no input at all. An empty inputRequests map is a
+	// maxLoadSheddingRoundTrips bounds the consecutive requests sent while
+	// the server asks for no input at all. An empty inputRequests map is a
 	// load-shedding signal - "retry later" - not a request for information.
 	maxLoadSheddingRoundTrips = 3
 )
@@ -311,7 +310,7 @@ func (c *Client) getPromptOnce(
 	if err != nil {
 		return nil, err
 	}
-	return result, c.checkResultType(result.ResultType)
+	return result, c.checkInputResultType(result.ResultType)
 }
 
 // readResourceOnce issues a single resources/read request.
@@ -332,7 +331,7 @@ func (c *Client) readResourceOnce(
 	if err != nil {
 		return nil, err
 	}
-	return result, c.checkResultType(result.ResultType)
+	return result, c.checkInputResultType(result.ResultType)
 }
 
 // callToolNeedsInput reports whether a tools/call result asks for more input.
