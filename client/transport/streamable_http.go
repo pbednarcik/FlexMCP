@@ -439,48 +439,6 @@ var ErrOAuthAuthorizationRequired = errors.New("no valid token available, author
 // ErrAuthorizationRequired is a sentinel error for authorization required (401)
 var ErrAuthorizationRequired = errors.New("authorization required")
 
-// parseAuthParamValue reads a single WWW-Authenticate parameter value
-// starting at offset i: a quoted-string (with backslash escapes) when the
-// first byte is '"', otherwise a bare token. It returns the decoded
-// value, the index of the first byte after it, and whether the value
-// was well-formed. Truncated quoted strings (no closing '"') and lone
-// trailing backslashes yield ok=false so malformed input is rejected
-// rather than producing a partial value.
-func parseAuthParamValue(s string, i int) (string, int, bool) {
-	if i >= len(s) {
-		return "", i, false
-	}
-	if s[i] == '"' {
-		i++
-		var b strings.Builder
-		for i < len(s) {
-			c := s[i]
-			if c == '\\' {
-				if i+1 >= len(s) {
-					// Lone trailing backslash — the quoted string was
-					// truncated mid-escape, so the value is malformed.
-					return "", i + 1, false
-				}
-				b.WriteByte(s[i+1])
-				i += 2
-				continue
-			}
-			if c == '"' {
-				return b.String(), i + 1, true
-			}
-			b.WriteByte(c)
-			i++
-		}
-		// Reached end of input without a closing '"'.
-		return "", i, false
-	}
-	start := i
-	for i < len(s) && isAuthTokenChar(s[i]) {
-		i++
-	}
-	return s[start:i], i, i > start
-}
-
 // isAuthTokenChar reports whether c is a valid RFC 9110 §5.6.2 token
 // character — the character class used for scheme and parameter names in
 // WWW-Authenticate.

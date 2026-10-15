@@ -22,21 +22,32 @@ type challenge struct {
 // its own grammar (see scanToken68), and a bare token anywhere else starts
 // the next challenge. A token68 is skipped, as no challenge the client acts
 // on carries one; a parameter whose value is malformed, as a quoted-string
-// with no closing quote, is dropped rather than read in part.
+// with no closing quote, is dropped rather than read in part. A parameter
+// belongs to a challenge of its own header line, the first value of a
+// repeated name is kept (RFC 6750 §3 forbids a repeat), and a challenge's
+// parameter map is made on its first parameter and holds at most
+// maxParams. Reading stops at maxChallenges: a header of bare tokens is a
+// challenge per token, and a hostile server's header may be megabytes; a
+// parameter that is not kept is not decoded, and the header is read once.
 func parseChallenges(headers []string) []challenge {
 	var challenges []challenge
 	for _, header := range headers {
 		i := 0
 		// afterScheme: the last item read was a scheme name, with no ','
-		// since, so a bare token here is its token68.
+		// since, so a bare token here is its token68. current is the
+		// challenge this line is in, or -1 before its first scheme.
 		afterScheme := false
+		current := -1
 		for i < len(header) {
 			if afterScheme {
 				if end, ok := scanToken68(header, i); ok {
-					afterScheme = false // the challenge's token68, skipped
-					i = end
-					continue
+					i = end // the challenge's token68, skipped
 				}
+				// What follows the scheme is read for a token68 once: when
+				// it is none, the challenge has parameters or nothing, and
+				// a bare token from here starts the next challenge.
+				afterScheme = false
+				continue
 			}
 			if !isAuthTokenChar(header[i]) {
 				if header[i] == ',' {
@@ -58,7 +69,11 @@ func parseChallenges(headers []string) []challenge {
 				if afterScheme {
 					afterScheme = false // the challenge's token68, skipped
 				} else {
-					challenges = append(challenges, challenge{scheme: name, params: make(map[string]string)})
+					if len(challenges) >= maxChallenges {
+						return challenges
+					}
+					challenges = append(challenges, challenge{scheme: name})
+					current = len(challenges) - 1
 					afterScheme = true
 				}
 				i = j
@@ -78,14 +93,97 @@ func parseChallenges(headers []string) []challenge {
 				i = k
 				continue
 			}
-			value, next, ok := parseAuthParamValue(header, k)
+			raw, escaped, next, ok := scanAuthParamValue(header, k)
 			i = next
-			if ok && len(challenges) > 0 {
-				challenges[len(challenges)-1].params[strings.ToLower(name)] = value
+			if ok && current >= 0 && challenges[current].wants(name) {
+				if escaped {
+					raw = unescapeAuthParamValue(raw)
+				}
+				challenges[current].setParam(name, raw)
 			}
 		}
 	}
 	return challenges
+}
+
+// maxChallenges bounds the challenges read from one response's
+// WWW-Authenticate headers; a response names a handful at most.
+const maxChallenges = 16
+
+// maxParams bounds the parameters kept for one challenge; a Bearer
+// challenge carries a handful (RFC 6750 section 3, RFC 9728 section 5.1).
+const maxParams = 16
+
+// wants reports whether a parameter of this name is kept: the first of its
+// name (compared case-insensitively, RFC 9110 §11.2), while the challenge
+// has fewer than maxParams. The decision costs nothing, so a parameter
+// that is not kept costs nothing: its value is not decoded.
+func (c *challenge) wants(name string) bool {
+	if len(c.params) >= maxParams {
+		return false
+	}
+	for have := range c.params {
+		if strings.EqualFold(have, name) {
+			return false
+		}
+	}
+	return true
+}
+
+// setParam records a parameter the challenge wants; the map is made on the
+// first parameter, so a challenge without one costs none.
+func (c *challenge) setParam(name, value string) {
+	if c.params == nil {
+		c.params = make(map[string]string)
+	}
+	c.params[strings.ToLower(name)] = value
+}
+
+// scanAuthParamValue finds the parameter value at i: a token, or a
+// quoted-string (RFC 9110 §5.6.4) with backslash escapes. It returns the
+// value's span (the quotes excluded), whether the span has escapes to
+// decode, where reading goes on, and whether the value is well formed; a
+// quoted-string with no closing quote, or cut inside an escape, is not.
+// Nothing is copied, so a value that is not kept costs no allocation.
+func scanAuthParamValue(s string, i int) (raw string, escaped bool, next int, ok bool) {
+	if i >= len(s) {
+		return "", false, i, false
+	}
+	if s[i] != '"' {
+		start := i
+		for i < len(s) && isAuthTokenChar(s[i]) {
+			i++
+		}
+		return s[start:i], false, i, i > start
+	}
+	start := i + 1
+	for j := start; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			if j+1 >= len(s) {
+				return "", false, j + 1, false
+			}
+			escaped = true
+			j++
+		case '"':
+			return s[start:j], escaped, j + 1, true
+		}
+	}
+	return "", false, len(s), false
+}
+
+// unescapeAuthParamValue decodes the backslash escapes of a quoted-string's
+// span: each escaped character stands for itself.
+func unescapeAuthParamValue(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\\' && i+1 < len(raw) {
+			i++
+		}
+		b.WriteByte(raw[i])
+	}
+	return b.String()
 }
 
 // scanToken68 reports whether a token68 (RFC 9110 §11.2: letters, digits,
