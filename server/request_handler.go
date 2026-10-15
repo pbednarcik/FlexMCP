@@ -180,9 +180,18 @@ func (s *MCPServer) handleMessageRead(
 	defer cancel()
 
 	// Store cancel func so notifications/cancelled can cancel this request.
+	// An id still in flight in the session is refused, and the request in
+	// flight is left alone (BaseProtocol.md row 4).
 	if baseMessage.ID != nil {
 		if key, ok := inflightKey(ctx, baseMessage.ID); ok {
-			s.inflightCancels.Store(key, cancel)
+			if _, inFlight := s.inflightCancels.LoadOrStore(key, cancel); inFlight {
+				if ClientSessionFromContext(ctx) != nil {
+					return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "request id is in flight")
+				}
+				// No session scopes the key: the callers are unrelated, and
+				// the newer cancel wins, as before.
+				s.inflightCancels.Store(key, cancel)
+			}
 			defer s.inflightCancels.Delete(key)
 		}
 	}
