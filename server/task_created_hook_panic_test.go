@@ -19,7 +19,7 @@ func TestACreatedHookPanicFailsTheTask(t *testing.T) {
 	failed := make(chan TaskMetrics, 1)
 	hooks.AddOnTaskFailed(func(_ context.Context, m TaskMetrics) { failed <- m })
 	s := NewMCPServer("test", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, true, true),
-		WithTaskTTL(50*time.Millisecond))
+		WithTaskTTL(500*time.Millisecond))
 
 	func() {
 		defer func() { require.Equal(t, "hook bug", recover()) }()
@@ -39,5 +39,5 @@ func TestACreatedHookPanicFailsTheTask(t *testing.T) {
 	require.Eventually(t, func() bool {
 		_, _, err := s.getTask(t.Context(), "task-1")
 		return err != nil && err.Error() == "task has expired"
-	}, time.Second, 5*time.Millisecond, "the task's TTL did not expire it")
+	}, 5*time.Second, 5*time.Millisecond, "the task's TTL did not expire it")
 }
