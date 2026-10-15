@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // stdioMembersByUnmarshal is how the read loop read a message before the core
@@ -98,11 +95,11 @@ func TestStdioReadOnceAllocations(t *testing.T) {
 	s := NewStdioServer(srv)
 	// The response is queued for the writer, which Listen starts; here it
 	// is taken off the queue instead.
-	s.responses = make(chan mcp.JSONRPCMessage, 1)
+	s.responses = make(chan stdioResponse, 1)
 	ctx := srv.WithContext(t.Context(), s.session)
 	line := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{` + readOnceMeta + `}}`
 	allocs := testing.AllocsPerRun(1000, func() {
-		_ = s.processMessage(ctx, line, io.Discard)
+		_ = s.processMessage(ctx, line)
 		s.requestWg.Wait()
 		<-s.responses
 	})

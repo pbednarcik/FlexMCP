@@ -204,9 +204,9 @@ func TestStdioCancelsAnIDPastInt64(t *testing.T) {
 	var requests cancelledRequests
 	id, ok := requestIDValue(json.RawMessage(idTwoTo63))
 	require.True(t, ok)
-	requests.start(id)
+	token := requests.start(id)
 	requests.cancel(id)
-	assert.True(t, requests.finish(id))
+	assert.True(t, requests.finish(id, token))
 }
 
 // A response is never answered (JSON-RPC 2.0, section 5), whatever its id: a

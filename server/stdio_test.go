@@ -911,20 +911,18 @@ func TestStdioServer_AQueuedToolCallDoesNotStartAfterTheInputEnds(t *testing.T) 
 	stdioServer := NewStdioServer(mcpServer)
 	// An answer is queued for the writer, which Listen starts; a queued one
 	// is seen here, where a nil queue would hang instead.
-	stdioServer.responses = make(chan mcp.JSONRPCMessage, 1)
+	stdioServer.responses = make(chan stdioResponse, 1)
 	ended, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	// A worker picks at random between a queued call and the cancellation;
 	// each round gives it that choice once more.
 	for round := range 64 {
-		var output bytes.Buffer
 		stdioServer.toolCallQueue = make(chan *toolCallWork, 1)
 		stdioServer.toolCallQueue <- &toolCallWork{
 			ctx:     ended,
 			id:      round,
 			message: json.RawMessage(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"count"}}`, round)),
-			writer:  &output,
 		}
 		stdioServer.workerWg.Add(1)
 		stdioServer.toolCallWorker(ended)
@@ -944,17 +942,16 @@ func TestStdioServer_AToolCallCancelledWhileQueuedIsNotStarted(t *testing.T) {
 		return mcp.NewToolResultText("ok"), nil
 	})
 	stdioServer := NewStdioServer(mcpServer)
-	stdioServer.responses = make(chan mcp.JSONRPCMessage, 1)
+	stdioServer.responses = make(chan stdioResponse, 1)
 	id := int64(7)
-	stdioServer.cancelled.start(id)
+	token := stdioServer.cancelled.start(id)
 	stdioServer.cancelled.cancel(id)
-	var output bytes.Buffer
 	stdioServer.toolCallQueue = make(chan *toolCallWork, 1)
 	stdioServer.toolCallQueue <- &toolCallWork{
 		ctx:     t.Context(),
 		id:      id,
+		token:   token,
 		message: json.RawMessage(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"count"}}`),
-		writer:  &output,
 	}
 	close(stdioServer.toolCallQueue)
 
