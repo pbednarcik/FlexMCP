@@ -1509,6 +1509,14 @@ func WithTaskSupport(support TaskSupport) ToolOption {
 // check that out before using this.
 func WithRawInputSchema(schema json.RawMessage) ToolOption {
 	return func(t *Tool) {
+		// The raw schema replaces the typed one NewTool starts with, as
+		// WithInputSchema does; both set would refuse the tool (upstream
+		// #1082).
+		if schema != nil {
+			t.InputSchema.Type = ""
+			t.InputSchema.Types = nil
+			t.InputSchema.AdditionalFields = nil
+		}
 		t.RawInputSchema = schema
 	}
 }
