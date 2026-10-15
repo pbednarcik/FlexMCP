@@ -138,8 +138,8 @@ func (c *InProcessTransport) SendRequest(ctx context.Context, request JSONRPCReq
 	requestBytes = append(requestBytes, '\n')
 
 	// Add session to context if available
-	if c.session != nil {
-		ctx = c.server.WithContext(ctx, c.session)
+	if session := c.currentSession(); session != nil {
+		ctx = c.server.WithContext(ctx, session)
 	}
 
 	respMessage := c.server.HandleMessage(ctx, requestBytes)
@@ -166,12 +166,20 @@ func (c *InProcessTransport) SendNotification(ctx context.Context, notification 
 	// The session goes with the notification as it does with a request
 	// (upstream #1067): a handler sees the client's session, and a cancel
 	// finds the request it names, filed under that session.
-	if c.session != nil {
-		ctx = c.server.WithContext(ctx, c.session)
+	if session := c.currentSession(); session != nil {
+		ctx = c.server.WithContext(ctx, session)
 	}
 	c.server.HandleMessage(ctx, notificationBytes)
 
 	return nil
+}
+
+// currentSession is the session Start published, or nil before it: read
+// under the lock Start writes it under.
+func (c *InProcessTransport) currentSession() *server.InProcessSession {
+	c.startedMu.Lock()
+	defer c.startedMu.Unlock()
+	return c.session
 }
 
 func (c *InProcessTransport) SetNotificationHandler(handler func(notification mcp.JSONRPCNotification)) {
