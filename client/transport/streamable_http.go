@@ -529,8 +529,11 @@ func (e *OAuthAuthorizationRequiredError) Error() string {
 	return ErrOAuthAuthorizationRequired.Error()
 }
 
-func (e *OAuthAuthorizationRequiredError) Unwrap() error {
-	return ErrOAuthAuthorizationRequired
+// Unwrap exposes both the OAuth sentinel and the embedded
+// AuthorizationRequiredError, so the base predicates and errors.As on the
+// base type match this error too.
+func (e *OAuthAuthorizationRequiredError) Unwrap() []error {
+	return []error{ErrOAuthAuthorizationRequired, &e.AuthorizationRequiredError}
 }
 
 // SendRequest sends a JSON-RPC request to the server and waits for a response.
