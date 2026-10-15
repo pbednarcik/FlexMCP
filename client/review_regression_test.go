@@ -32,8 +32,7 @@ func (nilRootsHandler) ListRoots(context.Context, mcp.ListRootsRequest) (*mcp.Li
 
 func TestFulfillInputRequestRejectsNilHandlerResult(t *testing.T) {
 	// A handler that returns (nil, nil) must surface an error rather than
-	// panicking: these run on their own goroutines, so a panic would take the
-	// process down.
+	// panicking on a nil result.
 	tests := []struct {
 		name    string
 		client  *Client
@@ -43,7 +42,7 @@ func TestFulfillInputRequestRejectsNilHandlerResult(t *testing.T) {
 		{
 			name:    "elicitation",
 			client:  &Client{elicitationHandler: nilElicitationHandler{}},
-			request: mcp.NewElicitationInputRequest(mcp.ElicitationParams{Message: "hi"}),
+			request: mcp.NewElicitationInputRequest(mcp.ElicitationParams{Message: "hi", RequestedSchema: map[string]any{"type": "object"}}),
 			wantErr: "elicitation handler returned no result",
 		},
 		{

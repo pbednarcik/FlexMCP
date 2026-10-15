@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
-	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -108,8 +109,10 @@ func multiRoundTrip[T any](
 }
 
 // fulfillInputRequests answers a server's input requests using the handlers
-// registered on the client. Requests are fulfilled concurrently, because they
-// are independent by construction.
+// registered on the client, one at a time in key order: the user is asked
+// one thing at a time however many a server asks, a handler need not be safe
+// to call concurrently, and a server's request count is bounded by the time
+// the user gives it, not by goroutines. The first failure ends the call.
 func (c *Client) fulfillInputRequests(
 	ctx context.Context,
 	requests mcp.InputRequests,
@@ -118,39 +121,29 @@ func (c *Client) fulfillInputRequests(
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var (
-		mu        sync.Mutex
-		wg        sync.WaitGroup
-		responses = make(mcp.InputResponses, len(requests))
-		firstErr  error
-	)
-
-	for id, request := range requests {
-		wg.Add(1)
-		go func(id string, request mcp.InputRequest) {
-			defer wg.Done()
-			response, err := c.fulfillInputRequest(ctx, request)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("fulfilling input request %q: %w", id, err)
-					cancel()
-				}
-				return
-			}
-			responses[id] = response
-		}(id, request)
-	}
-	wg.Wait()
-
-	if firstErr != nil {
-		return nil, fmt.Errorf("multi round-trip: %w", firstErr)
+	responses := make(mcp.InputResponses, len(requests))
+	for _, id := range slices.Sorted(maps.Keys(requests)) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err := c.fulfillInputRequestSafely(ctx, requests[id])
+		if err != nil {
+			return nil, fmt.Errorf("multi round-trip: fulfilling input request %q: %w", id, err)
+		}
+		responses[id] = response
 	}
 	return responses, nil
+}
+
+// fulfillInputRequestSafely runs a handler as the transports run one: a
+// panic is that request's error, not the process's end.
+func (c *Client) fulfillInputRequestSafely(ctx context.Context, request mcp.InputRequest) (response mcp.InputResponse, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			response, err = mcp.InputResponse{}, fmt.Errorf("handler panic: %v", r)
+		}
+	}()
+	return c.fulfillInputRequest(ctx, request)
 }
 
 // fulfillInputRequest dispatches a single input request to the matching
@@ -167,12 +160,20 @@ func (c *Client) fulfillInputRequest(
 		if request.Elicitation == nil {
 			return mcp.InputResponse{}, fmt.Errorf("elicitation input request has no params")
 		}
+		if err := c.checkElicitation(*request.Elicitation); err != nil {
+			return mcp.InputResponse{}, err
+		}
 		result, err := c.elicitationHandler.Elicit(ctx, mcp.ElicitationRequest{
 			Method: string(mcp.MethodElicitationCreate),
 			Params: *request.Elicitation,
 		})
 		if err != nil {
-			return mcp.InputResponse{}, err
+			// The handler could not get an answer: the user did not give one,
+			// which is a cancel, unless the call itself was ended.
+			if ctx.Err() != nil {
+				return mcp.InputResponse{}, err
+			}
+			return mcp.NewElicitationInputResponse(mcp.ElicitationResult{Action: mcp.ElicitationResponseActionCancel}), nil
 		}
 		if result == nil {
 			return mcp.InputResponse{}, fmt.Errorf("elicitation handler returned no result")
@@ -186,9 +187,13 @@ func (c *Client) fulfillInputRequest(
 		if request.Sampling == nil {
 			return mcp.InputResponse{}, fmt.Errorf("sampling input request has no params")
 		}
+		params, err := typedSamplingParams(*request.Sampling)
+		if err != nil {
+			return mcp.InputResponse{}, err
+		}
 		result, err := c.samplingHandler.CreateMessage(ctx, mcp.CreateMessageRequest{
 			Method:              string(mcp.MethodSamplingCreateMessage),
-			CreateMessageParams: *request.Sampling,
+			CreateMessageParams: params,
 		})
 		if err != nil {
 			return mcp.InputResponse{}, err
@@ -220,6 +225,39 @@ func (c *Client) fulfillInputRequest(
 	default:
 		return mcp.InputResponse{}, fmt.Errorf("unsupported input request method %q", request.Method)
 	}
+}
+
+// checkElicitation refuses an elicitation that is not valid, or asks for a
+// mode this client did not declare (ClientFeatures.md rows 1-2, 4, 7): the
+// handler sees only what the client said it can answer.
+func (c *Client) checkElicitation(params mcp.ElicitationParams) error {
+	if err := params.Validate(); err != nil {
+		return fmt.Errorf("invalid elicitation params: %w", err)
+	}
+	if params.Mode == mcp.ElicitationModeURL {
+		declared := c.effectiveCapabilities().Elicitation
+		if declared == nil || declared.URL == nil {
+			return errors.New("elicitation in url mode was not declared by this client")
+		}
+	}
+	return nil
+}
+
+// typedSamplingParams returns params with every message's content typed, as
+// the handshake-era path hands it to the handler: a transport decodes a
+// content block as a map.
+func typedSamplingParams(params mcp.CreateMessageParams) (mcp.CreateMessageParams, error) {
+	messages := make([]mcp.SamplingMessage, len(params.Messages))
+	for i, message := range params.Messages {
+		content, err := mcp.ParseSamplingContent(message.Content)
+		if err != nil {
+			return params, fmt.Errorf("failed to parse content for message %d: %w", i, err)
+		}
+		message.Content = content
+		messages[i] = message
+	}
+	params.Messages = messages
+	return params, nil
 }
 
 // callToolOnce issues a single tools/call request.
