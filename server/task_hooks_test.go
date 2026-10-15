@@ -407,11 +407,12 @@ func TestTaskHooks_RunOutsideTheTaskLock(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		})
-	// A handler that reports cancellation nobody asked for takes the
-	// handler-detected cancellation path.
-	server.AddTaskTool(mcp.Tool{Name: "self-cancel", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
-		func(context.Context, mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
-			return nil, context.Canceled
+	// A handler whose task expires sees its context cancelled with no
+	// tasks/cancel, and takes the handler-detected cancellation path.
+	server.AddTaskTool(mcp.Tool{Name: "expires", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
+		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
 		})
 
 	ctx := t.Context()
@@ -432,12 +433,13 @@ func TestTaskHooks_RunOutsideTheTaskLock(t *testing.T) {
 		t.Fatal("the slow task was never cancelled")
 	}
 
-	_, reqErr = server.handleTaskAugmentedToolCall(ctx, "self-cancel", mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "self-cancel", Task: &mcp.TaskParams{}}})
+	ttl := int64(1)
+	_, reqErr = server.handleTaskAugmentedToolCall(ctx, "expires", mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "expires", Task: &mcp.TaskParams{TTL: &ttl}}})
 	require.Nil(t, reqErr)
 	select {
 	case <-cancelled:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the self-cancelling task was never cancelled")
+		t.Fatal("the expired task was never cancelled")
 	}
 
 	for _, event := range []string{"created", "completed", "cancelled"} {

@@ -94,6 +94,13 @@ type TaskToolHandlerFunc func(ctx context.Context, request mcp.CallToolRequest) 
 // ToolHandlerMiddleware is a middleware function that wraps a ToolHandlerFunc.
 type ToolHandlerMiddleware func(ToolHandlerFunc) ToolHandlerFunc
 
+// TaskToolHandlerMiddleware wraps a TaskToolHandlerFunc, as
+// ToolHandlerMiddleware wraps a ToolHandlerFunc. A task tool's handler
+// returns task creation info, so the tool middlewares, whose chain carries
+// a CallToolResult, cannot wrap it: the task tools have a chain of their
+// own, see UseForTaskTools.
+type TaskToolHandlerMiddleware func(TaskToolHandlerFunc) TaskToolHandlerFunc
+
 // ResourceHandlerMiddleware is a middleware function that wraps a ResourceHandlerFunc.
 type ResourceHandlerMiddleware func(ResourceHandlerFunc) ResourceHandlerFunc
 
@@ -255,6 +262,7 @@ type MCPServer struct {
 	tools                      map[string]ServerTool
 	taskTools                  map[string]ServerTaskTool
 	toolHandlerMiddlewares     []ToolHandlerMiddleware
+	taskToolHandlerMiddlewares []TaskToolHandlerMiddleware
 	resourceHandlerMiddlewares []ResourceHandlerMiddleware
 	promptHandlerMiddlewares   []PromptHandlerMiddleware
 	toolFilters                []ToolFilterFunc
@@ -410,9 +418,31 @@ func WithToolHandlerMiddleware(
 
 // Use adds one or more tool handler middlewares to the server.
 // Middleware is applied in the order added (outermost first), matching net/http convention.
+// A task tool registered with AddTaskTools is not wrapped by these: it has
+// a chain of its own, see UseForTaskTools.
 func (s *MCPServer) Use(mw ...ToolHandlerMiddleware) {
 	s.toolMiddlewareMu.Lock()
 	s.toolHandlerMiddlewares = append(s.toolHandlerMiddlewares, mw...)
+	s.toolMiddlewareMu.Unlock()
+}
+
+// WithTaskToolHandlerMiddleware adds a middleware to the task tool handler
+// call chain; see UseForTaskTools.
+func WithTaskToolHandlerMiddleware(mw TaskToolHandlerMiddleware) ServerOption {
+	return func(s *MCPServer) {
+		s.UseForTaskTools(mw)
+	}
+}
+
+// UseForTaskTools adds one or more task tool handler middlewares to the
+// server, applied in the order added, outermost first, around the handler of
+// every task tool registered with AddTaskTools. A middleware that returns an
+// error fails the task with it. The tool middlewares (Use) do not wrap task
+// tools: their chain carries a CallToolResult, a task tool's handler returns
+// task creation info.
+func (s *MCPServer) UseForTaskTools(mw ...TaskToolHandlerMiddleware) {
+	s.toolMiddlewareMu.Lock()
+	s.taskToolHandlerMiddlewares = append(s.taskToolHandlerMiddlewares, mw...)
 	s.toolMiddlewareMu.Unlock()
 }
 
@@ -2311,14 +2341,25 @@ func (s *MCPServer) executeTaskTool(
 		cancel()
 	}
 
-	// Execute the task tool handler
-	result, err := taskTool.Handler(taskCtx, request)
+	// The handler runs inside the task tool middlewares, outermost first;
+	// the chain is built outside the lock, so a middleware that panics while
+	// wrapping does not keep it.
+	s.toolMiddlewareMu.RLock()
+	middlewares := slices.Clone(s.taskToolHandlerMiddlewares)
+	s.toolMiddlewareMu.RUnlock()
+	finalHandler := taskTool.Handler
+	for _, m := range slices.Backward(middlewares) {
+		finalHandler = m(finalHandler)
+	}
+	result, err := finalHandler(taskCtx, request)
 
 	if err != nil {
-		// If the error is due to context cancellation, don't mark as failed.
-		// The cancelTask method will handle setting the proper status.
-		// However, if cancelTask hasn't been called yet, we should still mark it.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// A context error is a cancellation only when the task's own context
+		// ended: tasks/cancel or the TTL. One returned while that context is
+		// live is the handler's or a middleware's own, a deadline of theirs,
+		// and fails the task like any other error. cancelTask sets the status
+		// of a cancelled task; a handler that saw the cancel first sets it here.
+		if taskCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			// Check if task was already cancelled via tasks/cancel
 			s.tasksMu.Lock()
 			alreadyCancelled := entry.task.Status == mcp.TaskStatusCancelled
@@ -2447,10 +2488,12 @@ func (s *MCPServer) executeRegularToolAsTask(
 	result, err := finalHandler(taskCtx, request)
 
 	if err != nil {
-		// If the error is due to context cancellation, don't mark as failed.
-		// The cancelTask method will handle setting the proper status.
-		// However, if cancelTask hasn't been called yet, we should still mark it.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// A context error is a cancellation only when the task's own context
+		// ended: tasks/cancel or the TTL. One returned while that context is
+		// live is the handler's or a middleware's own, a deadline of theirs,
+		// and fails the task like any other error. cancelTask sets the status
+		// of a cancelled task; a handler that saw the cancel first sets it here.
+		if taskCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			// Check if task was already cancelled via tasks/cancel
 			s.tasksMu.Lock()
 			alreadyCancelled := entry.task.Status == mcp.TaskStatusCancelled
