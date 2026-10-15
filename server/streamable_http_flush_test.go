@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -72,4 +74,14 @@ func TestStreamableHTTP_AFailedFlushEndsTheExchange(t *testing.T) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	require.Equal(t, 1, w.flushes, "the flush's failure was not seen: output went on after it")
+}
+
+// A client that went away is a warning, not an error: nothing is wrong on
+// the server.
+func TestStreamableHTTP_AClientThatWentAwayIsLoggedAsAWarning(t *testing.T) {
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	serveNotifyingTool(t, newStuckWriter(), WithStreamableHTTPLogger(logger))
+	require.Contains(t, logged.String(), "level=WARN")
+	require.NotContains(t, logged.String(), "level=ERROR")
 }

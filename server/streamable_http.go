@@ -1069,7 +1069,8 @@ func (x *postExchange) deliver(write func() error) {
 	}
 	if err != nil {
 		x.dead = true
-		x.server.logger.Error("write to the response failed; the request's remaining output is dropped", "err", err)
+		// A client that went away is nothing wrong on the server: a warning.
+		x.server.logger.Warn("write to the response failed; the request's remaining output is dropped", "err", err)
 	}
 }
 
