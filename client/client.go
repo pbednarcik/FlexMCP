@@ -34,6 +34,9 @@ type Client struct {
 	tracer             tracing.Tracer
 	propagator         tracing.Propagator
 	metaPropagator     tracing.MetaPropagator
+	// metaInjects is set when a real meta propagator is installed: only then
+	// is a request's Meta copied for injection.
+	metaInjects bool
 
 	// clientInfo identifies this client. Protocol version 2026-07-28 asks
 	// clients to repeat it in the _meta of every request.

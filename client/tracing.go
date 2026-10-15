@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"maps"
 	"net/http"
+	"reflect"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/tracing"
@@ -42,17 +44,29 @@ func WithMetaPropagator(p tracing.MetaPropagator) ClientOption {
 	if p == nil {
 		p = tracing.NoopMetaPropagator()
 	}
+	// The no-op, given or substituted, injects nothing: a request without
+	// a Meta goes out without one.
+	injects := reflect.TypeOf(p) != reflect.TypeOf(tracing.NoopMetaPropagator())
 	return func(c *Client) {
 		c.metaPropagator = p
+		c.metaInjects = injects
 	}
 }
 
+// injectMeta hands the propagator a copy of the request's Meta: the caller
+// keeps its own, so a request value reused or shared across goroutines
+// carries no trace context from an earlier call and is never written to. A
+// request without a Meta is handed none; the propagator makes one if it has
+// something to inject. Without a propagator the Meta goes out as it is.
 func (c *Client) injectMeta(ctx context.Context, meta *mcp.Meta) *mcp.Meta {
-	p := c.metaPropagator
-	if p == nil {
+	if !c.metaInjects {
 		return meta
 	}
-	return p.InjectMeta(ctx, meta)
+	var own *mcp.Meta
+	if meta != nil {
+		own = &mcp.Meta{ProgressToken: meta.ProgressToken, AdditionalFields: maps.Clone(meta.AdditionalFields)}
+	}
+	return c.metaPropagator.InjectMeta(ctx, own)
 }
 
 func (c *Client) startSendSpan(
