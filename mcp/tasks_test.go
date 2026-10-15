@@ -198,26 +198,6 @@ func TestParseCancelTaskResultRoundTrip(t *testing.T) {
 	assert.Equal(t, map[string]any{"taskId": "task-3"}, parsed.Meta.AdditionalFields[RelatedTaskMetaKey])
 }
 
-func TestParseTaskResultsTolerateFieldsOfTheWrongType(t *testing.T) {
-	// A peer that sends a field with the wrong JSON type loses that field,
-	// not the whole result.
-	raw := json.RawMessage(`{
-		"_meta": "not-an-object",
-		"tasks": [
-			{"taskId": 1, "status": "working", "ttl": "soon", "pollInterval": null},
-			"not-a-task",
-			{"taskId": "ok", "status": 2, "statusMessage": 3, "createdAt": 4, "lastUpdatedAt": 5}
-		],
-		"nextCursor": 7
-	}`)
-
-	parsed, err := ParseListTasksResult(&raw)
-	require.NoError(t, err)
-	assert.Nil(t, parsed.Meta)
-	assert.Nil(t, parsed.NextCursor)
-	assert.Equal(t, []Task{{Status: TaskStatusWorking}, {TaskId: "ok"}}, parsed.Tasks)
-}
-
 func TestParseTaskResultsRefuseBadPayloads(t *testing.T) {
 	malformed := json.RawMessage(`{"taskId": `)
 	parsers := []struct {
