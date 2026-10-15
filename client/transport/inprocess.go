@@ -28,14 +28,22 @@ type InProcessTransport struct {
 
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// closeCtx ends at Close: every request in flight is cancelled through
+	// it, as a dropped connection cancels one on the wire transports.
+	closeCtx    context.Context
+	closeCancel context.CancelFunc
 }
 
 // NewInProcessTransport returns a transport that calls server directly.
 func NewInProcessTransport(server *server.MCPServer) *InProcessTransport {
+	closeCtx, closeCancel := context.WithCancel(context.Background())
 	return &InProcessTransport{
-		server:    server,
-		sessionID: server.GenerateInProcessSessionID(),
-		done:      make(chan struct{}),
+		server:      server,
+		sessionID:   server.GenerateInProcessSessionID(),
+		done:        make(chan struct{}),
+		closeCtx:    closeCtx,
+		closeCancel: closeCancel,
 	}
 }
 
@@ -131,14 +139,26 @@ func (c *InProcessTransport) forwardNotifications() {
 }
 
 func (c *InProcessTransport) SendRequest(ctx context.Context, request JSONRPCRequest) (*JSONRPCResponse, error) {
+	session, closed := c.sessionState()
+	if closed {
+		return nil, ErrTransportClosed
+	}
+
 	requestBytes, err := json.Marshal(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 	requestBytes = append(requestBytes, '\n')
 
+	// The request ends with the caller's context or with Close, whichever
+	// comes first.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(c.closeCtx, cancel)
+	defer stop()
+
 	// Add session to context if available
-	if session := c.currentSession(); session != nil {
+	if session != nil {
 		ctx = c.server.WithContext(ctx, session)
 	}
 
@@ -157,6 +177,11 @@ func (c *InProcessTransport) SendRequest(ctx context.Context, request JSONRPCReq
 }
 
 func (c *InProcessTransport) SendNotification(ctx context.Context, notification mcp.JSONRPCNotification) error {
+	session, closed := c.sessionState()
+	if closed {
+		return ErrTransportClosed
+	}
+
 	notificationBytes, err := json.Marshal(notification)
 	if err != nil {
 		return fmt.Errorf("failed to marshal notification: %w", err)
@@ -166,7 +191,7 @@ func (c *InProcessTransport) SendNotification(ctx context.Context, notification 
 	// The session goes with the notification as it does with a request
 	// (upstream #1067): a handler sees the client's session, and a cancel
 	// finds the request it names, filed under that session.
-	if session := c.currentSession(); session != nil {
+	if session != nil {
 		ctx = c.server.WithContext(ctx, session)
 	}
 	c.server.HandleMessage(ctx, notificationBytes)
@@ -174,12 +199,13 @@ func (c *InProcessTransport) SendNotification(ctx context.Context, notification 
 	return nil
 }
 
-// currentSession is the session Start published, or nil before it: read
-// under the lock Start writes it under.
-func (c *InProcessTransport) currentSession() *server.InProcessSession {
+// sessionState is the session Start published, or nil before it, and
+// whether Close has run: both read under the lock Start and Close write
+// them under.
+func (c *InProcessTransport) sessionState() (session *server.InProcessSession, closed bool) {
 	c.startedMu.Lock()
 	defer c.startedMu.Unlock()
-	return c.session
+	return c.session, c.closed
 }
 
 func (c *InProcessTransport) SetNotificationHandler(handler func(notification mcp.JSONRPCNotification)) {
@@ -197,6 +223,7 @@ func (c *InProcessTransport) Close() error {
 
 	c.closeOnce.Do(func() {
 		close(c.done)
+		c.closeCancel()
 	})
 
 	if session != nil {
