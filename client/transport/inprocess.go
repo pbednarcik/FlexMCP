@@ -162,18 +162,48 @@ func (c *InProcessTransport) SendRequest(ctx context.Context, request JSONRPCReq
 		ctx = c.server.WithContext(ctx, session)
 	}
 
-	respMessage := c.server.HandleMessage(ctx, requestBytes)
-	respByte, err := json.Marshal(respMessage)
+	return inProcessResponse(c.server.HandleMessage(ctx, requestBytes))
+}
+
+// inProcessResponse builds the transport's response from the server's typed
+// answer: the result is encoded once, as the client parses bytes, and an
+// error is copied. Only an answer of another type goes through the wire
+// encoding and back.
+func inProcessResponse(message mcp.JSONRPCMessage) (*JSONRPCResponse, error) {
+	switch m := message.(type) {
+	case mcp.JSONRPCResponse:
+		return inProcessResult(m.ID, m.Result)
+	case *mcp.JSONRPCResponse:
+		if m != nil {
+			return inProcessResult(m.ID, m.Result)
+		}
+	case mcp.JSONRPCError:
+		details := m.Error
+		return &JSONRPCResponse{JSONRPC: mcp.JSONRPC_VERSION, ID: m.ID, Error: &details}, nil
+	case *mcp.JSONRPCError:
+		if m != nil {
+			details := m.Error
+			return &JSONRPCResponse{JSONRPC: mcp.JSONRPC_VERSION, ID: m.ID, Error: &details}, nil
+		}
+	}
+
+	respByte, err := json.Marshal(message)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal response message: %w", err)
 	}
 	var rpcResp JSONRPCResponse
-	err = json.Unmarshal(respByte, &rpcResp)
-	if err != nil {
+	if err := json.Unmarshal(respByte, &rpcResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response message: %w", err)
 	}
-
 	return &rpcResp, nil
+}
+
+func inProcessResult(id mcp.RequestId, result any) (*JSONRPCResponse, error) {
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response result: %w", err)
+	}
+	return NewJSONRPCResultResponse(id, encoded), nil
 }
 
 func (c *InProcessTransport) SendNotification(ctx context.Context, notification mcp.JSONRPCNotification) error {
