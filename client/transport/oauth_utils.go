@@ -4,12 +4,19 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"strings"
 )
 
-// GenerateRandomString generates a random string of the specified length
+// GenerateRandomString generates a random string of the specified length,
+// which is positive.
 func GenerateRandomString(length int) (string, error) {
+	if length <= 0 {
+		return "", errors.New("random string length must be positive")
+	}
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
@@ -36,33 +43,41 @@ func GenerateState() (string, error) {
 	return GenerateRandomString(32)
 }
 
-// ValidateRedirectURI validates that a redirect URI is secure
+// ValidateRedirectURI validates that a redirect URI is secure: an HTTPS URL,
+// or an HTTP URL on a loopback host (RFC 8252 section 7.3), in either case
+// with a host, without credentials and without a fragment (RFC 6749 section
+// 3.1.2). This helper is advisory: the OAuth handler does not call it.
 func ValidateRedirectURI(redirectURI string) error {
-	// According to the spec, redirect URIs must be either localhost URLs or HTTPS URLs
 	if redirectURI == "" {
 		return fmt.Errorf("redirect URI cannot be empty")
 	}
 
-	// Parse the URL
 	parsedURL, err := url.Parse(redirectURI)
 	if err != nil {
 		return fmt.Errorf("invalid redirect URI: %w", err)
 	}
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		return fmt.Errorf("redirect URI must have a host")
+	}
+	if parsedURL.User != nil {
+		return fmt.Errorf("redirect URI must not carry credentials")
+	}
+	if parsedURL.Fragment != "" || strings.HasSuffix(redirectURI, "#") {
+		return fmt.Errorf("redirect URI must not have a fragment")
+	}
 
-	// Check if it's a localhost URL
-	if parsedURL.Scheme == "http" {
-		hostname := parsedURL.Hostname()
-		// Check for various forms of localhost
-		if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" || hostname == "[::1]" {
+	switch parsedURL.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if strings.EqualFold(hostname, "localhost") {
 			return nil
 		}
-		return fmt.Errorf("HTTP redirect URI must use localhost or 127.0.0.1")
+		if ip := net.ParseIP(hostname); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("HTTP redirect URI must use a loopback host")
 	}
-
-	// Check if it's an HTTPS URL
-	if parsedURL.Scheme == "https" {
-		return nil
-	}
-
-	return fmt.Errorf("redirect URI must use either HTTP with localhost or HTTPS")
+	return fmt.Errorf("redirect URI must use either HTTP on a loopback host or HTTPS")
 }
