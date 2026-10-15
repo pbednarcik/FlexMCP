@@ -240,14 +240,12 @@ func (s *MCPServer) closeStreamOnCancel(ctx context.Context, id any, streams Ses
 	if !ok {
 		return
 	}
-	cancel, ok := stored.(context.CancelFunc)
-	if !ok {
-		return
-	}
-	s.inflightCancels.Store(key, context.CancelFunc(func() {
-		streams.CloseSubscriptionStream(id)
-		cancel()
-	}))
+	stored.(*inflightRequest).wrapCancel(func(cancel context.CancelFunc) context.CancelFunc {
+		return func() {
+			streams.CloseSubscriptionStream(id)
+			cancel()
+		}
+	})
 }
 
 // registerListenSession makes a session serving a subscriptions/listen stream

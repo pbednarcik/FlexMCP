@@ -287,7 +287,7 @@ type MCPServer struct {
 	maxConcurrentTasks       *int              // Optional limit on concurrent running tasks
 	taskTTL                  time.Duration     // The longest a task is kept; see WithTaskTTL
 	activeTasks              int               // Tasks whose handler may still be running
-	inflightCancels          sync.Map          // Maps request ID -> context.CancelFunc for in-flight requests
+	inflightCancels          sync.Map          // inflightID -> *inflightRequest, the requests in flight
 	inputValidator           *inputSchemaValidator
 	outputValidator          *outputSchemaValidator
 	strictInputSchemaDefault bool
@@ -2615,10 +2615,8 @@ func (s *MCPServer) handleNotification(
 		if json.Unmarshal(message, &cancelled) == nil && len(cancelled.Params.RequestID) > 0 {
 			id, valid := requestIDValue(cancelled.Params.RequestID)
 			if key, ok := inflightKey(ctx, id); valid && ok {
-				if cancel, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
-					if cancelFunc, ok := cancel.(context.CancelFunc); ok {
-						cancelFunc()
-					}
+				if request, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
+					request.(*inflightRequest).fire()
 				}
 			}
 		}
@@ -2635,20 +2633,54 @@ func (s *MCPServer) handleNotification(
 	return nil
 }
 
-// inflightKey returns the key a request's cancel func is filed under, scoped
-// to its session so one client cannot cancel another's request. A session
-// with no ID, a modern HTTP request's ephemeral one, has no scope to offer:
-// ok is false, and closing the request's stream is its cancel. The id is keyed
-// with its type, so the string "7" and the integer 7 are two requests.
-func inflightKey(ctx context.Context, requestID any) (key string, ok bool) {
+// inflightID keys a request in flight: its session and its JSON-RPC id, the
+// id with its type, so the string "7" and the integer 7 are two requests. A
+// struct, not a string joined from the two: a session ID may hold any
+// character without colliding with another session's, and no string is
+// built per request.
+type inflightID struct {
+	session string
+	id      string
+}
+
+// inflightRequest is a request in flight, filed under its inflightID. Its
+// cancel may be wrapped while it runs (closeStreamOnCancel), so the entry is
+// what is filed, not the func: the request's deferred removal takes out its
+// own entry and no other, which leaves a request that reused the id after a
+// cancel filed (CompareAndDelete).
+type inflightRequest struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
+
+// fire cancels the request.
+func (r *inflightRequest) fire() {
+	r.mu.Lock()
+	cancel := r.cancel
+	r.mu.Unlock()
+	cancel()
+}
+
+// wrapCancel makes wrap(cancel) the request's cancel.
+func (r *inflightRequest) wrapCancel(wrap func(context.CancelFunc) context.CancelFunc) {
+	r.mu.Lock()
+	r.cancel = wrap(r.cancel)
+	r.mu.Unlock()
+}
+
+// inflightKey returns the key a request is filed under, scoped to its
+// session so one client cannot cancel another's request. A session with no
+// ID, a modern HTTP request's ephemeral one, has no scope to offer: ok is
+// false, and closing the request's stream is its cancel.
+func inflightKey(ctx context.Context, requestID any) (key inflightID, ok bool) {
 	id := mcp.NewRequestId(requestID).String()
 	if session := ClientSessionFromContext(ctx); session != nil {
 		if session.SessionID() == "" {
-			return "", false
+			return inflightID{}, false
 		}
-		return session.SessionID() + ":" + id, true
+		return inflightID{session: session.SessionID(), id: id}, true
 	}
-	return ":" + id, true
+	return inflightID{id: id}, true
 }
 
 // requestIDValue decodes a JSON-RPC id from the wire as mcp.RequestId does: a

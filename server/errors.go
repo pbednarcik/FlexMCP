@@ -53,6 +53,11 @@ var (
 	// input: mid-task input goes through tasks/update (Tasks.md row 15),
 	// which this server does not serve yet, so the question cannot be put.
 	ErrTaskInputUnsupported = errors.New("the handler asked the client for input, which the server cannot do inside a task")
+
+	// ErrRequestIDInFlight refuses a request whose id is still in flight in
+	// its session (BaseProtocol.md row 4): the request in flight is left
+	// alone, and the error hooks see the refusal.
+	ErrRequestIDInFlight = errors.New("request id is in flight")
 )
 
 // errTaskHookPanicked fails a task a hook panicked on while it was created:

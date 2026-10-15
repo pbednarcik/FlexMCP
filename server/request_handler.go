@@ -108,6 +108,27 @@ func (s *MCPServer) handleMessageRead(
 		return nil
 	}
 
+	// The request may be cancelled by notifications/cancelled: it is filed
+	// under its id for the life of the call. An id still in flight in the
+	// session is refused before any hook runs for it, and the request in
+	// flight is left alone (BaseProtocol.md row 4); the error hooks see the
+	// refusal.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if key, ok := inflightKey(ctx, baseMessage.ID); ok {
+		inflight := &inflightRequest{cancel: cancel}
+		if _, taken := s.inflightCancels.LoadOrStore(key, inflight); taken {
+			if ClientSessionFromContext(ctx) != nil {
+				s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, message, ErrRequestIDInFlight)
+				return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, ErrRequestIDInFlight.Error())
+			}
+			// No session scopes the key: the callers are unrelated, and the
+			// newer request is the one filed, as before.
+			s.inflightCancels.Store(key, inflight)
+		}
+		defer s.inflightCancels.CompareAndDelete(key, inflight)
+	}
+
 	// Whether a hook holds the message is decided before the hooks run: one
 	// may remove itself while it changes the message.
 	heldByHook := hooksHoldTheMessage(s.hooks)
@@ -172,27 +193,6 @@ func (s *MCPServer) handleMessageRead(
 		// both eras.
 		if session := ClientSessionFromContext(ctx); session != nil {
 			applyRequestProtocolInfoToSession(session, protocolInfo)
-		}
-	}
-
-	// Wrap context with cancel for in-flight request cancellation (MCP spec: notifications/cancelled)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Store cancel func so notifications/cancelled can cancel this request.
-	// An id still in flight in the session is refused, and the request in
-	// flight is left alone (BaseProtocol.md row 4).
-	if baseMessage.ID != nil {
-		if key, ok := inflightKey(ctx, baseMessage.ID); ok {
-			if _, inFlight := s.inflightCancels.LoadOrStore(key, cancel); inFlight {
-				if ClientSessionFromContext(ctx) != nil {
-					return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "request id is in flight")
-				}
-				// No session scopes the key: the callers are unrelated, and
-				// the newer cancel wins, as before.
-				s.inflightCancels.Store(key, cancel)
-			}
-			defer s.inflightCancels.Delete(key)
 		}
 	}
 

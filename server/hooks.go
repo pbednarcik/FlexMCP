@@ -140,10 +140,15 @@ type OnAfterCompleteFunc func(ctx context.Context, id any, message *mcp.Complete
 //
 //  1. OnError may fire without a prior OnBeforeAny when the dispatcher rejects
 //     a request before invoking the per-method handler. This happens for
-//     payload-parse failures (UnparsableMessageError) and capability-not-
-//     enabled errors (ErrUnsupported). Per-request bookkeeping consumers must
-//     therefore tolerate "id not found" on the OnError path; the natural
-//     sync.Map.LoadAndDelete ok-bool already covers this.
+//     payload-parse failures (UnparsableMessageError), capability-not-
+//     enabled errors (ErrUnsupported), and a request refused because its id
+//     is still in flight in the session (ErrRequestIDInFlight). Per-request
+//     bookkeeping consumers must therefore tolerate "id not found" on the
+//     OnError path; the natural sync.Map.LoadAndDelete ok-bool already covers
+//     this. The in-flight refusal carries the id of the request still
+//     running, with the raw message rather than a decoded one, so bookkeeping
+//     keyed by id must not take it for that request's end:
+//     errors.Is(err, ErrRequestIDInFlight) tells the two apart.
 //
 //  2. If a handler panics and neither WithRecovery nor WithResourceRecovery
 //     is installed at server construction, the panic unwinds past the
