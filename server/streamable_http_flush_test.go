@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -84,4 +85,32 @@ func TestStreamableHTTP_AClientThatWentAwayIsLoggedAsAWarning(t *testing.T) {
 	serveNotifyingTool(t, newStuckWriter(), WithStreamableHTTPLogger(logger))
 	require.Contains(t, logged.String(), "level=WARN")
 	require.NotContains(t, logged.String(), "level=ERROR")
+}
+
+// A writer given to Handle that flushes but cannot report a failure, the
+// interface's plain Flush, is flushed as before: the event goes out when it
+// is sent, the response after it, and the request ends cleanly.
+func TestStreamableHTTP_APlainFlushWriterThroughHandleIsFlushed(t *testing.T) {
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(false))
+	mcpServer.AddTool(mcp.NewTool("notify"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		_ = mcpServer.SendNotificationToClient(ctx, "notifications/progress", map[string]any{"progress": 1})
+		return mcp.NewToolResultText("done"), nil
+	})
+	srv := NewStreamableHTTPServer(mcpServer)
+	w := newFlushableHTTPResponseWriter()
+	srv.Handle(w, &HTTPRequest{
+		Method:  http.MethodPost,
+		URL:     &url.URL{Path: "/mcp"},
+		Header:  http.Header{"Content-Type": []string{"application/json"}, "Accept": []string{"application/json, text/event-stream"}},
+		Body:    []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"notify"}}`),
+		Context: t.Context(),
+	})
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	require.Equal(t, http.StatusOK, w.status)
+	require.Equal(t, "text/event-stream", w.header.Get("Content-Type"))
+	require.GreaterOrEqual(t, w.flushes, 2, "the event and the response were not each flushed")
+	require.Contains(t, string(w.body), "notifications/progress")
+	require.Contains(t, string(w.body), `"id":1`)
 }
