@@ -1474,11 +1474,12 @@ func (s *MCPServer) handlePing(
 	return &mcp.EmptyResult{}, nil
 }
 
-// handleSetLevel acknowledges a legacy client's logging/setLevel. The level is
-// validated but not kept: the server holds no per-client state, so a legacy
-// client's threshold stays legacyLogLevel.
+// handleSetLevel keeps a legacy client's logging/setLevel on its session,
+// when the session keeps one (SessionWithLogging), so the level it asked for
+// is the one it is served at; a session that keeps none stays at
+// legacyLogLevel. The level is validated first.
 func (s *MCPServer) handleSetLevel(
-	_ context.Context,
+	ctx context.Context,
 	id any,
 	request mcp.SetLevelRequest,
 ) (*mcp.EmptyResult, *requestError) {
@@ -1486,6 +1487,9 @@ func (s *MCPServer) handleSetLevel(
 	case mcp.LoggingLevelDebug, mcp.LoggingLevelInfo, mcp.LoggingLevelNotice,
 		mcp.LoggingLevelWarning, mcp.LoggingLevelError, mcp.LoggingLevelCritical,
 		mcp.LoggingLevelAlert, mcp.LoggingLevelEmergency:
+		if session, ok := ClientSessionFromContext(ctx).(SessionWithLogging); ok {
+			session.SetLogLevel(request.Params.Level)
+		}
 		return &mcp.EmptyResult{}, nil
 	}
 	return nil, &requestError{

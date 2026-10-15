@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync/atomic"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -60,6 +61,33 @@ type SessionWithResourceSubscriptionsErr interface {
 	// for the given resource URI, or returns an error if the URI cannot be
 	// subscribed to.
 	SubscribeToResourceErr(uri string) error
+}
+
+// SessionWithLogging is an optional extension of ClientSession for a session
+// that keeps the log level a handshake-era client set with logging/setLevel
+// (2025-11-25 Utilities.md row 14). A session without it is served at
+// legacyLogLevel.
+type SessionWithLogging interface {
+	ClientSession
+	// SetLogLevel keeps the level the client asked for.
+	SetLogLevel(level mcp.LoggingLevel)
+	// GetLogLevel is the level the client asked for, or "" for none yet.
+	GetLogLevel() mcp.LoggingLevel
+}
+
+// logLevelStore keeps a session's log level; the sessions that serve a
+// handshake-era client over time embed it.
+type logLevelStore struct {
+	level atomic.Value // mcp.LoggingLevel
+}
+
+// SetLogLevel keeps the level the client asked for.
+func (s *logLevelStore) SetLogLevel(level mcp.LoggingLevel) { s.level.Store(level) }
+
+// GetLogLevel is the level the client asked for, or "" for none yet.
+func (s *logLevelStore) GetLogLevel() mcp.LoggingLevel {
+	level, _ := s.level.Load().(mcp.LoggingLevel)
+	return level
 }
 
 // SessionWithClientInfo is an extension of ClientSession that can store client info
@@ -137,20 +165,31 @@ func (s *MCPServer) buildLogNotification(notification mcp.LoggingMessageNotifica
 	}
 }
 
-// legacyLogLevel is the log threshold of a handshake-era client: error and
-// worse. Its logging/setLevel is acknowledged but not kept, since the server
-// holds no per-client state.
+// legacyLogLevel is the log threshold of a handshake-era client that set
+// none with logging/setLevel: error and worse.
 const legacyLogLevel = mcp.LoggingLevelError
+
+// legacyThreshold is a handshake-era session's log threshold: the level it
+// set with logging/setLevel, when the session keeps one, else legacyLogLevel.
+func legacyThreshold(session ClientSession) mcp.LoggingLevel {
+	if s, ok := session.(SessionWithLogging); ok {
+		if level := s.GetLogLevel(); level != "" {
+			return level
+		}
+	}
+	return legacyLogLevel
+}
 
 // SendLogMessageToClient sends a log message to the client of the request in
 // ctx if its level reaches the request's threshold: the log level a modern
-// request declares in _meta, or legacyLogLevel for a legacy one.
+// request declares in _meta, or for a legacy one the level its session
+// keeps, else legacyLogLevel.
 func (s *MCPServer) SendLogMessageToClient(ctx context.Context, notification mcp.LoggingMessageNotification) error {
 	session := ClientSessionFromContext(ctx)
 	if session == nil || !session.Initialized() {
 		return ErrNotificationNotInitialized
 	}
-	threshold := legacyLogLevel
+	threshold := legacyThreshold(session)
 	// A modern request that declares no level gets no log notifications (SEP-2575).
 	if info := RequestProtocolInfoFromContext(ctx); info != nil && info.Modern {
 		if info.LogLevel == "" {
@@ -275,7 +314,7 @@ func (s *MCPServer) SendLogMessageToSpecificClient(sessionID string, notificatio
 	if !ok || !session.Initialized() {
 		return ErrSessionNotInitialized
 	}
-	if !notification.Params.Level.ShouldSendTo(legacyLogLevel) {
+	if !notification.Params.Level.ShouldSendTo(legacyThreshold(session)) {
 		return nil
 	}
 	return s.sendNotificationToSpecificClient(session, s.buildLogNotification(notification))

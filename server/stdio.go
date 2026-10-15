@@ -192,10 +192,13 @@ func WithQueueSize(size int) StdioOption {
 type stdioSession struct {
 	clientInfoStore     // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
 	subscriptionStreams // the client's subscriptions/listen streams
+	logLevelStore       // the level a handshake-era client set with logging/setLevel
 
 	notifications chan mcp.JSONRPCNotification
 	initialized   atomic.Bool
 }
+
+var _ SessionWithLogging = (*stdioSession)(nil)
 
 func (s *stdioSession) SessionID() string {
 	return "stdio"

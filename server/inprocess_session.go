@@ -15,11 +15,14 @@ import (
 type InProcessSession struct {
 	clientInfoStore     // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
 	subscriptionStreams // the client's subscriptions/listen streams
+	logLevelStore       // the level a handshake-era client set with logging/setLevel
 
 	sessionID     string
 	notifications chan mcp.JSONRPCNotification
 	initialized   atomic.Bool
 }
+
+var _ SessionWithLogging = (*InProcessSession)(nil)
 
 // NewInProcessSession creates a session for an in-process client.
 func NewInProcessSession(sessionID string) *InProcessSession {
