@@ -605,7 +605,9 @@ func ExtractMap(data map[string]any, key string) map[string]any {
 
 // ParseContent parses a generic map into a strongly-typed Content value.
 // It extracts annotations and _meta fields from the map and sets them on
-// the returned content type.
+// the returned content type. The map is taken over: its _meta map becomes
+// the content's metadata as it is, so a caller that goes on using the map
+// should pass a copy.
 func ParseContent(contentMap map[string]any) (Content, error) {
 	contentType := ExtractString(contentMap, "type")
 

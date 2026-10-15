@@ -53,6 +53,12 @@ const (
 // write still unsent when the time is up fails, and nothing more is
 // written for that request. The default is DefaultWriteTimeout; zero or
 // less removes the bound.
+//
+// The bound is on a whole write, not on its progress: one large body, a
+// resource read or a result of many megabytes, must reach a slow client
+// within the time, or it needs a longer one. Through Handle with a writer
+// of the caller's own, a listen stream whose client went away ends only
+// when that writer's write fails, as net/http's does.
 func WithWriteTimeout(d time.Duration) StreamableHTTPOption {
 	return func(s *StreamableHTTPServer) {
 		s.writeTimeout = d

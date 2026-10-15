@@ -654,7 +654,9 @@ func WithMaxConcurrentTasks(limit int) ServerOption {
 // client that polls rather than listens may never fetch it, so a server
 // open to many clients wants a bound. Without the option a task is kept
 // for as long as its request asks, and for good when it asks nothing, as
-// the other SDKs' stores keep theirs; zero or less says the same.
+// the other SDKs' stores keep theirs; zero or less says the same. That
+// includes a task that ended at once, its arguments failing validation or
+// a hook of its creation panicking: it is kept like any other.
 func WithTaskTTL(d time.Duration) ServerOption {
 	return func(s *MCPServer) {
 		s.taskTTL = d
