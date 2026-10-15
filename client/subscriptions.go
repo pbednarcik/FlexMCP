@@ -38,6 +38,12 @@ type subscriptionState struct {
 // Notifications are delivered to the handlers registered with
 // [Client.OnNotification], exactly as they were on earlier protocol versions.
 //
+// The resource URIs recorded by [Client.Subscribe] are sent along with the
+// filter's own, and stay recorded until [Client.Unsubscribe]; the filter's
+// own URIs are this call's alone, so a later call with a narrower filter
+// narrows. One stream is open at a time: a Listen call ends the stream of an
+// earlier one.
+//
 // Listen is only available on connections using protocol version 2026-07-28 or
 // later. On a legacy connection it returns an error: notifications arrive on
 // the transport's own stream there, with no opt-in required.
@@ -52,8 +58,12 @@ func (c *Client) Listen(ctx context.Context, filter mcp.SubscriptionFilter) erro
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// The filter sent is the caller's plus the URIs Subscribe recorded, in
+	// a slice of this call's own: the caller keeps its slice, nothing of the
+	// caller's is recorded, and a Subscribe or Unsubscribe during the call
+	// writes into neither.
 	c.subscriptions.mu.Lock()
-	c.subscriptions.filter = filter
+	filter.ResourceSubscriptions = unionURIs(filter.ResourceSubscriptions, c.subscriptions.filter.ResourceSubscriptions)
 	if previous := c.subscriptions.cancel; previous != nil {
 		previous()
 	}
@@ -66,8 +76,7 @@ func (c *Client) Listen(ctx context.Context, filter mcp.SubscriptionFilter) erro
 		c.subscriptions.mu.Lock()
 		// Clear the stream only if this call still owns it. A concurrent
 		// Listen may have superseded us, and its stream must survive our
-		// return. The filter is left in place so that URIs accumulated
-		// through Subscribe remain available to a subsequent Listen.
+		// return.
 		if c.subscriptions.generation == generation {
 			c.subscriptions.cancel = nil
 		}
@@ -175,8 +184,25 @@ func (c *Client) Unsubscribe(
 	return err
 }
 
-// PendingSubscriptionFilter returns the filter that the next [Client.Listen]
-// call would use, accumulated from [Client.Subscribe] calls.
+// unionURIs is own followed by the recorded URIs not among them, each once,
+// in a new slice.
+func unionURIs(own, recorded []string) []string {
+	union := make([]string, 0, len(own)+len(recorded))
+	for _, uri := range own {
+		if !slices.Contains(union, uri) {
+			union = append(union, uri)
+		}
+	}
+	for _, uri := range recorded {
+		if !slices.Contains(union, uri) {
+			union = append(union, uri)
+		}
+	}
+	return union
+}
+
+// PendingSubscriptionFilter returns the resource URIs [Client.Subscribe]
+// recorded, which the next [Client.Listen] call adds to its filter.
 func (c *Client) PendingSubscriptionFilter() mcp.SubscriptionFilter {
 	c.subscriptions.mu.Lock()
 	defer c.subscriptions.mu.Unlock()
