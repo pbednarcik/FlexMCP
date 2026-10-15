@@ -820,6 +820,8 @@ func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error)
 			return nil, fmt.Errorf("messages is not an array")
 		}
 
+		// An explicit empty array stays an empty array (upstream #1060).
+		result.Messages = make([]PromptMessage, 0, len(messagesArr))
 		for _, message := range messagesArr {
 			messageMap, ok := message.(map[string]any)
 			if !ok {
@@ -967,6 +969,8 @@ func ParseReadResourceResult(rawMessage *json.RawMessage) (*ReadResourceResult, 
 		return nil, fmt.Errorf("contents is not an array")
 	}
 
+	// An explicit empty array stays an empty array (upstream #1060).
+	result.Contents = make([]ResourceContents, 0, len(contentArr))
 	for _, content := range contentArr {
 		// Extract content
 		contentMap, ok := content.(map[string]any)
