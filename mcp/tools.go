@@ -1536,9 +1536,13 @@ func WithOutputSchema[T any]() ToolOption {
 			return
 		}
 
-		if err := json.Unmarshal(mcpSchema, &t.OutputSchema); err != nil {
+		// Decoded into a fresh schema: decoding into the one set before
+		// would merge the two (upstream #1055).
+		var outputSchema ToolOutputSchema
+		if err := json.Unmarshal(mcpSchema, &outputSchema); err != nil {
 			return
 		}
+		t.OutputSchema = outputSchema
 
 		// Always set the type to "object" as of the current MCP spec
 		// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#output-schema

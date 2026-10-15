@@ -380,9 +380,13 @@ func WithCachedOutputSchemaKey[T any](cache *SchemaCache, key string) ToolOption
 				cache.WarmRaw(key, fresh)
 			}
 		}
-		if err := json.Unmarshal(raw, &t.OutputSchema); err != nil {
+		// Decoded into a fresh schema: decoding into the one set before
+		// would merge the two (upstream #1055).
+		var outputSchema ToolOutputSchema
+		if err := json.Unmarshal(raw, &outputSchema); err != nil {
 			return
 		}
+		t.OutputSchema = outputSchema
 		// Always set the type to "object" as of the current MCP spec.
 		// https://modelcontextprotocol.io/specification/2025-06-18/server/tools#output-schema
 		t.OutputSchema.Type = "object"
