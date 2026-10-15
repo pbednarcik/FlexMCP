@@ -8,6 +8,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -347,11 +348,18 @@ func decodeProgressToken(data []byte) (ProgressToken, error) {
 	return token, err
 }
 
+// NewMetaFromMap builds metadata from m without changing or keeping the
+// caller's map: the top level is copied, nested values are shared
+// (upstream #1057).
 func NewMetaFromMap(m map[string]any) *Meta {
+	return metaFromOwnedMap(maps.Clone(m))
+}
+
+// metaFromOwnedMap builds metadata from a map the caller gives up, as the
+// parsers do with the map they just decoded: no copy.
+func metaFromOwnedMap(m map[string]any) *Meta {
 	progressToken := m["progressToken"]
-	if progressToken != nil {
-		delete(m, "progressToken")
-	}
+	delete(m, "progressToken")
 
 	return &Meta{
 		ProgressToken:    progressToken,

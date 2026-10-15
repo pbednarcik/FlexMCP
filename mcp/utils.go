@@ -616,7 +616,7 @@ func ParseContent(contentMap map[string]any) (Content, error) {
 
 	var meta *Meta
 	if metaMap := ExtractMap(contentMap, "_meta"); metaMap != nil {
-		meta = NewMetaFromMap(metaMap)
+		meta = metaFromOwnedMap(metaMap)
 	}
 
 	switch contentType {
@@ -800,7 +800,7 @@ func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error)
 	meta, ok := jsonContent["_meta"]
 	if ok {
 		if metaMap, ok := meta.(map[string]any); ok {
-			result.Meta = NewMetaFromMap(metaMap)
+			result.Meta = metaFromOwnedMap(metaMap)
 		}
 	}
 
@@ -950,7 +950,7 @@ func ParseReadResourceResult(rawMessage *json.RawMessage) (*ReadResourceResult, 
 	meta, ok := jsonContent["_meta"]
 	if ok {
 		if metaMap, ok := meta.(map[string]any); ok {
-			result.Meta = NewMetaFromMap(metaMap)
+			result.Meta = metaFromOwnedMap(metaMap)
 		}
 	}
 
