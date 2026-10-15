@@ -59,6 +59,16 @@ func WithWriteTimeout(d time.Duration) StreamableHTTPOption {
 	}
 }
 
+// WithKeepAlive has a subscriptions/listen stream carry an SSE comment line
+// every d, a keep-alive the client ignores (Transports.md row 40), so a
+// proxy or a load balancer with an idle timeout does not cut a quiet
+// stream. Off by default; zero or less leaves it off.
+func WithKeepAlive(d time.Duration) StreamableHTTPOption {
+	return func(s *StreamableHTTPServer) {
+		s.keepAlive = d
+	}
+}
+
 // WithReadHeaderTimeout sets the http.Server's ReadHeaderTimeout for the
 // server Start builds: how long a client may take to send a request's
 // headers. The default is DefaultReadHeaderTimeout; zero or less leaves
@@ -301,6 +311,9 @@ type StreamableHTTPServer struct {
 	// writeTimeout bounds each write to a response; zero or less is no
 	// bound. See WithWriteTimeout.
 	writeTimeout time.Duration
+	// keepAlive is the interval of a listen stream's keep-alive comments;
+	// zero or less is none. See WithKeepAlive.
+	keepAlive time.Duration
 
 	tlsCertFile string
 	tlsKeyFile  string
@@ -566,8 +579,16 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 // (endpointPath). like:
 //
 //	s.Start(":8080")
+//
+// A server is not restarted: Start after Shutdown returns
+// http.ErrServerClosed, whether or not Start had run before, since the
+// listen streams Shutdown ended stay ended.
 func (s *StreamableHTTPServer) Start(addr string) error {
 	s.mu.Lock()
+	if s.shutdown != nil && s.shutdown.Err() != nil {
+		s.mu.Unlock()
+		return http.ErrServerClosed
+	}
 	if s.httpServer == nil {
 		mux := http.NewServeMux()
 		mux.Handle(s.endpointPath, s)
@@ -801,6 +822,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	if !serverHasWriteTimeout(r.ctx()) {
 		x.writeTimeout = s.writeTimeout
 	}
+	x.keepAlive = s.keepAlive
 	// A handler may keep its context, and with it the exchange, after the
 	// request; the response writer is let go when the request is done.
 	defer func() { x.w = nil }()
@@ -921,6 +943,7 @@ type postExchange struct {
 	// gone, and nothing more is written for the request.
 	dead         bool
 	writeTimeout time.Duration
+	keepAlive    time.Duration // a listen stream's keep-alive interval; zero is none
 
 	// done stops the forwarder; forwarderExited lets the response path wait
 	// until it can no longer be holding an undelivered notification.
@@ -947,6 +970,13 @@ func (x *postExchange) forward(notifications <-chan mcp.JSONRPCNotification) {
 				x.server.logger.Error("panic in notification forwarder", "panic", r)
 			}
 		}()
+		// A listen stream carries a keep-alive comment every keepAlive.
+		var keepAlive <-chan time.Time
+		if x.listening && x.keepAlive > 0 {
+			ticker := time.NewTicker(x.keepAlive)
+			defer ticker.Stop()
+			keepAlive = ticker.C
+		}
 		for {
 			select {
 			case nt := <-notifications:
@@ -954,6 +984,8 @@ func (x *postExchange) forward(notifications <-chan mcp.JSONRPCNotification) {
 					nt = tagSubscription(nt, x.requestID)
 				}
 				x.write(nt)
+			case <-keepAlive:
+				x.comment()
 			case <-x.done:
 				return
 			case <-x.ctx.Done():
@@ -976,6 +1008,23 @@ func (x *postExchange) write(nt mcp.JSONRPCNotification) {
 	x.deliver(func() error {
 		x.upgrade()
 		if err := writeSSEEvent(x.w, nt); err != nil {
+			return err
+		}
+		x.w.Flush()
+		return nil
+	})
+}
+
+// comment writes an SSE comment line, a keep-alive, to a stream already
+// committed as SSE; before that there is nothing to keep alive.
+func (x *postExchange) comment() {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if !x.canStream || !x.upgraded {
+		return
+	}
+	x.deliver(func() error {
+		if _, err := io.WriteString(x.w, ": keep-alive\n\n"); err != nil {
 			return err
 		}
 		x.w.Flush()
