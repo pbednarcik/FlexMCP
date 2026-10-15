@@ -2066,8 +2066,24 @@ func (s *MCPServer) handleToolCall(
 		(tool.Tool.Execution.TaskSupport == mcp.TaskSupportOptional ||
 			tool.Tool.Execution.TaskSupport == mcp.TaskSupportRequired)
 
-	if shouldExecuteAsTask {
-		// Route to task-augmented execution handler
+	// A task-augmented call reaches a tool whose execution allows tasks, on
+	// a server that serves them; any other is refused as method not found
+	// (2025-11-25 Tasks.md row 28), never run as a synchronous call instead.
+	if request.Params.Task != nil {
+		if !shouldExecuteAsTask {
+			return nil, &requestError{
+				id:   id,
+				code: mcp.METHOD_NOT_FOUND,
+				err:  fmt.Errorf("tool '%s' does not support task augmentation", request.Params.Name),
+			}
+		}
+		if !s.servesTasks() {
+			return nil, &requestError{
+				id:   id,
+				code: mcp.METHOD_NOT_FOUND,
+				err:  errors.New("this server does not serve tasks"),
+			}
+		}
 		return s.handleTaskAugmentedToolCall(ctx, id, request)
 	}
 
@@ -3288,4 +3304,12 @@ func getSessionID(ctx context.Context) string {
 		return session.SessionID()
 	}
 	return ""
+}
+
+// servesTasks reports whether the server declares tasks.requests.tools.call,
+// without which no tool can be task-called (2025-11-25 Tasks.md row 28).
+func (s *MCPServer) servesTasks() bool {
+	s.capabilitiesMu.RLock()
+	defer s.capabilitiesMu.RUnlock()
+	return s.capabilities.tasks != nil && s.capabilities.tasks.toolCallTasks
 }

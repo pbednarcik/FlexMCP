@@ -16,7 +16,7 @@ Every tool declares how it interacts with the task system via `mcp.TaskSupport`.
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
-| **Forbidden** | `mcp.TaskSupportForbidden` | Default. The tool cannot be invoked as a task. It runs synchronously like a regular tool. |
+| **Forbidden** | `mcp.TaskSupportForbidden` | Default. The tool runs synchronously only; a call that asks for a task is refused with a method-not-found error. |
 | **Optional** | `mcp.TaskSupportOptional` | The tool can be invoked as a task or run synchronously depending on the client's request. |
 | **Required** | `mcp.TaskSupportRequired` | The tool must be invoked as a task. Synchronous calls are rejected with an error. |
 

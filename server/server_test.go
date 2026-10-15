@@ -4520,7 +4520,7 @@ func TestMCPServer_TaskSupportValidation(t *testing.T) {
 	})
 
 	t.Run("tool with TaskSupportRequired succeeds with task param", func(t *testing.T) {
-		server := NewMCPServer("test", "1.0.0")
+		server := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 
 		// Add a tool with TaskSupportRequired
 		tool := mcp.NewTool("required_task_tool",
@@ -4587,7 +4587,7 @@ func TestMCPServer_TaskSupportValidation(t *testing.T) {
 	})
 
 	t.Run("tool with TaskSupportOptional works with task param", func(t *testing.T) {
-		server := NewMCPServer("test", "1.0.0")
+		server := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 
 		// Add a tool with TaskSupportOptional
 		tool := mcp.NewTool("optional_task_tool",
@@ -4652,8 +4652,8 @@ func TestMCPServer_TaskSupportValidation(t *testing.T) {
 		assert.Len(t, result.Content, 1)
 	})
 
-	t.Run("tool with TaskSupportForbidden works with task param", func(t *testing.T) {
-		server := NewMCPServer("test", "1.0.0")
+	t.Run("tool with TaskSupportForbidden refuses a task param", func(t *testing.T) {
+		server := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 
 		// Add a regular tool (default TaskSupportForbidden)
 		tool := mcp.NewTool("regular_tool",
@@ -4663,7 +4663,8 @@ func TestMCPServer_TaskSupportValidation(t *testing.T) {
 			return mcp.NewToolResultText("success"), nil
 		})
 
-		// Call with task param (should still work, just ignores the task param for now)
+		// Call with task param: refused, not run synchronously in its place
+		// (2025-11-25 Tasks.md row 28).
 		response := server.HandleMessage(t.Context(), []byte(`{
 			"jsonrpc": "2.0",
 			"id": 1,
@@ -4676,9 +4677,9 @@ func TestMCPServer_TaskSupportValidation(t *testing.T) {
 			}
 		}`))
 
-		// Should succeed (for now - task param is just ignored)
-		_, ok := response.(mcp.JSONRPCResponse)
-		require.True(t, ok, "Expected JSONRPCResponse, got: %T", response)
+		errorResp, ok := response.(mcp.JSONRPCError)
+		require.True(t, ok, "Expected JSONRPCError, got: %T", response)
+		assert.Equal(t, mcp.METHOD_NOT_FOUND, errorResp.Error.Code)
 	})
 
 	t.Run("tool without Execution field works normally", func(t *testing.T) {
@@ -4746,7 +4747,7 @@ func TestMCPServer_HybridModeDetection(t *testing.T) {
 	})
 
 	t.Run("TaskSupportOptional with task param routes to task execution", func(t *testing.T) {
-		server := NewMCPServer("test", "1.0.0")
+		server := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 
 		// Add a tool with TaskSupportOptional
 		tool := mcp.NewTool("hybrid_tool",
@@ -4788,7 +4789,7 @@ func TestMCPServer_HybridModeDetection(t *testing.T) {
 	})
 
 	t.Run("TaskSupportRequired with task param routes to task execution", func(t *testing.T) {
-		server := NewMCPServer("test", "1.0.0")
+		server := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 
 		// Add a tool with TaskSupportRequired
 		tool := mcp.NewTool("task_only_tool",
@@ -4829,8 +4830,8 @@ func TestMCPServer_HybridModeDetection(t *testing.T) {
 		assert.NotEmpty(t, result.Task.CreatedAt, "Expected createdAt in task")
 	})
 
-	t.Run("TaskSupportForbidden with task param executes synchronously", func(t *testing.T) {
-		server := NewMCPServer("test", "1.0.0")
+	t.Run("TaskSupportForbidden with task param is refused", func(t *testing.T) {
+		server := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 
 		// Add a regular tool (TaskSupportForbidden)
 		tool := mcp.NewTool("regular_tool",
@@ -4841,7 +4842,8 @@ func TestMCPServer_HybridModeDetection(t *testing.T) {
 			return mcp.NewToolResultText("sync result"), nil
 		})
 
-		// Call with task param - should still execute synchronously (task param ignored)
+		// Call with task param: refused, not run synchronously in its place
+		// (2025-11-25 Tasks.md row 28).
 		response := server.HandleMessage(t.Context(), []byte(`{
 			"jsonrpc": "2.0",
 			"id": 1,
@@ -4854,16 +4856,13 @@ func TestMCPServer_HybridModeDetection(t *testing.T) {
 			}
 		}`))
 
-		// Should succeed with immediate CallToolResult
-		resp, ok := response.(mcp.JSONRPCResponse)
-		require.True(t, ok, "Expected JSONRPCResponse, got: %T", response)
-		result, ok := resp.Result.(*mcp.CallToolResult)
-		require.True(t, ok, "Expected CallToolResult, got: %T", resp.Result)
-		assert.Len(t, result.Content, 1)
+		errorResp, ok := response.(mcp.JSONRPCError)
+		require.True(t, ok, "Expected JSONRPCError, got: %T", response)
+		assert.Equal(t, mcp.METHOD_NOT_FOUND, errorResp.Error.Code)
 	})
 
-	t.Run("tool without Execution field with task param executes synchronously", func(t *testing.T) {
-		server := NewMCPServer("test", "1.0.0")
+	t.Run("tool without Execution field with task param is refused", func(t *testing.T) {
+		server := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 
 		// Add a tool without Execution configuration
 		tool := mcp.NewTool("simple_tool",
@@ -4873,7 +4872,8 @@ func TestMCPServer_HybridModeDetection(t *testing.T) {
 			return mcp.NewToolResultText("sync result"), nil
 		})
 
-		// Call with task param - should still execute synchronously (no task support)
+		// Call with task param: refused, not run synchronously in its place
+		// (2025-11-25 Tasks.md row 28).
 		response := server.HandleMessage(t.Context(), []byte(`{
 			"jsonrpc": "2.0",
 			"id": 1,
@@ -4886,12 +4886,9 @@ func TestMCPServer_HybridModeDetection(t *testing.T) {
 			}
 		}`))
 
-		// Should succeed with immediate CallToolResult
-		resp, ok := response.(mcp.JSONRPCResponse)
-		require.True(t, ok, "Expected JSONRPCResponse, got: %T", response)
-		result, ok := resp.Result.(*mcp.CallToolResult)
-		require.True(t, ok, "Expected CallToolResult, got: %T", resp.Result)
-		assert.Len(t, result.Content, 1)
+		errorResp, ok := response.(mcp.JSONRPCError)
+		require.True(t, ok, "Expected JSONRPCError, got: %T", response)
+		assert.Equal(t, mcp.METHOD_NOT_FOUND, errorResp.Error.Code)
 	})
 }
 
@@ -5015,7 +5012,7 @@ func TestMCPServer_Use_MiddlewareAppliedToRegularToolAsTask(t *testing.T) {
 		}
 	}
 
-	s := NewMCPServer("test", "1.0.0")
+	s := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true))
 	tool := mcp.NewTool("hybrid_tool",
 		mcp.WithDescription("hybrid"),
 		mcp.WithTaskSupport(mcp.TaskSupportOptional),
