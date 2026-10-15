@@ -29,21 +29,22 @@ const readOnceMeta = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-0
 
 // A modern request is read once, and a malformed one still gets the answer it
 // got when each check read the body on its own: these were recorded from that
-// code before the single read replaced it.
+// code before the single read replaced it, the undecodable-params ones with
+// the fixed text that later replaced the decoder's.
 func TestHandleMessageReadsOnceWithTheSameAnswers(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"valid", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},` + readOnceMeta + `}}`,
 			`{"jsonrpc":"2.0","id":1,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"test","version":"1.0.0"}},"content":[{"type":"text","text":"ok"}],"resultType":"complete"}}`},
 		{"params array", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":[1,2]}`,
-			`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"unparsable tools/call request: json: cannot unmarshal array into Go value of type mcp.params"}}`},
+			`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid params for tools/call"}}`},
 		{"params string", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"x"}`,
-			`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"unparsable tools/call request: json: cannot unmarshal string into Go value of type mcp.params"}}`},
+			`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid params for tools/call"}}`},
 		{"name a number", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":5,` + readOnceMeta + `}}`,
 			`{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"header mismatch: Mcp-Name: failed to extract name from parameters for method \"tools/call\"","data":{"header":"Mcp-Name"}}}`},
 		{"name mismatch", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"other",` + readOnceMeta + `}}`,
 			`{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"header mismatch: Mcp-Name: header value \"echo\" does not match body value \"other\"","data":{"header":"Mcp-Name"}}}`},
 		{"_meta an array", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":[1]}}`,
-			`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"unparsable tools/call request: json: cannot unmarshal array into Go value of type map[string]interface {}"}}`},
+			`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid params for tools/call"}}`},
 		{"clientInfo the wrong shape", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":"x","io.modelcontextprotocol/clientCapabilities":{}}}}`,
 			`{"jsonrpc":"2.0","id":1,"result":{"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"test","version":"1.0.0"}},"content":[{"type":"text","text":"ok"}],"resultType":"complete"}}`},
 		{"logLevel unknown", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/logLevel":"loud","io.modelcontextprotocol/clientCapabilities":{}}}}`,

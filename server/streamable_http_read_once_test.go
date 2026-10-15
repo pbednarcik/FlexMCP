@@ -65,7 +65,7 @@ func TestStreamableHTTPReadsOnceWithTheSameAnswers(t *testing.T) {
 		{"legacy valid", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`, false, 200, "application/json",
 			`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`},
 		{"legacy params an array", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":[1]}`, false, 200, "application/json",
-			`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"unparsable tools/call request: json: cannot unmarshal array into Go value of type mcp.params"}}`},
+			`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid params for tools/call"}}`},
 		{"legacy response", `{"jsonrpc":"2.0","id":1,"result":{}}`, false, 202, "", ``},
 		{"legacy notification", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, false, 202, "", ``},
 		{"modern _meta under a legacy header", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo",` + meta + `}}`, false, 400, "application/json",

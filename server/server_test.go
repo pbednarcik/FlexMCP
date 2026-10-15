@@ -1501,7 +1501,7 @@ func TestMCPServer_HandleInvalidMessages(t *testing.T) {
 		{
 			name:        "Invalid parameters",
 			message:     `{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": "invalid"}`,
-			expectedErr: mcp.INVALID_REQUEST,
+			expectedErr: mcp.INVALID_PARAMS,
 			validateErr: func(t *testing.T, err error) {
 				unparsableErr := &UnparsableMessageError{}
 				ok := errors.As(err, &unparsableErr)
@@ -4318,7 +4318,7 @@ func TestMCPServer_Complete(t *testing.T) {
 		assert.Equal(t, mcp.JSONRPCError{
 			JSONRPC: mcp.JSONRPC_VERSION,
 			ID:      mcp.NewRequestId(int64(1)),
-			Error:   mcp.NewJSONRPCErrorDetails(mcp.INVALID_REQUEST, "unparsable completion/complete request: unknown reference type: ref/invalid", nil),
+			Error:   mcp.NewJSONRPCErrorDetails(mcp.INVALID_PARAMS, "invalid params for completion/complete", nil),
 		}, response)
 	})
 

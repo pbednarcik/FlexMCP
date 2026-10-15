@@ -180,6 +180,14 @@ func (e *UnparsableMessageError) GetMethod() mcp.MCPMethod {
 	return e.method
 }
 
+// undecodableParamsMessage is what a client is told about params that could
+// not be decoded: the decoder's own text names Go types and fields, so it
+// stays on the server, for hooks and logs.
+func undecodableParamsMessage(method mcp.MCPMethod) *string {
+	message := "invalid params for " + string(method)
+	return &message
+}
+
 // RequestError is an error that can be converted to a JSON-RPC error.
 // Implements Unwrap() to allow inspecting the error chain.
 type requestError struct {

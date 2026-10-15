@@ -223,9 +223,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -249,9 +250,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -275,9 +277,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -301,9 +304,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -333,9 +337,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -359,9 +364,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -385,9 +391,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -411,9 +418,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -437,9 +445,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -463,9 +472,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -489,9 +499,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -515,9 +526,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -541,9 +553,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -573,9 +586,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -605,9 +619,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -631,9 +646,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers
@@ -657,9 +673,10 @@ func (s *MCPServer) handleMessageRead(
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
-				id:   baseMessage.ID,
-				code: mcp.INVALID_REQUEST,
-				err:  &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				id:      baseMessage.ID,
+				code:    mcp.INVALID_PARAMS,
+				err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
 			request.Header = headers

@@ -124,10 +124,11 @@ func TestDispatchMethodsBehindAnAbsentCapabilityAreUnknown(t *testing.T) {
 }
 
 // Params that are not an object cannot decode into any request type; the
-// answer is -32600 naming the method, so the client knows which call was
-// malformed. Modern-only methods are left out: their era check needs an
-// object with _meta, so a non-object is a legacy request to them.
-func TestDispatchMalformedParamsAreAnInvalidRequest(t *testing.T) {
+// answer is -32602 with a fixed text naming the method, so the client knows
+// which call was malformed and learns nothing of the decoder. Modern-only
+// methods are left out: their era check needs an object with _meta, so a
+// non-object is a legacy request to them.
+func TestDispatchMalformedParamsAreInvalidParams(t *testing.T) {
 	srv := everyCapabilityServer()
 	for _, gate := range dispatchGates {
 		if gate.requiresModern {
@@ -135,8 +136,8 @@ func TestDispatchMalformedParamsAreAnInvalidRequest(t *testing.T) {
 		}
 		t.Run(string(gate.method), func(t *testing.T) {
 			details := dispatch(t, srv, gate.method, `5`)
-			assert.Equal(t, mcp.INVALID_REQUEST, details.Code)
-			assert.Contains(t, details.Message, "unparsable "+string(gate.method)+" request")
+			assert.Equal(t, mcp.INVALID_PARAMS, details.Code)
+			assert.Equal(t, "invalid params for "+string(gate.method), details.Message)
 		})
 	}
 }
