@@ -334,20 +334,19 @@ func NewToolResultStructured(structured any, fallbackText string) *CallToolResul
 // content and creates a JSON string fallback for backwards compatibility.
 // This is useful when you want to provide structured data without any specific text fallback.
 func NewToolResultStructuredOnly(structured any) *CallToolResult {
-	var fallbackText string
-	// Convert to JSON string for backward compatibility
+	// Convert to JSON string for backward compatibility. Content that cannot
+	// be encoded would make the whole result unencodable, and the client
+	// would get no answer: it is a tool error instead (upstream #1069).
 	jsonBytes, err := json.Marshal(structured)
 	if err != nil {
-		fallbackText = fmt.Sprintf("Error serializing structured content: %v", err)
-	} else {
-		fallbackText = string(jsonBytes)
+		return NewToolResultError(fmt.Sprintf("Error serializing structured content: %v", err))
 	}
 
 	return &CallToolResult{
 		Content: []Content{
 			TextContent{
 				Type: "text",
-				Text: fallbackText,
+				Text: string(jsonBytes),
 			},
 		},
 		StructuredContent: structured,
