@@ -2149,16 +2149,17 @@ func (s *MCPServer) handleToolCall(
 		}
 	}
 
+	// The handler runs inside the middlewares, outermost first. The chain is
+	// built outside the lock, from the slice as it is now: Use only appends,
+	// so what the slice holds does not change under a reader, and a
+	// middleware that panics while wrapping does not keep the lock.
 	finalHandler := tool.Handler
-
 	s.toolMiddlewareMu.RLock()
 	mw := s.toolHandlerMiddlewares
-
-	// Apply middlewares in reverse order
+	s.toolMiddlewareMu.RUnlock()
 	for _, m := range slices.Backward(mw) {
 		finalHandler = m(finalHandler)
 	}
-	s.toolMiddlewareMu.RUnlock()
 
 	result, err := finalHandler(ctx, request)
 	if err != nil {
@@ -2481,15 +2482,15 @@ func (s *MCPServer) executeRegularToolAsTask(
 		cancel()
 	}
 
-	// Execute the regular tool handler with middleware applied
+	// The handler runs inside the tool middlewares, the chain built outside
+	// the lock as in handleToolCall.
 	finalHandler := regularTool.Handler
-
 	s.toolMiddlewareMu.RLock()
 	mw := s.toolHandlerMiddlewares
+	s.toolMiddlewareMu.RUnlock()
 	for _, m := range slices.Backward(mw) {
 		finalHandler = m(finalHandler)
 	}
-	s.toolMiddlewareMu.RUnlock()
 
 	result, err := finalHandler(taskCtx, request)
 
