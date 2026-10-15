@@ -833,27 +833,33 @@ func (s *MCPServer) AddResources(resources ...ServerResource) {
 	s.implicitlyRegisterResourceCapabilities()
 
 	s.resourcesMu.Lock()
+	s.addResourcesLocked(resources)
+	s.resourcesMu.Unlock()
+
+	s.notifyResourcesListChanged()
+}
+
+// addResourcesLocked is AddResources under resourcesMu.
+func (s *MCPServer) addResourcesLocked(resources []ServerResource) {
 	for _, entry := range resources {
 		s.resources[entry.Resource.URI] = resourceEntry{
 			resource: entry.Resource,
 			handler:  entry.Handler,
 		}
 	}
-	s.resourcesMu.Unlock()
-
-	// When the list of available resources changes, servers that declared the listChanged capability SHOULD send a notification
-	if s.capabilities.resources.listChanged {
-		// Send notification to all initialized sessions
-		s.SendNotificationToAllClients(mcp.MethodNotificationResourcesListChanged, nil)
-	}
 }
 
-// SetResources replaces all existing resources with the provided list
+// SetResources replaces all existing resources with the provided list, in
+// one step: no read finds the resources gone between the old and the new.
 func (s *MCPServer) SetResources(resources ...ServerResource) {
+	s.implicitlyRegisterResourceCapabilities()
+
 	s.resourcesMu.Lock()
 	s.resources = make(map[string]resourceEntry, len(resources))
+	s.addResourcesLocked(resources)
 	s.resourcesMu.Unlock()
-	s.AddResources(resources...)
+
+	s.notifyResourcesListChanged()
 }
 
 // AddResource registers a new resource and its handler
@@ -919,6 +925,14 @@ func (s *MCPServer) AddResourceTemplates(resourceTemplates ...ServerResourceTemp
 	s.implicitlyRegisterResourceCapabilities()
 
 	s.resourcesMu.Lock()
+	s.addResourceTemplatesLocked(resourceTemplates)
+	s.resourcesMu.Unlock()
+
+	s.notifyResourcesListChanged()
+}
+
+// addResourceTemplatesLocked is AddResourceTemplates under resourcesMu.
+func (s *MCPServer) addResourceTemplatesLocked(resourceTemplates []ServerResourceTemplate) {
 	for _, entry := range resourceTemplates {
 		raw := entry.Template.URITemplate.Raw()
 		// A template registered again keeps its place among the others.
@@ -934,21 +948,28 @@ func (s *MCPServer) AddResourceTemplates(resourceTemplates ...ServerResourceTemp
 			order:    order,
 		}
 	}
-	s.resourcesMu.Unlock()
+}
 
-	// When the list of available resources changes, servers that declared the listChanged capability SHOULD send a notification
+// notifyResourcesListChanged tells every initialized session the resources
+// changed, when the server declared the listChanged capability.
+func (s *MCPServer) notifyResourcesListChanged() {
 	if s.capabilities.resources.listChanged {
-		// Send notification to all initialized sessions
 		s.SendNotificationToAllClients(mcp.MethodNotificationResourcesListChanged, nil)
 	}
 }
 
-// SetResourceTemplates replaces all existing resource templates with the provided list
+// SetResourceTemplates replaces all existing resource templates with the
+// provided list, in one step: no read finds the templates gone between the
+// old and the new.
 func (s *MCPServer) SetResourceTemplates(templates ...ServerResourceTemplate) {
+	s.implicitlyRegisterResourceCapabilities()
+
 	s.resourcesMu.Lock()
 	s.resourceTemplates = make(map[string]resourceTemplateEntry, len(templates))
+	s.addResourceTemplatesLocked(templates)
 	s.resourcesMu.Unlock()
-	s.AddResourceTemplates(templates...)
+
+	s.notifyResourcesListChanged()
 }
 
 // AddResourceTemplate registers a new resource template and its handler
@@ -964,15 +985,24 @@ func (s *MCPServer) AddPrompts(prompts ...ServerPrompt) {
 	s.implicitlyRegisterPromptCapabilities()
 
 	s.promptsMu.Lock()
+	s.addPromptsLocked(prompts)
+	s.promptsMu.Unlock()
+
+	s.notifyPromptsListChanged()
+}
+
+// addPromptsLocked is AddPrompts under promptsMu.
+func (s *MCPServer) addPromptsLocked(prompts []ServerPrompt) {
 	for _, entry := range prompts {
 		s.prompts[entry.Prompt.Name] = entry.Prompt
 		s.promptHandlers[entry.Prompt.Name] = entry.Handler
 	}
-	s.promptsMu.Unlock()
+}
 
-	// When the list of available prompts changes, servers that declared the listChanged capability SHOULD send a notification.
+// notifyPromptsListChanged tells every initialized session the prompts
+// changed, when the server declared the listChanged capability.
+func (s *MCPServer) notifyPromptsListChanged() {
 	if s.capabilities.prompts.listChanged {
-		// Send notification to all initialized sessions
 		s.SendNotificationToAllClients(mcp.MethodNotificationPromptsListChanged, nil)
 	}
 }
@@ -982,13 +1012,18 @@ func (s *MCPServer) AddPrompt(prompt mcp.Prompt, handler PromptHandlerFunc) {
 	s.AddPrompts(ServerPrompt{Prompt: prompt, Handler: handler})
 }
 
-// SetPrompts replaces all existing prompts with the provided list
+// SetPrompts replaces all existing prompts with the provided list, in one
+// step: no read finds the prompts gone between the old and the new.
 func (s *MCPServer) SetPrompts(prompts ...ServerPrompt) {
+	s.implicitlyRegisterPromptCapabilities()
+
 	s.promptsMu.Lock()
 	s.prompts = make(map[string]mcp.Prompt, len(prompts))
 	s.promptHandlers = make(map[string]PromptHandlerFunc, len(prompts))
+	s.addPromptsLocked(prompts)
 	s.promptsMu.Unlock()
-	s.AddPrompts(prompts...)
+
+	s.notifyPromptsListChanged()
 }
 
 // DeletePrompts removes prompts from the server
