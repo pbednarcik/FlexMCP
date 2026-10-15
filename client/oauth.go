@@ -3,6 +3,7 @@ package client
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/mark3labs/mcp-go/client/transport"
 )
@@ -25,8 +26,8 @@ var NewMemoryTokenStore = transport.NewMemoryTokenStore
 // NewOAuthStreamableHttpClient creates a new streamable-http-based MCP client with OAuth support.
 // Returns an error if the URL is invalid.
 func NewOAuthStreamableHttpClient(baseURL string, oauthConfig OAuthConfig, options ...transport.StreamableHTTPCOption) (*Client, error) {
-	// Add OAuth option to the list of options
-	options = append(options, transport.WithHTTPOAuth(oauthConfig))
+	// The OAuth option goes on a copy: the caller's slice is left alone.
+	options = append(slices.Clone(options), transport.WithHTTPOAuth(oauthConfig))
 
 	trans, err := transport.NewStreamableHTTP(baseURL, options...)
 	if err != nil {
@@ -35,11 +36,11 @@ func NewOAuthStreamableHttpClient(baseURL string, oauthConfig OAuthConfig, optio
 	return NewClient(trans), nil
 }
 
-// NewOAuthStreamableHttpClient creates a new streamable-http-based MCP client with OAuth support.
-// Returns an error if the URL is invalid.
+// NewOAuthSSEClient creates a new SSE-based MCP client with OAuth support.
+// Returns an error if the URL is invalid. The HTTP+SSE transport is
+// Deprecated; new code uses NewOAuthStreamableHttpClient.
 func NewOAuthSSEClient(baseURL string, oauthConfig OAuthConfig, options ...transport.ClientOption) (*Client, error) {
-	// Add OAuth option to the list of options
-	options = append(options, transport.WithOAuth(oauthConfig))
+	options = append(slices.Clone(options), transport.WithOAuth(oauthConfig))
 
 	trans, err := transport.NewSSE(baseURL, options...)
 	if err != nil {
