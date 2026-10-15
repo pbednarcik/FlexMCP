@@ -29,10 +29,23 @@ type resourceEntry struct {
 	handler  ResourceHandlerFunc
 }
 
-// resourceTemplateEntry holds both a template and its handler
+// resourceTemplateEntry holds a template and its handler, with the length of
+// the template's literal prefix and its registration order, which pick the
+// one served when several match a URI.
 type resourceTemplateEntry struct {
 	template mcp.ResourceTemplate
 	handler  ResourceTemplateHandlerFunc
+	literal  int
+	order    uint64
+}
+
+// templateLiteralPrefix is the length of the text before the first
+// expression of a URI template: the part a URI must carry as it is.
+func templateLiteralPrefix(raw string) int {
+	if i := strings.IndexByte(raw, '{'); i >= 0 {
+		return i
+	}
+	return len(raw)
 }
 
 // taskEntry holds task state and associated data
@@ -218,13 +231,17 @@ type MCPServer struct {
 	promptFiltersMu        sync.RWMutex
 	tasksMu                sync.RWMutex
 
-	name                       string
-	version                    string
-	implementation             mcp.Implementation
-	serverInfo                 any // serverImplementation boxed once, for result _meta
-	instructions               string
-	resources                  map[string]resourceEntry
-	resourceTemplates          map[string]resourceTemplateEntry
+	name              string
+	version           string
+	implementation    mcp.Implementation
+	serverInfo        any // serverImplementation boxed once, for result _meta
+	instructions      string
+	resources         map[string]resourceEntry
+	resourceTemplates map[string]resourceTemplateEntry
+	// resourceTemplateOrder counts the templates registered, under
+	// resourcesMu: among templates matching a URI, the earlier registered
+	// wins between equal literal prefixes.
+	resourceTemplateOrder      uint64
 	prompts                    map[string]mcp.Prompt
 	promptHandlers             map[string]PromptHandlerFunc
 	tools                      map[string]ServerTool
@@ -865,9 +882,18 @@ func (s *MCPServer) AddResourceTemplates(resourceTemplates ...ServerResourceTemp
 
 	s.resourcesMu.Lock()
 	for _, entry := range resourceTemplates {
-		s.resourceTemplates[entry.Template.URITemplate.Raw()] = resourceTemplateEntry{
+		raw := entry.Template.URITemplate.Raw()
+		// A template registered again keeps its place among the others.
+		order := s.resourceTemplates[raw].order
+		if order == 0 {
+			s.resourceTemplateOrder++
+			order = s.resourceTemplateOrder
+		}
+		s.resourceTemplates[raw] = resourceTemplateEntry{
 			template: entry.Template,
 			handler:  entry.Handler,
+			literal:  templateLiteralPrefix(raw),
+			order:    order,
 		}
 	}
 	s.resourcesMu.Unlock()
@@ -1645,24 +1671,28 @@ func (s *MCPServer) handleReadResource(
 		return readResourceResult(contents), nil
 	}
 
-	// If no direct handler found, try matching against templates
-	var matchedHandler ResourceTemplateHandlerFunc
-	var matched bool
+	// No direct handler: the templates are tried. Among those matching the
+	// URI, the one with the longest literal prefix is served, and between
+	// equal prefixes the one registered first, so two templates matching a
+	// URI answer the same way every time.
+	var best *resourceTemplateEntry
 	for _, entry := range s.resourceTemplates {
-		template := entry.template
-		if template.URITemplate == nil {
+		if entry.template.URITemplate == nil || !matchesTemplate(request.Params.URI, entry.template.URITemplate) {
 			continue
 		}
-		if matchesTemplate(request.Params.URI, template.URITemplate) {
-			matchedHandler = entry.handler
-			matched = true
-			matchedVars := template.URITemplate.Match(request.Params.URI)
-			// Convert matched variables to a map
-			request.Params.Arguments = make(map[string]any, len(matchedVars))
-			for name, value := range matchedVars {
-				request.Params.Arguments[name] = value.V
-			}
-			break
+		if best == nil || entry.literal > best.literal || (entry.literal == best.literal && entry.order < best.order) {
+			best = &entry
+		}
+	}
+	var matchedHandler ResourceTemplateHandlerFunc
+	matched := best != nil
+	if matched {
+		matchedHandler = best.handler
+		matchedVars := best.template.URITemplate.Match(request.Params.URI)
+		// Convert matched variables to a map
+		request.Params.Arguments = make(map[string]any, len(matchedVars))
+		for name, value := range matchedVars {
+			request.Params.Arguments[name] = value.V
 		}
 	}
 	s.resourcesMu.RUnlock()
