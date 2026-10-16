@@ -420,3 +420,163 @@ func (r CallToolRequest) RequireBoolSlice(key string) ([]bool, error) {
 	}
 	return nil, fmt.Errorf("required argument %q not found", key)
 }
+
+func ParseArgument(request CallToolRequest, key string, defaultVal any) any {
+	args := request.GetArguments()
+	if _, ok := args[key]; !ok {
+		return defaultVal
+	} else {
+		return args[key]
+	}
+}
+
+// ParseBoolean extracts and converts a boolean parameter from a CallToolRequest.
+// If the key is not found in the Arguments map, the defaultValue is returned.
+// Strings are read as strconv.ParseBool does ("true", "1", "f", ...).
+func ParseBoolean(request CallToolRequest, key string, defaultValue bool) bool {
+	v := ParseArgument(request, key, defaultValue)
+	return toBool(v)
+}
+
+// ParseInt64 extracts and converts an int64 parameter from a CallToolRequest.
+// It accepts the built-in integer types, floats (truncated toward zero), bools
+// (as 0 or 1), and strings or json.Number holding a base-10 integer with an
+// optional sign and surrounding space; base prefixes, decimal points and
+// exponents are invalid. A missing key, nil, an unsupported type (pointers and
+// named types included), invalid text, NaN, an infinity or a value outside
+// int64's range returns defaultValue.
+func ParseInt64(request CallToolRequest, key string, defaultValue int64) int64 {
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 64)
+	if !ok {
+		return defaultValue
+	}
+	return n
+}
+
+// ParseInt32 extracts and converts an int32 parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int32's range.
+func ParseInt32(request CallToolRequest, key string, defaultValue int32) int32 {
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 32)
+	if !ok {
+		return defaultValue
+	}
+	return int32(n)
+}
+
+// ParseInt16 extracts and converts an int16 parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int16's range.
+func ParseInt16(request CallToolRequest, key string, defaultValue int16) int16 {
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 16)
+	if !ok {
+		return defaultValue
+	}
+	return int16(n)
+}
+
+// ParseInt8 extracts and converts an int8 parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int8's range.
+func ParseInt8(request CallToolRequest, key string, defaultValue int8) int8 {
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), 8)
+	if !ok {
+		return defaultValue
+	}
+	return int8(n)
+}
+
+// ParseInt extracts and converts an int parameter from a CallToolRequest.
+// It accepts what ParseInt64 accepts and returns defaultValue for a value
+// outside int's range on the target platform.
+func ParseInt(request CallToolRequest, key string, defaultValue int) int {
+	n, ok := checkedSigned(ParseArgument(request, key, defaultValue), strconv.IntSize)
+	if !ok {
+		return defaultValue
+	}
+	return int(n)
+}
+
+// ParseUInt extracts and converts a uint parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint's range on the target platform.
+func ParseUInt(request CallToolRequest, key string, defaultValue uint) uint {
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), strconv.IntSize)
+	if !ok {
+		return defaultValue
+	}
+	return uint(n)
+}
+
+// ParseUInt64 extracts and converts a uint64 parameter from a CallToolRequest.
+// It accepts the built-in integer types, floats (truncated toward zero), bools
+// (as 0 or 1), and strings or json.Number holding an unsigned base-10 integer
+// with surrounding space; a sign, base prefixes, decimal points and exponents
+// are invalid. A missing key, nil, an unsupported type (pointers and named
+// types included), invalid text, any negative number (fractions above -1
+// included), NaN, an infinity or a value outside uint64's range returns
+// defaultValue.
+func ParseUInt64(request CallToolRequest, key string, defaultValue uint64) uint64 {
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 64)
+	if !ok {
+		return defaultValue
+	}
+	return n
+}
+
+// ParseUInt32 extracts and converts a uint32 parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint32's range.
+func ParseUInt32(request CallToolRequest, key string, defaultValue uint32) uint32 {
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 32)
+	if !ok {
+		return defaultValue
+	}
+	return uint32(n)
+}
+
+// ParseUInt16 extracts and converts a uint16 parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint16's range.
+func ParseUInt16(request CallToolRequest, key string, defaultValue uint16) uint16 {
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 16)
+	if !ok {
+		return defaultValue
+	}
+	return uint16(n)
+}
+
+// ParseUInt8 extracts and converts a uint8 parameter from a CallToolRequest.
+// It accepts what ParseUInt64 accepts and returns defaultValue for a value
+// outside uint8's range.
+func ParseUInt8(request CallToolRequest, key string, defaultValue uint8) uint8 {
+	n, ok := checkedUnsigned(ParseArgument(request, key, defaultValue), 8)
+	if !ok {
+		return defaultValue
+	}
+	return uint8(n)
+}
+
+// ParseFloat32 extracts and converts a float32 parameter from a CallToolRequest.
+func ParseFloat32(request CallToolRequest, key string, defaultValue float32) float32 {
+	v := ParseArgument(request, key, defaultValue)
+	return toFloat32(v)
+}
+
+// ParseFloat64 extracts and converts a float64 parameter from a CallToolRequest.
+func ParseFloat64(request CallToolRequest, key string, defaultValue float64) float64 {
+	v := ParseArgument(request, key, defaultValue)
+	return toFloat64(v)
+}
+
+// ParseString extracts and converts a string parameter from a CallToolRequest.
+func ParseString(request CallToolRequest, key string, defaultValue string) string {
+	v := ParseArgument(request, key, defaultValue)
+	return toString(v)
+}
+
+// ParseStringMap extracts and converts a string map parameter from a CallToolRequest.
+func ParseStringMap(request CallToolRequest, key string, defaultValue map[string]any) map[string]any {
+	v := ParseArgument(request, key, defaultValue)
+	return toStringMap(v)
+}
