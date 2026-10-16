@@ -58,6 +58,7 @@ type Stdio struct {
 	onRequest        RequestHandler
 	requestMu        sync.RWMutex
 	ctx              context.Context
+	stopHandlers     context.CancelFunc // ends ctx, the request handlers' context; Close calls it
 	ctxMu            sync.RWMutex
 	logger           *slog.Logger
 	started          bool
@@ -270,12 +271,16 @@ func (c *Stdio) Start(ctx context.Context) error {
 	c.started = true
 	c.startedMu.Unlock()
 
-	// Store the context for use in request handling
+	// The request handlers run on a context of their own, which Close ends;
+	// the child keeps ctx, and Close shuts it down in its own order.
 	c.ctxMu.Lock()
-	c.ctx = ctx
+	c.ctx, c.stopHandlers = context.WithCancel(ctx)
 	c.ctxMu.Unlock()
 
 	if err := c.spawnCommand(ctx); err != nil {
+		c.ctxMu.Lock()
+		c.stopHandlers()
+		c.ctxMu.Unlock()
 		c.startedMu.Lock()
 		c.started = false
 		c.startedMu.Unlock()
@@ -434,6 +439,13 @@ func (c *Stdio) Close() error {
 	c.lifecycleMu.Lock()
 	c.closeDone()
 	c.lifecycleMu.Unlock()
+	// End the handlers still serving requests the server sent: their
+	// answers have nowhere to go.
+	c.ctxMu.RLock()
+	if c.stopHandlers != nil {
+		c.stopHandlers()
+	}
+	c.ctxMu.RUnlock()
 
 	// Perform resource cleanup exactly once, even if readResponses already
 	// called closeDone() (e.g. server died). Without this, the old early-return
@@ -809,8 +821,14 @@ func (c *Stdio) handleIncomingRequest(request JSONRPCRequest) {
 	}()
 }
 
-// sendResponse sends a response back to the server.
+// sendResponse sends a response back to the server, unless the transport is
+// closed and stdin with it.
 func (c *Stdio) sendResponse(response JSONRPCResponse) {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		c.logger.Error("Error marshaling response", "err", err)
