@@ -369,3 +369,31 @@ func TestOAuthHandler_AFailedEarlyRefreshKeepsNoTokenAcrossARetarget(t *testing.
 	close(release)
 	assert.ErrorIs(t, <-errs, ErrOAuthAuthorizationRequired)
 }
+
+// A refresh token the authorization server refused is not sent again: every
+// later request would otherwise cost a token endpoint round trip until the
+// user authorizes again. A different refresh token, as a new authorization
+// stores, is tried as usual.
+func TestOAuthHandler_ARefusedRefreshTokenIsNotSentAgain(t *testing.T) {
+	server := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+	})
+	handler, store := newRefreshTestHandler(t, server)
+
+	for range 3 {
+		_, err := handler.GetAuthorizationHeader(t.Context())
+		require.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
+	}
+	assert.Equal(t, int32(1), server.refreshes.Load(), "refresh requests with the refused token")
+
+	require.NoError(t, store.SaveToken(t.Context(), &Token{
+		AccessToken:  "old-access",
+		RefreshToken: "another",
+		ExpiresAt:    time.Now().Add(-time.Minute),
+		Issuer:       server.URL,
+	}))
+	_, err := handler.GetAuthorizationHeader(t.Context())
+	require.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
+	assert.Equal(t, int32(2), server.refreshes.Load(), "a new refresh token is tried")
+}

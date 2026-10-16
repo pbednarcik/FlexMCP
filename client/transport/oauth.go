@@ -395,6 +395,10 @@ type OAuthHandler struct {
 	// send it.
 	refreshMu  sync.Mutex
 	refreshing *tokenRefresh
+	// refused, under refreshMu, is the last refresh token the authorization
+	// server refused with an OAuth error; it is not sent again. A network
+	// failure or a server error refuses nothing, and is tried again.
+	refused string
 
 	// saveMu makes checking and saving a token one step, so an older token
 	// request cannot overwrite what a newer one saved, and a replacement of
@@ -603,6 +607,12 @@ func (h *OAuthHandler) getValidToken(ctx context.Context, recipient string) (*To
 	if ctx.Value(savingKey{h}) != nil {
 		return nil, errSaveReentered
 	}
+	if h.wasRefused(token.RefreshToken) {
+		if !token.IsExpired() && token.AccessToken != "" {
+			return token, nil
+		}
+		return nil, ErrOAuthAuthorizationRequired
+	}
 
 	// Share one refresh among the callers that need it. With refresh token
 	// rotation, which the MCP spec requires for public clients, a second
@@ -626,6 +636,20 @@ func (h *OAuthHandler) getValidToken(ctx context.Context, recipient string) (*To
 		return nil, ErrOAuthAuthorizationRequired
 	}
 	return refresh.token, nil
+}
+
+// noteRefused records refreshToken as one the authorization server refused.
+func (h *OAuthHandler) noteRefused(refreshToken string) {
+	h.refreshMu.Lock()
+	h.refused = refreshToken
+	h.refreshMu.Unlock()
+}
+
+// wasRefused reports whether the authorization server refused refreshToken.
+func (h *OAuthHandler) wasRefused(refreshToken string) bool {
+	h.refreshMu.Lock()
+	defer h.refreshMu.Unlock()
+	return refreshToken != "" && refreshToken == h.refused
 }
 
 // refreshTimeout bounds a token refresh, which doesn't end with the context
@@ -734,7 +758,11 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint
 	// 201 Created for successful token responses.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
-		return nil, extractOAuthError(body, resp.StatusCode, "refresh token request failed")
+		err := extractOAuthError(body, resp.StatusCode, "refresh token request failed")
+		if errors.As(err, new(OAuthError)) {
+			h.noteRefused(refreshToken)
+		}
+		return nil, err
 	}
 
 	// Read the response body for parsing
@@ -747,6 +775,7 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint
 	// Check if the response contains an error field before parsing as Token
 	var oauthErr OAuthError
 	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.ErrorCode != "" {
+		h.noteRefused(refreshToken)
 		return nil, fmt.Errorf("refresh token request failed: %w", oauthErr)
 	}
 
