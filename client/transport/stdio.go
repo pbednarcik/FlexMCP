@@ -590,6 +590,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				JSONRPC string          `json:"jsonrpc"`
 				ID      json.RawMessage `json:"id,omitempty"`
 				Method  jsonrpc.Method  `json:"method"`
+				Result  json.RawMessage `json:"result,omitempty"`
 				Error   json.RawMessage `json:"error,omitempty"`
 			}
 			if err := json.Unmarshal(encoded, &baseMessage); err != nil {
@@ -649,16 +650,20 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				continue
 			}
 
-			// Otherwise, it's a response to our request. One that names its
-			// request but cannot be decoded fails that request, rather than
-			// leave it waiting for its deadline.
-			var response JSONRPCResponse
-			if err := json.Unmarshal(encoded, &response); err != nil {
-				c.logger.Error("Failing a request whose response cannot be decoded", "id", id.String(), "err", err)
-				c.answer(id.String(), nil)
-				continue
+			// Otherwise, it's a response to our request, built from the one
+			// decode above. One whose error cannot be decoded fails the request
+			// it names, rather than leave it waiting for its deadline.
+			response := JSONRPCResponse{JSONRPC: baseMessage.JSONRPC, ID: id, Result: baseMessage.Result}
+			if len(baseMessage.Error) > 0 && string(baseMessage.Error) != "null" {
+				var details mcp.JSONRPCErrorDetails
+				if err := json.Unmarshal(baseMessage.Error, &details); err != nil {
+					c.logger.Error("Failing a request whose response cannot be decoded", "id", id.String(), "err", err)
+					c.answer(id.String(), nil)
+					continue
+				}
+				response.Error = &details
 			}
-			c.answer(response.ID.String(), &response)
+			c.answer(id.String(), &response)
 		}
 	}
 }
