@@ -81,6 +81,11 @@ var (
 	// token goes only to the server it was issued for (MCP authorization,
 	// Token Audience Binding), so the redirect is not followed.
 	ErrRedirectLeavesOrigin = errors.New("redirect would send the access token to another origin")
+
+	// ErrInvalidTokenResponse is returned when a token response carries no
+	// access token, or one of a type other than Bearer (RFC 6749 §5.1, §7.1;
+	// MCP authorization sends Bearer tokens only). Nothing from it is saved.
+	ErrInvalidTokenResponse = errors.New("invalid token response")
 )
 
 // OAuthConfig holds the OAuth configuration for the client
@@ -743,6 +748,9 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint
 	var tokenResp Token
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return nil, fmt.Errorf("failed to decode token response: %w", err)
+	}
+	if err := checkTokenResponse(&tokenResp); err != nil {
+		return nil, err
 	}
 
 	// Set expiration time
@@ -2174,6 +2182,9 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return fmt.Errorf("failed to decode token response: %w", err)
 	}
+	if err := checkTokenResponse(&tokenResp); err != nil {
+		return err
+	}
 
 	// Set expiration time
 	if tokenResp.ExpiresIn > 0 {
@@ -2185,6 +2196,20 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 	tokenResp.ClientID = clientID
 
 	return h.saveIssuedToken(ctx, &tokenResp, gen)
+}
+
+// checkTokenResponse refuses a token response without an access token, or
+// with one of a type other than Bearer, before anything from it is saved
+// (RFC 6749 §5.1, §7.1). A response that names no type is taken as Bearer,
+// as a stored token without one is sent.
+func checkTokenResponse(token *Token) error {
+	if token.AccessToken == "" {
+		return fmt.Errorf("%w: no access_token", ErrInvalidTokenResponse)
+	}
+	if token.TokenType != "" && !strings.EqualFold(token.TokenType, "bearer") {
+		return fmt.Errorf("%w: token_type %q is not Bearer", ErrInvalidTokenResponse, token.TokenType)
+	}
+	return nil
 }
 
 // savingKey marks the context a handler passes to TokenStore.SaveToken.

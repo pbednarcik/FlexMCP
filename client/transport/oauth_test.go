@@ -1054,10 +1054,10 @@ func TestOAuthHandler_RefreshToken_GitHubErrorIn200Response(t *testing.T) {
 	assert.ErrorIs(t, getErr, ErrNoToken, "No token should be saved after OAuth error in 200 response")
 }
 
-// TestOAuthHandler_RefreshToken_EmptyAccessToken tests that mcp-go properly parses
-// responses where access_token is missing or empty (GitHub can return this on errors)
-// Note: The integration layer's MCPTokenStore validates and rejects empty tokens,
-// but mcp-go itself just parses what it receives.
+// TestOAuthHandler_RefreshToken_EmptyAccessToken tests that a response whose
+// access_token is missing or empty (GitHub can return this on errors) is
+// refused, not saved over the stored token: access_token is REQUIRED (RFC 6749
+// §5.1).
 func TestOAuthHandler_RefreshToken_EmptyAccessToken(t *testing.T) {
 	tokenStore := NewMemoryTokenStore()
 
@@ -1103,18 +1103,11 @@ func TestOAuthHandler_RefreshToken_EmptyAccessToken(t *testing.T) {
 	handler.SetBaseURL(server.URL + "/mcp")
 
 	ctx := t.Context()
-	token, err := handler.RefreshToken(ctx, "test-refresh-token")
+	_, err := handler.RefreshToken(ctx, "test-refresh-token")
+	require.ErrorIs(t, err, ErrInvalidTokenResponse)
 
-	// mcp-go doesn't validate empty tokens - it just parses the response
-	// The integration layer (MCPTokenStore) is responsible for validation
-	require.NoError(t, err, "mcp-go should successfully parse the response")
-
-	// Verify the token has empty access_token (as returned by server)
-	assert.Equal(t, "", token.AccessToken, "Should parse empty access_token from response")
-	assert.Equal(t, "ghr_newrefreshtoken", token.RefreshToken, "Should have refresh token")
-
-	// Note: In production, the integration layer's MCPTokenStore.SaveToken would
-	// reject this with: "access token is empty, refusing to save"
+	_, err = tokenStore.GetToken(ctx)
+	assert.ErrorIs(t, err, ErrNoToken, "nothing from the refused response is saved")
 }
 
 // TestOAuthHandler_RefreshToken_RefreshTokenRotation tests that we properly save
@@ -2595,4 +2588,59 @@ func TestOAuthHandler_AuthorizationURLKeepsTheEndpointsQuery(t *testing.T) {
 	assert.Equal(t, "a", parsed.Query().Get("tenant"))
 	assert.Equal(t, "client", parsed.Query().Get("client_id"))
 	assert.Equal(t, "state", parsed.Query().Get("state"))
+}
+
+// A token response must carry an access token, of a type the client uses
+// (RFC 6749 §5.1, §7.1; MCP authorization sends Bearer tokens only). One that
+// does not is refused, on the refresh and on the code exchange alike, and the
+// token stored before it stays.
+func TestOAuthHandler_TokenResponsesAreValidated(t *testing.T) {
+	for name, response := range map[string]map[string]any{
+		"no access token": {"access_token": "", "token_type": "bearer", "refresh_token": "rotated"},
+		"a DPoP token":    {"access_token": "bound", "token_type": "DPoP"},
+	} {
+		for _, flow := range []string{"refresh", "code exchange"} {
+			t.Run(name+" on the "+flow, func(t *testing.T) {
+				var as *httptest.Server
+				as = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if r.URL.Path == "/token" {
+						_ = json.NewEncoder(w).Encode(response)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"issuer":                           as.URL,
+						"authorization_endpoint":           as.URL + "/authorize",
+						"token_endpoint":                   as.URL + "/token",
+						"code_challenge_methods_supported": []string{"S256"},
+					})
+				}))
+				t.Cleanup(as.Close)
+				store := NewMemoryTokenStore()
+				good := &Token{AccessToken: "good", TokenType: "Bearer", RefreshToken: "refresh", Resource: as.URL + "/mcp", Issuer: as.URL, ClientID: "client"}
+				require.NoError(t, store.SaveToken(t.Context(), good))
+				handler := NewOAuthHandler(OAuthConfig{
+					ClientID:              "client",
+					ClientIssuer:          as.URL,
+					RedirectURI:           "http://localhost:8085/callback",
+					TokenStore:            store,
+					AuthServerMetadataURL: as.URL + "/.well-known/oauth-authorization-server",
+				})
+				handler.SetBaseURL(as.URL + "/mcp")
+
+				var err error
+				if flow == "refresh" {
+					_, err = handler.RefreshToken(t.Context(), "refresh")
+				} else {
+					_, err = handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+					require.NoError(t, err)
+					err = handler.ProcessAuthorizationResponse(t.Context(), "code", "state", "verifier")
+				}
+				require.ErrorIs(t, err, ErrInvalidTokenResponse)
+				stored, err := store.GetToken(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, "good", stored.AccessToken, "the refused response replaced the stored token")
+			})
+		}
+	}
 }
