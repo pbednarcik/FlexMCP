@@ -397,3 +397,40 @@ func TestOAuthHandler_ARefusedRefreshTokenIsNotSentAgain(t *testing.T) {
 	require.ErrorIs(t, err, ErrOAuthAuthorizationRequired)
 	assert.Equal(t, int32(2), server.refreshes.Load(), "a new refresh token is tried")
 }
+
+// A temporary failure refuses nothing, whether the status or the error code
+// says so: the same refresh token is sent again once the server recovers.
+func TestOAuthHandler_ATemporaryRefreshFailureIsRetried(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		code   string
+	}{
+		{"server error status", http.StatusInternalServerError, "temporarily_unavailable"},
+		{"unavailable status", http.StatusServiceUnavailable, "server_error"},
+		{"too many requests", http.StatusTooManyRequests, "invalid_request"},
+		{"server_error code", http.StatusBadRequest, "server_error"},
+		{"temporarily_unavailable in a 200", http.StatusOK, "temporarily_unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var failed atomic.Bool
+			server := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
+				if failed.CompareAndSwap(false, true) {
+					w.WriteHeader(tt.status)
+					_ = json.NewEncoder(w).Encode(map[string]any{"error": tt.code})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "recovered", "token_type": "Bearer"})
+			})
+			handler, _ := newRefreshTestHandler(t, server)
+
+			_, err := handler.GetAuthorizationHeader(t.Context())
+			require.Error(t, err)
+			header, err := handler.GetAuthorizationHeader(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, "Bearer recovered", header)
+			assert.Equal(t, int32(2), server.refreshes.Load(), "refresh requests with the same token")
+		})
+	}
+}

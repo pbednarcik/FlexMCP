@@ -398,7 +398,8 @@ type OAuthHandler struct {
 	refreshing *tokenRefresh
 	// refused, under refreshMu, is the last refresh token the authorization
 	// server refused with an OAuth error; it is not sent again. A network
-	// failure or a server error refuses nothing, and is tried again.
+	// failure or a temporary one (refusesRefreshToken) refuses nothing, and
+	// is tried again.
 	refused string
 
 	// saveMu makes checking and saving a token one step, so an older token
@@ -653,6 +654,17 @@ func (h *OAuthHandler) wasRefused(refreshToken string) bool {
 	return refreshToken != "" && refreshToken == h.refused
 }
 
+// refusesRefreshToken reports whether an OAuth error answered with status
+// refuses the refresh token. A server failure, a rate limit, or a code that
+// says the server can't answer now (RFC 6749 section 4.1.2.1) refuses
+// nothing.
+func refusesRefreshToken(status int, code string) bool {
+	if status >= http.StatusInternalServerError || status == http.StatusTooManyRequests {
+		return false
+	}
+	return code != "server_error" && code != "temporarily_unavailable"
+}
+
 // refreshTimeout bounds a token refresh, which doesn't end with the context
 // of the caller that started it.
 const refreshTimeout = 30 * time.Second
@@ -760,7 +772,8 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
 		err := extractOAuthError(body, resp.StatusCode, "refresh token request failed")
-		if errors.As(err, new(OAuthError)) {
+		var oauthErr OAuthError
+		if errors.As(err, &oauthErr) && refusesRefreshToken(resp.StatusCode, oauthErr.ErrorCode) {
 			h.noteRefused(refreshToken)
 		}
 		return nil, err
@@ -776,7 +789,9 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint
 	// Check if the response contains an error field before parsing as Token
 	var oauthErr OAuthError
 	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.ErrorCode != "" {
-		h.noteRefused(refreshToken)
+		if refusesRefreshToken(resp.StatusCode, oauthErr.ErrorCode) {
+			h.noteRefused(refreshToken)
+		}
 		return nil, fmt.Errorf("refresh token request failed: %w", oauthErr)
 	}
 

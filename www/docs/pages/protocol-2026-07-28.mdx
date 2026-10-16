@@ -311,7 +311,8 @@ need code are marked **(code)**.
 - A token that carries a refresh token is renewed in the last 10 seconds of
   its life, at most half of it; a failed early refresh keeps the token while
   it is valid. A refresh token the authorization server refused with an OAuth
-  error is not sent again; a network or server failure is retried.
+  error is not sent again; a network failure, a 5xx or 429 status, or a
+  `server_error` or `temporarily_unavailable` error is retried.
 - A token response without an `access_token`, or with a `token_type` other
   than Bearer, is refused (`ErrInvalidTokenResponse`) and nothing from it is
   saved; one naming no type is taken as Bearer. A registration response
