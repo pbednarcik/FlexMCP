@@ -125,6 +125,7 @@ func WithStreamableHTTPHost(host string) StreamableHTTPCOption {
 // give requests a deadline.
 type StreamableHTTP struct {
 	serverURL           *url.URL
+	target              string // serverURL as a string, the URL every request goes to
 	httpClient          *http.Client
 	headers             map[string]string
 	headerFunc          HTTPHeaderFunc
@@ -183,6 +184,7 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 
 	smc := &StreamableHTTP{
 		serverURL:   parsedURL,
+		target:      parsedURL.String(),
 		httpClient:  &http.Client{},
 		headers:     make(map[string]string),
 		logger:      slog.Default(),
@@ -265,7 +267,7 @@ func (c *StreamableHTTP) Close() error {
 			// notify server session closed
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.serverURL.String(), nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.target, nil)
 			if err != nil {
 				c.logger.Error("failed to create close request", "err", err)
 				return
@@ -560,7 +562,7 @@ func (c *StreamableHTTP) sendHTTP(
 	}
 
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, method, c.serverURL.String(), body)
+	req, err := http.NewRequestWithContext(ctx, method, c.target, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

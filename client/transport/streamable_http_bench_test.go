@@ -61,3 +61,27 @@ func BenchmarkStreamableHTTPSendRequest(b *testing.B) {
 		})
 	})
 }
+
+// A request costs the client a bounded number of allocations: 39 here, 40
+// when the server URL's string was made for every request.
+func TestStreamableHTTPSendRequestAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	c, err := NewStreamableHTTP("http://127.0.0.1:1/mcp", WithHTTPBasicClient(&http.Client{
+		Transport: answerRoundTripper{body: []byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	request := JSONRPCRequest{JSONRPC: "2.0", Method: "tools/call", ID: mcp.NewRequestId(int64(7))}
+	allocs := testing.AllocsPerRun(200, func() {
+		if _, err := c.SendRequest(t.Context(), request); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs > 39 {
+		t.Errorf("%v allocations per request, want at most 39", allocs)
+	}
+}
