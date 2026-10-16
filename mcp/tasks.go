@@ -1,6 +1,10 @@
 package mcp
 
 import (
+	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
+	"net/http"
 	"time"
 )
 
@@ -232,4 +236,212 @@ func WithModelImmediateResponse(message string) *Meta {
 			ModelImmediateResponseMetaKey: message,
 		},
 	}
+}
+
+/* Tasks */
+
+// TasksCapability represents the task capabilities that a client or server may support.
+// Tasks enable long-running, asynchronous operations with status polling.
+type TasksCapability struct {
+	// Whether the party supports the tasks/list operation.
+	List *struct{} `json:"list,omitempty"`
+	// Whether the party supports the tasks/cancel operation.
+	Cancel *struct{} `json:"cancel,omitempty"`
+	// Requests that can be augmented with task metadata.
+	Requests *TaskRequestsCapability `json:"requests,omitempty"`
+}
+
+// TaskRequestsCapability indicates which request types support task augmentation.
+type TaskRequestsCapability struct {
+	// Tool-related capabilities.
+	Tools *struct {
+		// Whether tools/call can be augmented with task metadata.
+		Call *struct{} `json:"call,omitempty"`
+	} `json:"tools,omitempty"`
+	// Sampling-related capabilities.
+	Sampling *struct {
+		// Whether sampling/createMessage can be augmented with task metadata.
+		CreateMessage *struct{} `json:"createMessage,omitempty"`
+	} `json:"sampling,omitempty"`
+	// Elicitation-related capabilities.
+	Elicitation *struct {
+		// Whether elicitation/create can be augmented with task metadata.
+		Create *struct{} `json:"create,omitempty"`
+	} `json:"elicitation,omitempty"`
+}
+
+// TaskStatus represents the execution state of a task.
+type TaskStatus string
+
+const (
+	// TaskStatusWorking indicates the request is currently being processed.
+	TaskStatusWorking TaskStatus = "working"
+	// TaskStatusInputRequired indicates the receiver needs input from the requestor.
+	// NOTE: This status is defined by the spec but not yet implemented in this SDK.
+	// The input_required flow requires integration with elicitation which is planned
+	// for a future release.
+	TaskStatusInputRequired TaskStatus = "input_required"
+	// TaskStatusCompleted indicates the request completed successfully.
+	TaskStatusCompleted TaskStatus = "completed"
+	// TaskStatusFailed indicates the request did not complete successfully.
+	TaskStatusFailed TaskStatus = "failed"
+	// TaskStatusCancelled indicates the request was cancelled before completion.
+	TaskStatusCancelled TaskStatus = "cancelled"
+)
+
+// IsTerminal returns true if the task status is terminal (completed, failed, or cancelled).
+func (s TaskStatus) IsTerminal() bool {
+	return s == TaskStatusCompleted || s == TaskStatusFailed || s == TaskStatusCancelled
+}
+
+// Task represents the execution state of a request.
+type Task struct {
+	// Unique identifier for the task.
+	TaskId string `json:"taskId"`
+	// Current state of the task execution.
+	Status TaskStatus `json:"status"`
+	// Optional human-readable message describing the current state.
+	StatusMessage string `json:"statusMessage,omitempty"`
+	// ISO 8601 timestamp when the task was created.
+	CreatedAt string `json:"createdAt"`
+	// ISO 8601 timestamp when the task was last updated.
+	LastUpdatedAt string `json:"lastUpdatedAt"`
+	// Time in milliseconds from creation before task may be deleted.
+	// If null, the task has no expiration.
+	TTL *int64 `json:"ttl"`
+	// Suggested time in milliseconds between status checks.
+	PollInterval *int64 `json:"pollInterval,omitempty"`
+}
+
+// GetName returns the task ID, implementing the Named interface for pagination.
+func (t Task) GetName() string {
+	return t.TaskId
+}
+
+// TaskParams represents the task metadata included when augmenting a request.
+type TaskParams struct {
+	// Requested duration in milliseconds to retain task from creation.
+	TTL *int64 `json:"ttl,omitempty"`
+}
+
+// CreateTaskResult is returned immediately when a task-augmented request is accepted.
+// It contains task metadata rather than the actual operation result.
+type CreateTaskResult struct {
+	Result
+	Task              Task      `json:"task"`
+	Content           []Content `json:"-"`
+	StructuredContent any       `json:"-"`
+	IsError           bool      `json:"-"`
+}
+
+// GetTaskRequest retrieves the current status of a task.
+type GetTaskRequest struct {
+	Request
+	Header http.Header   `json:"-"`
+	Params GetTaskParams `json:"params"`
+}
+
+type GetTaskParams struct {
+	TaskId string `json:"taskId"`
+}
+
+// GetTaskResult returns the current state of a task.
+type GetTaskResult struct {
+	Result
+	Task
+}
+
+// ListTasksRequest retrieves a paginated list of tasks.
+type ListTasksRequest struct {
+	PaginatedRequest
+	Header http.Header `json:"-"`
+}
+
+// ListTasksResult returns a list of tasks.
+type ListTasksResult struct {
+	PaginatedResult
+	Tasks []Task `json:"tasks"`
+}
+
+// TaskResultRequest retrieves the result of a completed task.
+type TaskResultRequest struct {
+	Request
+	Header http.Header      `json:"-"`
+	Params TaskResultParams `json:"params"`
+}
+
+type TaskResultParams struct {
+	TaskId string `json:"taskId"`
+}
+
+// TaskResultResult contains the actual operation result.
+// For task-augmented tool calls, this embeds the CallToolResult fields.
+type TaskResultResult struct {
+	Result
+	// Tool call result fields (for task-augmented tool calls)
+	Content           []Content `json:"content,omitempty"`
+	StructuredContent any       `json:"structuredContent,omitempty"`
+	// RawStructuredContent is the structured content as JSON. When set,
+	// MarshalJSON writes it in place of StructuredContent, so numbers that a
+	// float64 cannot hold exactly pass through a parsed result unchanged.
+	RawStructuredContent json.RawMessage `json:"-"`
+	IsError              bool            `json:"isError,omitempty"`
+}
+
+// MarshalJSON implements custom JSON marshaling for TaskResultResult.
+// structuredContent is written from RawStructuredContent when it is set.
+func (r TaskResultResult) MarshalJSON() ([]byte, error) {
+	return json.Marshal(r.wire())
+}
+
+// MarshalJSONTo writes the result into enc by the encoder's own rules, as a
+// TaskResultResult without methods would be written, with structuredContent
+// from RawStructuredContent when it is set.
+func (r TaskResultResult) MarshalJSONTo(enc *jsontext.Encoder) error {
+	return jsonv2.MarshalEncode(enc, r.wire())
+}
+
+// taskResultFields is TaskResultResult without its methods.
+type taskResultFields TaskResultResult
+
+// taskResultWire is a TaskResultResult as it is written: its fields, with
+// structuredContent taken from the raw bytes when there are any.
+type taskResultWire struct {
+	taskResultFields
+	StructuredContent any `json:"structuredContent,omitempty"`
+}
+
+func (r TaskResultResult) wire() *taskResultWire {
+	out := &taskResultWire{taskResultFields: taskResultFields(r), StructuredContent: r.StructuredContent}
+	if len(r.RawStructuredContent) > 0 {
+		out.StructuredContent = r.RawStructuredContent
+	}
+	return out
+}
+
+// CancelTaskRequest cancels an in-progress task.
+type CancelTaskRequest struct {
+	Request
+	Header http.Header      `json:"-"`
+	Params CancelTaskParams `json:"params"`
+}
+
+type CancelTaskParams struct {
+	TaskId string `json:"taskId"`
+}
+
+// CancelTaskResult returns the cancelled task state.
+type CancelTaskResult struct {
+	Result
+	Task
+}
+
+// TaskStatusNotification is sent when a task's status changes.
+type TaskStatusNotification struct {
+	Notification
+	Params TaskStatusNotificationParams `json:"params"`
+}
+
+type TaskStatusNotificationParams struct {
+	Task
 }

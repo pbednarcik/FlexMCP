@@ -1,6 +1,13 @@
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
+	"maps"
+	"slices"
+	"strconv"
+)
 
 // Well-known _meta keys defined by protocol version 2026-07-28 (SEP-2575).
 //
@@ -194,4 +201,164 @@ func (m *Meta) SubscriptionID() any {
 // field.
 func (m *Meta) SetSubscriptionID(id any) {
 	m.SetMetaField(MetaKeySubscriptionID, id)
+}
+
+// Meta is metadata attached to a request's parameters. This can include fields
+// formally defined by the protocol or other arbitrary data.
+type Meta struct {
+	// If specified, the caller is requesting out-of-band progress
+	// notifications for this request (as represented by
+	// notifications/progress). The value of this parameter is an
+	// opaque token that will be attached to any subsequent
+	// notifications. The receiver is not obligated to provide these
+	// notifications.
+	ProgressToken ProgressToken
+
+	// AdditionalFields are any fields present in the Meta that are not
+	// otherwise defined in the protocol.
+	AdditionalFields map[string]any
+}
+
+// MarshalJSON writes m as [Meta.MarshalJSONTo] does, with encoding/json's own
+// options.
+func (m *Meta) MarshalJSON() ([]byte, error) {
+	return jsonv2.Marshal(m, metaJSONOptions)
+}
+
+// metaJSONOptions are encoding/json's own, so [Meta.MarshalJSON] writes what
+// json.Marshal would.
+var metaJSONOptions = json.DefaultOptionsV1()
+
+// MarshalJSONTo writes the fields as one object into the encoder of the value
+// being marshaled, keys in the order json.Marshal gives a map's, with
+// progressToken among them unless a field of that name overrides it. Written
+// straight out, a _meta needs no merged copy of its map and no buffer of its
+// own; json.Marshal calls it in preference to MarshalJSON. A value that cannot
+// be encoded fails the write with the encoder left within the object, as
+// encoding/json/v2's own types leave it; json.Marshal and json.Encoder write
+// nothing of a value that failed.
+func (m *Meta) MarshalJSONTo(enc *jsontext.Encoder) error {
+	_, overridden := m.AdditionalFields["progressToken"]
+	withToken := m.ProgressToken != nil && !overridden
+	count := len(m.AdditionalFields)
+	if withToken {
+		count++
+	}
+	keys := make([]string, 0, count)
+	for key := range m.AdditionalFields {
+		keys = append(keys, key)
+	}
+	if withToken {
+		keys = append(keys, "progressToken")
+	}
+	slices.Sort(keys)
+
+	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		value := m.AdditionalFields[key]
+		if withToken && key == "progressToken" {
+			value = m.ProgressToken
+		}
+		if err := writeMetaName(enc, key); err != nil {
+			return err
+		}
+		// A value is written by encoding/json's own rules, whatever the
+		// enclosing encoder's options, as MarshalJSON's output always was.
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		if err := enc.WriteValue(jsontext.Value(encoded)); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(jsontext.EndObject)
+}
+
+// writeMetaName writes a key as json.Marshal writes a map's: a key no encoder
+// escapes goes straight in; any other is encoded by encoding/json first, so
+// the enclosing encoder's options do not change it.
+func writeMetaName(enc *jsontext.Encoder, key string) error {
+	if plainMetaName(key) {
+		return enc.WriteToken(jsontext.String(key))
+	}
+	encoded, err := json.Marshal(key)
+	if err != nil {
+		return err
+	}
+	return enc.WriteValue(jsontext.Value(encoded))
+}
+
+// plainMetaName reports whether every encoder writes key as it is: printable
+// ASCII with no quote, backslash or HTML-sensitive character.
+func plainMetaName(key string) bool {
+	for i := 0; i < len(key); i++ {
+		switch c := key[i]; {
+		case c < 0x20, c >= 0x7f, c == '"', c == '\\', c == '<', c == '>', c == '&':
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Meta) UnmarshalJSON(data []byte) error {
+	raw := make(map[string]any)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	token := raw["progressToken"]
+	if _, number := token.(float64); number {
+		var exact struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+		}
+		if err := json.Unmarshal(data, &exact); err != nil {
+			return err
+		}
+		var err error
+		if token, err = decodeProgressToken(exact.ProgressToken); err != nil {
+			return err
+		}
+	}
+	m.ProgressToken = token
+	delete(raw, "progressToken")
+	m.AdditionalFields = raw
+	return nil
+}
+
+// decodeProgressToken decodes a progress token, a string or a number, with an
+// integer kept exact as a request id is: an int64, or a json.Number past it,
+// so the token comes back on its notifications as the request sent it. Any
+// other number is a float64.
+func decodeProgressToken(data []byte) (ProgressToken, error) {
+	if isIntegerLiteral(data) {
+		i, err := strconv.ParseInt(string(data), 10, 64)
+		if err == nil {
+			return i, nil
+		}
+		return json.Number(data), nil
+	}
+	var token any
+	err := json.Unmarshal(data, &token)
+	return token, err
+}
+
+// NewMetaFromMap builds metadata from m without changing or keeping the
+// caller's map: the top level is copied, nested values are shared
+// (upstream #1057).
+func NewMetaFromMap(m map[string]any) *Meta {
+	return metaFromOwnedMap(maps.Clone(m))
+}
+
+// metaFromOwnedMap builds metadata from a map the caller gives up, as the
+// parsers do with the map they just decoded: no copy.
+func metaFromOwnedMap(m map[string]any) *Meta {
+	progressToken := m["progressToken"]
+	delete(m, "progressToken")
+
+	return &Meta{
+		ProgressToken:    progressToken,
+		AdditionalFields: m,
+	}
 }
