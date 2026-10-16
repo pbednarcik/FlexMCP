@@ -321,10 +321,11 @@ func readBounded(r io.Reader, limit, length int64) ([]byte, error) {
 	// fills it is too long as well.
 	most := int(min(limit, math.MaxInt-1)) + 1
 	// A body of the named length fits with a byte to spare, so its end is
-	// read without growing the buffer.
+	// read without growing the buffer. The byte is added after the cap, so
+	// the largest length a request can name does not overflow.
 	first := 512
 	if length >= 0 {
-		first = int(min(length+1, firstBodyBuffer))
+		first = int(min(length, firstBodyBuffer-1)) + 1
 	}
 	b := make([]byte, 0, min(first, most))
 	for {
@@ -333,7 +334,7 @@ func readBounded(r io.Reader, limit, length int64) ([]byte, error) {
 			// A step that would pass the named length stops a byte past it,
 			// in a buffer made at that size, which append's growth would
 			// round past.
-			if rest := length + 1 - int64(len(b)); rest > 0 && rest < int64(grow) {
+			if rest := length - int64(len(b)) + 1; rest > 0 && rest < int64(grow) {
 				grown := make([]byte, len(b), len(b)+int(rest))
 				copy(grown, b)
 				b = grown

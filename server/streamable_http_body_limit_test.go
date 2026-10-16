@@ -181,3 +181,23 @@ func TestReadBoundedSizesTheBufferFromTheNamedLength(t *testing.T) {
 	}).AllocedBytesPerOp()
 	assert.LessOrEqual(t, perRead, int64(4*len(partial)), "bytes for a body a fortieth of its named length")
 }
+
+// The largest length a request can name, under the largest bound, sizes no
+// buffer past what int64 holds: the body is read, not a panic.
+func TestReadBoundedTakesTheLargestNamedLength(t *testing.T) {
+	t.Run("reader", func(t *testing.T) {
+		got, err := readBounded(bytes.NewBufferString("{}"), math.MaxInt64, math.MaxInt64)
+		require.NoError(t, err)
+		assert.Equal(t, "{}", string(got))
+	})
+	t.Run("ServeHTTP", func(t *testing.T) {
+		server := NewStreamableHTTPServer(NewMCPServer("t", "1"), WithMaxRequestBodyBytes(math.MaxInt64))
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		req.ContentLength = math.MaxInt64
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+}
