@@ -76,11 +76,14 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 					c.logger.Error("failed to unmarshal notification", "err", err)
 					return
 				}
+				// The handler runs outside the lock, so one that sets the
+				// handler does not deadlock the stream.
 				c.notifyMu.RLock()
-				if c.notificationHandler != nil {
-					c.notificationHandler(notification)
-				}
+				handler := c.notificationHandler
 				c.notifyMu.RUnlock()
+				if handler != nil {
+					handler(notification)
+				}
 			case envelope.Method.Present && !readableID:
 				// A request id is a string or an integer and never null: a
 				// server request whose id cannot be read is answered as invalid.

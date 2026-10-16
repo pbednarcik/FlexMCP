@@ -492,11 +492,14 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			if err := json.Unmarshal(encoded, &notification); err != nil {
 				return
 			}
+			// The handler runs outside the lock, so one that sets the handler
+			// does not deadlock the stream.
 			c.notifyMu.RLock()
-			if c.onNotification != nil {
-				c.onNotification(notification)
-			}
+			handler := c.onNotification
 			c.notifyMu.RUnlock()
+			if handler != nil {
+				handler(notification)
+			}
 			return
 		case envelope.Method.Present && !readableID:
 			// A request id is a string or an integer and never null.
