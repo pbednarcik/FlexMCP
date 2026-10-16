@@ -30,6 +30,11 @@ func (c *Client) IterTools(
 	return func(yield func(mcp.Tool, error) bool) {
 		request := request
 		seen := seenCursors(request.Params.Cursor)
+		// A walk from the first page to the last is the server's whole list,
+		// and replaces the tool cache as ListTools does; one the caller stops
+		// early, or that starts at a cursor, only merges its pages.
+		var whole []mcp.Tool
+		collect := request.Params.Cursor == nil && c.mirrorsHeaders()
 		for {
 			if err := ctx.Err(); err != nil {
 				yield(mcp.Tool{}, err)
@@ -40,12 +45,18 @@ func (c *Client) IterTools(
 				yield(mcp.Tool{}, err)
 				return
 			}
+			if collect {
+				whole = append(whole, result.Tools...)
+			}
 			for _, tool := range result.Tools {
 				if !yield(tool, nil) {
 					return
 				}
 			}
 			if result.NextCursor == nil {
+				if collect {
+					c.replaceTools(whole)
+				}
 				return
 			}
 			if err := noteListCursor(seen, *result.NextCursor); err != nil {

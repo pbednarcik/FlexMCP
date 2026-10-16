@@ -109,3 +109,34 @@ func TestAWalkFromACursorMergesIntoTheToolCache(t *testing.T) {
 	assert.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"a"}`)), "a stays known after a walk from a later page")
 	assert.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"b"}`)))
 }
+
+// IterTools caches as ListTools does: a walk from the first page to the last
+// is the server's whole list and replaces the cache, while a walk the caller
+// stops early only merges its pages.
+func TestACompleteIterationReplacesTheToolCache(t *testing.T) {
+	iterate := func(c *Client, stopEarly bool) {
+		for _, err := range c.IterTools(t.Context(), mcp.ListToolsRequest{}) {
+			require.NoError(t, err)
+			if stopEarly {
+				break
+			}
+		}
+	}
+	for name, stopEarly := range map[string]bool{"complete": false, "stopped early": true} {
+		t.Run(name, func(t *testing.T) {
+			tr := &scriptedHTTPTransport{scriptedTransport{respond: listingScript([]string{"a", "b"}, []string{"b"})}}
+			c := NewClient(tr)
+			require.NoError(t, c.Start(t.Context()))
+			_, err := c.Initialize(t.Context(), mcp.InitializeRequest{})
+			require.NoError(t, err)
+
+			iterate(c, false)
+			require.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"a"}`)), "a is known after the first listing")
+
+			iterate(c, stopEarly)
+			assert.Equal(t, stopEarly, c.toolForCall(json.RawMessage(`{"name":"a"}`)) != nil,
+				"a is forgotten only after a complete walk without it")
+			assert.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"b"}`)))
+		})
+	}
+}
