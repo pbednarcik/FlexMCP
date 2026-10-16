@@ -62,6 +62,11 @@ type Stdio struct {
 	logger           *slog.Logger
 	started          bool
 	startedMu        sync.Mutex
+	// lifecycleMu makes a Start, spawn included, one step against another
+	// Start and against Close's closing of done: a closed transport spawns
+	// nothing, and Close reads cmd, stdin and stderr after any spawn wrote
+	// them.
+	lifecycleMu sync.Mutex
 }
 
 const (
@@ -245,7 +250,18 @@ func NewIO(input io.Reader, output io.WriteCloser, logging io.ReadCloser) *Stdio
 	}
 }
 
+// Start launches the command, if the transport has one, and starts reading
+// its output. ctx governs the child's whole life and every request handler.
+// Start is idempotent, waits for a Start in progress, and refuses with
+// ErrTransportClosed once the transport is closed.
 func (c *Stdio) Start(ctx context.Context) error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	select {
+	case <-c.done:
+		return ErrTransportClosed
+	default:
+	}
 	c.startedMu.Lock()
 	if c.started {
 		c.startedMu.Unlock()
@@ -413,8 +429,11 @@ func (c *Stdio) closeDone() {
 // Returns an error if there are issues closing stdin or waiting for the subprocess to terminate.
 // Safe to call multiple times and concurrently with readResponses calling closeDone().
 func (c *Stdio) Close() error {
-	// Signal all in-flight requests to unblock.
+	// Signal all in-flight requests to unblock, after any Start in progress
+	// has finished spawning.
+	c.lifecycleMu.Lock()
 	c.closeDone()
+	c.lifecycleMu.Unlock()
 
 	// Perform resource cleanup exactly once, even if readResponses already
 	// called closeDone() (e.g. server died). Without this, the old early-return
