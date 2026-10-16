@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -50,7 +52,7 @@ type Stdio struct {
 	stderr           io.ReadCloser
 	stderrWriter     io.Writer
 	stderrRing       *stderrBuffer
-	responses        map[string]chan *JSONRPCResponse
+	responses        map[responseKey]chan *JSONRPCResponse
 	mu               sync.RWMutex
 	done             chan struct{}
 	closeOnce        sync.Once
@@ -222,7 +224,7 @@ func NewStdioWithOptions(
 		args:    args,
 		env:     env,
 
-		responses: make(map[string]chan *JSONRPCResponse),
+		responses: make(map[responseKey]chan *JSONRPCResponse),
 		done:      make(chan struct{}),
 		ctx:       context.Background(),
 		logger:    slog.Default(),
@@ -245,7 +247,7 @@ func NewIO(input io.Reader, output io.WriteCloser, logging io.ReadCloser) *Stdio
 		stdout: bufio.NewReader(input),
 		stderr: logging,
 
-		responses: make(map[string]chan *JSONRPCResponse),
+		responses: make(map[responseKey]chan *JSONRPCResponse),
 		done:      make(chan struct{}),
 		ctx:       context.Background(),
 		logger:    slog.Default(),
@@ -677,12 +679,12 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				var details mcp.JSONRPCErrorDetails
 				if err := json.Unmarshal(baseMessage.Error, &details); err != nil {
 					c.logger.Error("Failing a request whose response cannot be decoded", "id", id.String(), "err", err)
-					c.answer(id.String(), nil)
+					c.answer(responseKeyOf(id), nil)
 					continue
 				}
 				response.Error = &details
 			}
-			c.answer(id.String(), &response)
+			c.answer(responseKeyOf(id), &response)
 		}
 	}
 }
@@ -705,9 +707,43 @@ func readLine(r *bufio.Reader, buf []byte) ([]byte, error) {
 	}
 }
 
+// responseKey keys a pending request's response channel: the id's String
+// form, made comparable without building it. An integer id, which String
+// writes as "int64:N", is n; a string id is its text; any other is its
+// String.
+type responseKey struct {
+	kind uint8
+	n    int64
+	s    string
+}
+
+const (
+	intKey = iota + 1
+	stringKey
+	otherKey
+)
+
+// responseKeyOf is id's response key. Two ids share one exactly when their
+// String forms are equal.
+func responseKeyOf(id mcp.RequestId) responseKey {
+	switch v := id.Value().(type) {
+	case int64:
+		return responseKey{kind: intKey, n: v}
+	case string:
+		return responseKey{kind: stringKey, s: v}
+	}
+	s := id.String()
+	if digits, ok := strings.CutPrefix(s, "int64:"); ok {
+		if n, err := strconv.ParseInt(digits, 10, 64); err == nil {
+			return responseKey{kind: intKey, n: n}
+		}
+	}
+	return responseKey{kind: otherKey, s: s}
+}
+
 // answer hands response to the request waiting under idKey, if any; a nil
 // response tells it the answer could not be decoded.
-func (c *Stdio) answer(idKey string, response *JSONRPCResponse) {
+func (c *Stdio) answer(idKey responseKey, response *JSONRPCResponse) {
 	c.mu.RLock()
 	ch, exists := c.responses[idKey]
 	c.mu.RUnlock()
@@ -760,8 +796,7 @@ func (c *Stdio) SendRequest(
 	}
 	requestBytes = append(requestBytes, '\n')
 
-	// Create string key for map lookup
-	idKey := request.ID.String()
+	idKey := responseKeyOf(request.ID)
 
 	// Register response channel
 	responseChan := make(chan *JSONRPCResponse, 1)

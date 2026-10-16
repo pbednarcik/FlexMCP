@@ -22,7 +22,7 @@ import (
 // can be exercised deterministically without spawning a subprocess.
 func newBareStdio() *Stdio {
 	return &Stdio{
-		responses: make(map[string]chan *JSONRPCResponse),
+		responses: make(map[responseKey]chan *JSONRPCResponse),
 		done:      make(chan struct{}),
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -160,7 +160,7 @@ func TestStdio_SendRequest_DoneWithoutResponse(t *testing.T) {
 
 	stdio.mu.RLock()
 	defer stdio.mu.RUnlock()
-	require.NotContains(t, stdio.responses, mcp.NewRequestId(int64(1)).String())
+	require.NotContains(t, stdio.responses, responseKeyOf(mcp.NewRequestId(int64(1))))
 }
 
 // injectingWriter closes the done channel on the first Write and delivers a
@@ -170,7 +170,7 @@ type injectingWriter struct {
 	done  chan struct{}
 	once  sync.Once
 	stdio *Stdio
-	idKey string
+	idKey responseKey
 }
 
 // Write closes the done channel once and delivers a canned response into the
@@ -199,7 +199,7 @@ func (w *injectingWriter) Close() error { return nil }
 // just before close wins over ErrTransportClosed.
 func TestStdio_SendRequest_DoneWithBufferedResponse(t *testing.T) {
 	stdio := newBareStdio()
-	idKey := mcp.NewRequestId(int64(1)).String()
+	idKey := responseKeyOf(mcp.NewRequestId(int64(1)))
 	stdio.stdin = &injectingWriter{done: stdio.done, stdio: stdio, idKey: idKey}
 
 	// A response delivered just before close must win over ErrTransportClosed.

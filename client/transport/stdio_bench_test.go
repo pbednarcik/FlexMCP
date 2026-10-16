@@ -69,8 +69,8 @@ func BenchmarkStdioRoundTrip(b *testing.B) {
 }
 
 // A round trip costs a bounded number of allocations, the in-memory
-// server's included: 15, one fewer than when the response id was decoded
-// through json.Unmarshal, which put it on the heap.
+// server's included: 13; 15 while the response map was keyed by the id's
+// String, 16 while the response id was decoded through json.Unmarshal.
 func TestStdioRoundTripAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -95,7 +95,7 @@ func TestStdioRoundTripAllocations(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if allocs > 15 {
-		t.Errorf("%v allocations per round trip, want at most 15", allocs)
+	if allocs > 13 {
+		t.Errorf("%v allocations per round trip, want at most 13", allocs)
 	}
 }
