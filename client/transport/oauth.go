@@ -343,7 +343,7 @@ type OAuthHandler struct {
 	advertisedPRMURL string
 	// metadataMu protects baseURL, advertisedPRMURL, serverMetadata,
 	// metadataFetchErr, metadataOnce, config.ProtectedResourceMetadataURL,
-	// resourceURL and resourceScopes. It MUST NOT be held across HTTP I/O —
+	// resourceURL, knownIssuer and resourceScopes. It MUST NOT be held across HTTP I/O —
 	// see getServerMetadata for the snapshot/publish discipline that keeps
 	// network round trips out of the critical section (#871).
 	metadataMu  sync.Mutex
@@ -365,7 +365,7 @@ type OAuthHandler struct {
 	registeredIssuer     string
 
 	// mu protects expectedState, expectedIssuer, issuerRequired,
-	// expectedResource, challengedScopes, and the client credentials:
+	// expectedResource, challengedScopes, target, and the client credentials:
 	// config.ClientID, config.ClientSecret, registeredAuthMethod and
 	// registeredIssuer, which are replaced and read together.
 	mu            sync.RWMutex
@@ -389,7 +389,8 @@ type OAuthHandler struct {
 	// read the server it is for and has not yet recorded itself.
 	testHookFlowSnapshot func()
 
-	// refreshMu protects refreshing, the token refresh in flight, if any.
+	// refreshMu protects refreshing, the token refresh in flight, if any, and
+	// refused.
 	// Callers of this handler that find the token expired share it: a
 	// refresh token may be good for a single use, so they must not each
 	// send it.
@@ -837,15 +838,15 @@ func (h *OAuthHandler) GetClientID() string {
 }
 
 // extractOAuthError attempts to parse an OAuth error response from the response body
-func extractOAuthError(body []byte, statusCode int, context string) error {
+func extractOAuthError(body []byte, statusCode int, message string) error {
 	// Try to parse the error as an OAuth error response
 	var oauthErr OAuthError
 	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.ErrorCode != "" {
-		return fmt.Errorf("%s: %w", context, oauthErr)
+		return fmt.Errorf("%s: %w", message, oauthErr)
 	}
 
 	// If not a valid OAuth error, return the raw response
-	return fmt.Errorf("%s with status %d: %s", context, statusCode, body)
+	return fmt.Errorf("%s with status %d: %s", message, statusCode, body)
 }
 
 // SetProtectedResourceMetadataURL updates the protected resource metadata URL
