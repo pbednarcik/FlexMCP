@@ -40,3 +40,35 @@ func TestClient_ServerRequestErrorsCarryTheirKind(t *testing.T) {
 		})
 	}
 }
+
+// stubSampling answers every sampling request; the test never reaches it.
+type stubSampling struct{}
+
+func (stubSampling) CreateMessage(context.Context, mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+	return &mcp.CreateMessageResult{}, nil
+}
+
+// Sampling content that does not parse is mcp.ErrInvalidParams (-32602),
+// whether it is one block or an array of them.
+func TestClient_InvalidSamplingContentIsInvalidParams(t *testing.T) {
+	c := NewClient(nil, WithSamplingHandler(stubSampling{}))
+	image := map[string]any{"type": "image"}
+	tests := map[string]any{
+		"one block":           image,
+		"a block in an array": []any{map[string]any{"type": "text", "text": "hi"}, image},
+		"a non-object item":   []any{"text"},
+	}
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			request := transport.JSONRPCRequest{
+				Method: string(mcp.MethodSamplingCreateMessage),
+				Params: map[string]any{
+					"messages":  []any{map[string]any{"role": "user", "content": content}},
+					"maxTokens": 1,
+				},
+			}
+			_, err := c.handleIncomingRequest(t.Context(), request)
+			require.ErrorIs(t, err, mcp.ErrInvalidParams)
+		})
+	}
+}

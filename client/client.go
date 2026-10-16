@@ -979,7 +979,7 @@ func (c *Client) handleSamplingRequestTransport(ctx context.Context, request tra
 	for i := range params.Messages {
 		content, err := mcp.ParseSamplingContent(params.Messages[i].Content)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse content for message %d: %w", i, err)
+			return nil, requestFailed(mcp.ErrInvalidParams, "failed to parse content for message %d: %w", i, err)
 		}
 		params.Messages[i].Content = content
 	}
