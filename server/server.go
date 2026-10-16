@@ -278,6 +278,7 @@ type MCPServer struct {
 	// toolsMu.
 	toolHeaderBindings       map[string][]mcp.ParamHeaderBinding
 	paginationLimit          *int
+	toolResultSizeLimit      int
 	sessions                 sync.Map
 	listenSessions           sync.Map // see registerListenSession
 	hooks                    *Hooks
@@ -339,6 +340,17 @@ func WithMethodCacheHints(method mcp.MCPMethod, ttlMs int64, scope mcp.CacheScop
 func WithPaginationLimit(limit int) ServerOption {
 	return func(s *MCPServer) {
 		s.paginationLimit = &limit
+	}
+}
+
+// WithToolResultSizeLimit replaces a tool result whose JSON encoding is
+// larger than maxBytes with an error result. The oversized payload is not
+// sent. The same check runs for a synchronous call and for both task
+// execution paths, before the result is stored. Zero and negative limits
+// disable the check.
+func WithToolResultSizeLimit(maxBytes int) ServerOption {
+	return func(s *MCPServer) {
+		s.toolResultSizeLimit = maxBytes
 	}
 }
 
@@ -2233,7 +2245,47 @@ func (s *MCPServer) handleToolCall(
 		}
 	}
 
-	return result, nil
+	return s.limitToolResult(result), nil
+}
+
+// limitToolResult returns result when it fits in the configured limit.
+// An oversized payload is replaced with an error result so those bytes are
+// not sent or stored. CreateTaskResult hides Content behind json:"-", so
+// callers that store one must measure a CallToolResult view of the same fields.
+func (s *MCPServer) limitToolResult(result *mcp.CallToolResult) *mcp.CallToolResult {
+	if result == nil || s.toolResultSizeLimit <= 0 {
+		return result
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || len(encoded) <= s.toolResultSizeLimit {
+		return result
+	}
+	return mcp.NewToolResultError(fmt.Sprintf("tool result exceeds %d bytes", s.toolResultSizeLimit))
+}
+
+// limitCreateTaskResult measures the payload tasks/result will copy out,
+// including the handler's _meta. The content fields are omitted from
+// CreateTaskResult's own JSON.
+func (s *MCPServer) limitCreateTaskResult(result *mcp.CreateTaskResult) *mcp.CreateTaskResult {
+	if result == nil || s.toolResultSizeLimit <= 0 {
+		return result
+	}
+	view := &mcp.CallToolResult{
+		Meta:              result.Meta,
+		Content:           result.Content,
+		StructuredContent: result.StructuredContent,
+		IsError:           result.IsError,
+	}
+	limited := s.limitToolResult(view)
+	if limited == view {
+		return result
+	}
+	stored := *result
+	stored.Meta = nil
+	stored.Content = limited.Content
+	stored.StructuredContent = limited.StructuredContent
+	stored.IsError = limited.IsError
+	return &stored
 }
 
 // handleTaskAugmentedToolCall handles tool calls that are executed as tasks.
@@ -2480,7 +2532,7 @@ func (s *MCPServer) executeTaskTool(
 			return
 		}
 	}
-	s.completeTask(entry, result, nil)
+	s.completeTask(entry, s.limitCreateTaskResult(result), nil)
 }
 
 // executeRegularToolAsTask executes a regular tool handler asynchronously as a task.
@@ -2633,7 +2685,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 			return
 		}
 	}
-	s.completeTask(entry, result, nil)
+	s.completeTask(entry, s.limitToolResult(result), nil)
 }
 
 func (s *MCPServer) handleNotification(
