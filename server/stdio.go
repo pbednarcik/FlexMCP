@@ -344,8 +344,37 @@ func (s *StdioServer) queue(id any, token uint64, response mcp.JSONRPCMessage) {
 
 // inputLine is one line of stdin, or the error that ended the reading.
 type inputLine struct {
-	text string
+	text []byte
 	err  error
+}
+
+// maxRetainedInputLine is the longest line whose buffer the read loop keeps
+// for the next line; a longer one's is let go, so that one large message does
+// not hold its size for the life of the server.
+const maxRetainedInputLine = 1 << 20
+
+// readInputLine reads the next line of r, newline included, and returns it in
+// bytes of its own, with the buffer to read the next line into. A last line
+// without a newline comes with io.EOF. A line that fits in r's buffer is
+// copied straight out of it; a longer one is gathered in buf first.
+func readInputLine(r *bufio.Reader, buf []byte) (line, next []byte, err error) {
+	chunk, err := r.ReadSlice('\n')
+	if err != bufio.ErrBufferFull {
+		if len(chunk) > 0 {
+			line = bytes.Clone(chunk)
+		}
+		return line, buf, err
+	}
+	buf = append(buf[:0], chunk...)
+	for err == bufio.ErrBufferFull {
+		chunk, err = r.ReadSlice('\n')
+		buf = append(buf, chunk...)
+	}
+	line = bytes.Clone(buf)
+	if cap(buf) > maxRetainedInputLine {
+		buf = nil
+	}
+	return line, buf, err
 }
 
 // processInputStream reads stdin line by line and processes each message.
@@ -360,8 +389,11 @@ type inputLine struct {
 func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Reader) error {
 	lines := make(chan inputLine, 64)
 	go func() {
+		var buf []byte
 		for {
-			text, err := reader.ReadString('\n')
+			var text []byte
+			var err error
+			text, buf, err = readInputLine(reader, buf)
 			select {
 			case lines <- inputLine{text: text, err: err}:
 			case <-ctx.Done():
@@ -382,7 +414,7 @@ func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Read
 				if line.err == io.EOF {
 					// A last line without a newline is served before the
 					// end of input ends the loop.
-					if line.text != "" {
+					if len(line.text) > 0 {
 						if err := s.processMessage(ctx, line.text); err != nil {
 							return err
 						}
@@ -530,20 +562,19 @@ func (s *StdioServer) Listen(
 // processMessage handles a single JSON-RPC message: it parses the message,
 // has the wrapped MCPServer process it, and queues any response for the
 // writer. Returns an error when the message cannot be taken up.
-func (s *StdioServer) processMessage(ctx context.Context, line string) error {
+func (s *StdioServer) processMessage(ctx context.Context, line []byte) error {
 	// If line is empty, likely due to ctx cancellation
 	if len(line) == 0 {
 		return nil
 	}
 
-	rawMessage, ok := stdioMessage(line)
+	rawMessage, baseMessage, read, parsed, ok := stdioMessage(line)
 	if !ok {
 		s.queue(nil, 0, createErrorResponse(nil, mcp.PARSE_ERROR, "Parse error"))
 		return nil
 	}
 
 	// Tool calls go to the worker pool, so a slow one never blocks the read loop.
-	baseMessage, read, parsed := readStdioMessage(rawMessage)
 	// A response is never answered, whatever its id, and the stdio server sends
 	// no request for one to answer: it is dropped before any id bookkeeping. A
 	// message with a method member is a request, whatever it carries besides.
@@ -650,16 +681,18 @@ func readStdioMembers(message json.RawMessage) (stdioMembers, *requestEnvelope, 
 	return members, nil, ok
 }
 
-// stdioMessage is the JSON-RPC message a line holds, or false when the line
-// is not JSON.
-func stdioMessage(line string) (json.RawMessage, bool) {
-	// The line is checked, not decoded: its copy is the message, without the
-	// JSON whitespace around it, as a json.RawMessage decoded from it was.
-	message := []byte(line)
-	if !json.Valid(message) {
-		return nil, false
+// stdioMessage reads the JSON-RPC message line holds, its members as
+// readStdioMessage reads them; ok is false when the line is not JSON. The
+// message is the line without the JSON whitespace around it, as a
+// json.RawMessage decoded from it was. Only a message the envelope does not
+// read is checked: one it reads is JSON.
+func stdioMessage(line []byte) (message json.RawMessage, members stdioMembers, read *requestEnvelope, parsed, ok bool) {
+	message = bytes.Trim(line, " \t\r\n")
+	members, read, parsed = readStdioMessage(message)
+	if read == nil && !json.Valid(message) {
+		return nil, stdioMembers{}, nil, false, false
 	}
-	return bytes.Trim(message, " \t\r\n"), true
+	return message, members, read, parsed, true
 }
 
 // handleMessage runs HandleMessage, recovering a panicking handler so that

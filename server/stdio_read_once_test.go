@@ -46,7 +46,7 @@ func FuzzReadStdioMessage(f *testing.F) {
 		f.Add(line)
 	}
 	f.Fuzz(func(t *testing.T, line string) {
-		message, ok := stdioMessage(line)
+		message, _, _, _, ok := stdioMessage([]byte(line))
 		if !ok {
 			t.Skip("not JSON")
 		}
@@ -99,7 +99,7 @@ func TestStdioReadOnceAllocations(t *testing.T) {
 	ctx := srv.WithContext(t.Context(), s.session)
 	line := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{` + readOnceMeta + `}}`
 	allocs := testing.AllocsPerRun(1000, func() {
-		_ = s.processMessage(ctx, line)
+		_ = s.processMessage(ctx, []byte(line))
 		s.requestWg.Wait()
 		<-s.responses
 	})
