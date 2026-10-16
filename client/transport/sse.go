@@ -679,8 +679,14 @@ func (c *SSE) SendRequest(
 	idKey := request.ID.String()
 
 	// Register response channel
+	// Close sets closed before it fails the registered requests under mu, so
+	// a request either registers in time to be failed or is refused here.
 	responseChan := make(chan *JSONRPCResponse, 1)
 	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		return nil, errors.New("transport has been closed")
+	}
 	if c.ended.Load() {
 		c.mu.Unlock()
 		return nil, errStreamEnded

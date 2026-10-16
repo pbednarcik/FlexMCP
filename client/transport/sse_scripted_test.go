@@ -154,3 +154,24 @@ func TestSSE_AnEarlierAttemptsStreamEndsNothing(t *testing.T) {
 	c.readSSE(io.NopCloser(strings.NewReader("")), make(chan struct{}), &sync.Once{}, 2)
 	assert.True(t, c.ended.Load(), "the current attempt's own stream ended")
 }
+
+// A Close that lands while a request is being built, after its closed check,
+// still ends it: the request is not sent and does not wait for an answer.
+func TestSSE_ACloseDuringSendRequestEndsIt(t *testing.T) {
+	server := newScriptedSSEServer()
+	var armed atomic.Bool
+	var c *SSE
+	c = startedSSE(t, server, WithResponseTimeout(5*time.Second), WithHeaderFunc(func(context.Context) map[string]string {
+		if armed.Load() {
+			_ = c.Close()
+		}
+		return nil
+	}))
+	armed.Store(true)
+
+	begin := time.Now()
+	_, err := c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
+	require.Error(t, err)
+	assert.Less(t, time.Since(begin), time.Second, "the request outlived the Close")
+	assert.Zero(t, server.posts.Load(), "the request was sent after Close")
+}
