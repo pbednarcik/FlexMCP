@@ -85,3 +85,22 @@ func TestStreamableHTTP_AHandlerErrorIsAnsweredWithItsCode(t *testing.T) {
 		})
 	}
 }
+
+// A request handler that panics fails its request, answered as an internal
+// error, as on Streamable HTTP; the panic does not end the process.
+func TestStdio_AHandlerPanicIsAnsweredNotFatal(t *testing.T) {
+	stdio := newBareStdio()
+	stdio.ctx = t.Context()
+	sink := &concurrentBuffer{}
+	stdio.stdin = sink
+	stdio.SetRequestHandler(func(context.Context, JSONRPCRequest) (*JSONRPCResponse, error) {
+		panic("handler broke")
+	})
+
+	stdio.handleIncomingRequest(JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "roots/list"})
+	require.Eventually(t, func() bool { return strings.Contains(sink.String(), `"code"`) }, 5*time.Second, time.Millisecond)
+	var response JSONRPCResponse
+	require.NoError(t, json.Unmarshal([]byte(sink.String()), &response))
+	require.NotNil(t, response.Error)
+	assert.Equal(t, mcp.INTERNAL_ERROR, response.Error.Code)
+}

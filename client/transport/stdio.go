@@ -882,6 +882,14 @@ func (c *Stdio) handleIncomingRequest(request JSONRPCRequest) {
 
 	// Handle the request in a goroutine to avoid blocking
 	go func() {
+		// A panicking handler fails its request, as on Streamable HTTP,
+		// rather than end the process.
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Error("panic handling server request", "method", request.Method, "panic", r)
+				c.sendResponse(*NewJSONRPCErrorResponse(request.ID, mcp.INTERNAL_ERROR, fmt.Sprintf("internal error: panic in request handler: %v", r), nil))
+			}
+		}()
 		c.ctxMu.RLock()
 		ctx := c.ctx
 		c.ctxMu.RUnlock()
