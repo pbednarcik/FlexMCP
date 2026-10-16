@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,12 +26,16 @@ type scriptedSSEServer struct {
 	events     chan string
 	onPost     func(id json.RawMessage, s *scriptedSSEServer)
 	noEndpoint bool
+	endOnce    sync.Once
 	posts      atomic.Int32
 }
 
 func newScriptedSSEServer() *scriptedSSEServer {
 	return &scriptedSSEServer{events: make(chan string, 16)}
 }
+
+// end closes the stream from the server's side.
+func (s *scriptedSSEServer) end() { s.endOnce.Do(func() { close(s.events) }) }
 
 func (s *scriptedSSEServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
@@ -116,4 +122,35 @@ func TestStreamableHTTP_ANotificationHandlerMaySetTheHandler(t *testing.T) {
 	defer cancel()
 	_, err = c.SendRequest(ctx, JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
 	assert.NoError(t, err)
+}
+
+// A stream the server ends, with no Close, fails the request waiting on it
+// and every request after it at once: nothing is left to read their
+// answers, and waiting out the response timeout serves no one.
+func TestSSE_AnEndedStreamFailsPendingAndLaterRequests(t *testing.T) {
+	server := newScriptedSSEServer()
+	server.onPost = func(_ json.RawMessage, s *scriptedSSEServer) { s.end() }
+	c := startedSSE(t, server, WithResponseTimeout(5*time.Second))
+
+	for i := int64(1); i <= 2; i++ {
+		begin := time.Now()
+		_, err := c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(i), Method: "tools/list"})
+		require.Error(t, err, "request %d", i)
+		assert.Less(t, time.Since(begin), time.Second, "request %d waited on an ended stream", i)
+	}
+	_, err := c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(3)), Method: "tools/list"})
+	assert.ErrorIs(t, err, ErrTransportClosed)
+}
+
+// A stream an earlier Start attempt opened, ending after a later attempt
+// has started, ends nothing the later attempt serves.
+func TestSSE_AnEarlierAttemptsStreamEndsNothing(t *testing.T) {
+	c, err := NewSSE("http://127.0.0.1:1/sse")
+	require.NoError(t, err)
+	c.attempt.Store(2)
+	c.readSSE(io.NopCloser(strings.NewReader("")), make(chan struct{}), &sync.Once{}, 1)
+	assert.False(t, c.ended.Load(), "the current attempt's stream was marked ended")
+
+	c.readSSE(io.NopCloser(strings.NewReader("")), make(chan struct{}), &sync.Once{}, 2)
+	assert.True(t, c.ended.Load(), "the current attempt's own stream ended")
 }

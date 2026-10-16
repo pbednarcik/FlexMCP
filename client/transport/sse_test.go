@@ -634,7 +634,7 @@ func TestSSE(t *testing.T) {
 		// that the readSSE method returns without calling any handler
 
 		// Directly test the readSSE method with our mock reader
-		go trans.readSSE(mockReader, make(chan struct{}), &sync.Once{})
+		go trans.readSSE(mockReader, make(chan struct{}), &sync.Once{}, 0)
 		// Wait for readSSE to complete
 		time.Sleep(100 * time.Millisecond)
 
@@ -675,7 +675,7 @@ func TestSSE(t *testing.T) {
 		})
 
 		// Directly test the readSSE method with our mock reader that simulates ERROR
-		go trans.readSSE(mockReader, make(chan struct{}), &sync.Once{})
+		go trans.readSSE(mockReader, make(chan struct{}), &sync.Once{}, 0)
 		// Wait for connection lost handler to be called
 		timeout := time.After(1 * time.Second)
 		ticker := time.NewTicker(10 * time.Millisecond)
@@ -740,7 +740,7 @@ func TestSSE(t *testing.T) {
 
 			done := make(chan struct{})
 			go func() {
-				trans.readSSE(mockReader, make(chan struct{}), &sync.Once{})
+				trans.readSSE(mockReader, make(chan struct{}), &sync.Once{}, 0)
 				close(done)
 			}()
 
@@ -1100,6 +1100,10 @@ func TestSSE_SendRequest_Unauthorized_StaticToken(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("event: endpoint\ndata: " + endpointURL + "\n\n"))
 			endpointReceived = true
+			// The stream stays open, as a server's does: an ended one fails
+			// requests before they are sent.
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
 			return
 		}
 		// Regular request to endpoint - return 401
@@ -1162,6 +1166,10 @@ func TestSSE_SendNotification_Unauthorized_StaticToken(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("event: endpoint\ndata: " + endpointURL + "\n\n"))
 			endpointReceived = true
+			// The stream stays open, as a server's does: an ended one fails
+			// requests before they are sent.
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
 			return
 		}
 		// Regular request to endpoint - return 401

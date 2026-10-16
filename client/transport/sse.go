@@ -52,6 +52,11 @@ type SSE struct {
 
 	started atomic.Bool
 	closed  atomic.Bool
+	// attempt numbers the Start attempts, and ended is set when the current
+	// attempt's stream ends without Close: requests then fail at once, as
+	// nothing is left to read their answers.
+	attempt atomic.Uint64
+	ended   atomic.Bool
 	// answers bounds the answers to server requests; Close cancels it.
 	answers          context.Context
 	stopAnswers      context.CancelFunc
@@ -245,6 +250,8 @@ func (c *SSE) start(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancelSSEStream = cancel
+	attempt := c.attempt.Add(1)
+	c.ended.Store(false)
 	c.lifecycleMu.Unlock()
 
 	startSucceeded := false
@@ -309,7 +316,7 @@ func (c *SSE) start(ctx context.Context) error {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	go c.readSSE(resp.Body, endpointChan, endpointOnce)
+	go c.readSSE(resp.Body, endpointChan, endpointOnce, attempt)
 
 	// Wait for the endpoint to be received
 	endpointTimeout := c.endpointTimeout
@@ -352,8 +359,9 @@ func (c *SSE) start(ctx context.Context) error {
 }
 
 // readSSE continuously reads the SSE stream and processes events.
-// It runs until the connection is closed or an error occurs.
-func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpointOnce *sync.Once) {
+// It runs until the connection is closed or an error occurs. attempt is the
+// Start attempt that opened the stream.
+func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpointOnce *sync.Once, attempt uint64) {
 	defer reader.Close()
 
 	br := bufio.NewReader(reader)
@@ -379,6 +387,11 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 					}
 					c.handleSSEEvent(event, data, endpointChan, endpointOnce)
 				}
+			}
+			// A stream an earlier attempt opened ends nothing a later one
+			// serves.
+			if c.attempt.Load() == attempt {
+				c.endStream()
 			}
 			c.connectionLostMu.RLock()
 			handler := c.onConnectionLost
@@ -415,6 +428,22 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 		}
 	}
 }
+
+// endStream marks the stream ended and fails the requests waiting on it.
+// Requests register under mu after checking ended, so each is either failed
+// here or refused.
+func (c *SSE) endStream() {
+	c.ended.Store(true)
+	c.mu.Lock()
+	for _, ch := range c.responses {
+		close(ch)
+	}
+	c.responses = make(map[string]chan *JSONRPCResponse)
+	c.mu.Unlock()
+}
+
+// errStreamEnded is the error of a request sent after the stream ended.
+var errStreamEnded = fmt.Errorf("the SSE stream has ended: %w", ErrTransportClosed)
 
 // appendSSEData joins the value of an SSE "data:" field onto any data already
 // accumulated for the current event. Per the Server-Sent Events specification,
@@ -575,6 +604,9 @@ func (c *SSE) SendRequest(
 	if c.closed.Load() {
 		return nil, errors.New("transport has been closed")
 	}
+	if c.ended.Load() {
+		return nil, errStreamEnded
+	}
 
 	c.mu.RLock()
 	endpoint := c.endpoint
@@ -649,6 +681,10 @@ func (c *SSE) SendRequest(
 	// Register response channel
 	responseChan := make(chan *JSONRPCResponse, 1)
 	c.mu.Lock()
+	if c.ended.Load() {
+		c.mu.Unlock()
+		return nil, errStreamEnded
+	}
 	c.responses[idKey] = responseChan
 	c.mu.Unlock()
 	deleteResponseChan := func() {

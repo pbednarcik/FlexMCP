@@ -128,7 +128,7 @@ func TestSSE_ReadSSE_PendingEndpointAtEOF(t *testing.T) {
 	// No trailing blank line: the endpoint event is still buffered when the
 	// reader hits EOF and must be processed as a pending event.
 	body := "event: endpoint\ndata: http://127.0.0.1:1/messages\n"
-	sse.readSSE(io.NopCloser(strings.NewReader(body)), ch, once)
+	sse.readSSE(io.NopCloser(strings.NewReader(body)), ch, once, 0)
 	select {
 	case <-ch:
 	default:
