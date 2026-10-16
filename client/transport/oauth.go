@@ -567,7 +567,7 @@ func (h *OAuthHandler) authorizationHeader(ctx context.Context, recipient string
 		tokenType = "Bearer"
 	}
 
-	return fmt.Sprintf("%s %s", tokenType, token.AccessToken), nil
+	return tokenType + " " + token.AccessToken, nil
 }
 
 // getValidToken returns a valid token for recipient, refreshing if necessary
@@ -1624,6 +1624,11 @@ func checkResourceIdentifier(resource string) error {
 // and userinfo components are significant. Unparseable inputs fall back
 // to exact string equality.
 func resourceIdentifiersEqual(a, b string) bool {
+	// Identical identifiers are equal however they parse; the common case on
+	// every request skips the two parses.
+	if a == b {
+		return true
+	}
 	ua, errA := url.Parse(a)
 	ub, errB := url.Parse(b)
 	if errA != nil || errB != nil {
@@ -1658,6 +1663,9 @@ func resourceIdentifiersEqual(a, b string) bool {
 // Unparseable inputs fall back to exact string equality, as in
 // resourceIdentifiersEqual.
 func resourceBindsToURL(resource, addressed string) bool {
+	if resource == addressed {
+		return true
+	}
 	ur, errR := url.Parse(resource)
 	ub, errB := url.Parse(addressed)
 	if errR != nil || errB != nil {
