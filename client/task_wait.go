@@ -18,8 +18,10 @@ var (
 	ErrServerPollIntervalOverflow = errors.New("server poll interval exceeds time.Duration")
 )
 
-// WaitForTask polls a task until it reaches a terminal state or the context is done.
-// The server-provided poll interval takes precedence over fallbackPollInterval.
+// WaitForTask polls a task until it reaches a terminal state, needs input
+// (input_required, which only the requestor can move on), or the context is
+// done. The server-provided poll interval takes precedence over
+// fallbackPollInterval.
 func (c *Client) WaitForTask(
 	ctx context.Context,
 	request mcp.GetTaskRequest,
@@ -38,7 +40,7 @@ func (c *Client) WaitForTask(
 		if err != nil {
 			return nil, fmt.Errorf("get task: %w", err)
 		}
-		if result.Status.IsTerminal() {
+		if result.Status.IsTerminal() || result.Status == mcp.TaskStatusInputRequired {
 			return result, nil
 		}
 

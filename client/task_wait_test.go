@@ -41,6 +41,18 @@ func TestClient_WaitForTask(t *testing.T) {
 			wantStatus: mcp.TaskStatusFailed,
 			wantCalls:  2,
 		},
+		{
+			// A task that needs input moves only once the requestor provides it
+			// (MCP tasks, input_required), so polling on would never end.
+			name: "returns a task that needs input",
+			responses: []mcp.Task{
+				{TaskId: "task-1", Status: mcp.TaskStatusWorking},
+				{TaskId: "task-1", Status: mcp.TaskStatusInputRequired},
+			},
+			fallback:   time.Millisecond,
+			wantStatus: mcp.TaskStatusInputRequired,
+			wantCalls:  2,
+		},
 	}
 
 	for _, tt := range tests {
