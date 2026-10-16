@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -432,5 +433,59 @@ func TestOAuthHandler_ATemporaryRefreshFailureIsRetried(t *testing.T) {
 			assert.Equal(t, "Bearer recovered", header)
 			assert.Equal(t, int32(2), server.refreshes.Load(), "refresh requests with the same token")
 		})
+	}
+}
+
+// A token request that fails names itself: a refresh as the refresh token
+// request, a code exchange as the token request.
+func TestOAuthHandler_TokenRequestErrorsNameTheRequest(t *testing.T) {
+	answers := []struct {
+		name   string
+		answer func(http.ResponseWriter)
+		prefix string
+	}{
+		{"no answer", func(w http.ResponseWriter) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+		}, "failed to send %s: "},
+		{"an error status", func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+		}, "%s failed: "},
+		{"an error in a 200", func(w http.ResponseWriter) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+		}, "%s failed: "},
+		{"a body that is not a token", func(w http.ResponseWriter) {
+			_, _ = w.Write([]byte("[]"))
+		}, "failed to decode token response: "},
+	}
+	requests := []struct {
+		name string
+		send func(*OAuthHandler) error
+	}{
+		{"refresh token request", func(h *OAuthHandler) error {
+			_, err := h.RefreshToken(t.Context(), "single-use")
+			return err
+		}},
+		{"token request", func(h *OAuthHandler) error {
+			return h.ProcessAuthorizationCallback(t.Context(), callback("", "code", "state"), "verifier")
+		}},
+	}
+	for _, request := range requests {
+		for _, answer := range answers {
+			t.Run(request.name+"/"+answer.name, func(t *testing.T) {
+				server := newRefreshServer(t, func(w http.ResponseWriter, _ string) { answer.answer(w) })
+				handler, _ := newRefreshTestHandler(t, server)
+				handler.SetExpectedState("state")
+				handler.SetExpectedIssuer(server.URL, false)
+
+				err := request.send(handler)
+				require.Error(t, err)
+				prefix := strings.ReplaceAll(answer.prefix, "%s", request.name)
+				assert.True(t, strings.HasPrefix(err.Error(), prefix), "%q does not start with %q", err, prefix)
+			})
+		}
 	}
 }

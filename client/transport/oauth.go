@@ -761,51 +761,13 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint
 		return nil, fmt.Errorf("%w: the refresh token was issued to client %q", ErrOAuthAuthorizationRequired, stored.ClientID)
 	}
 
-	resp, err := h.credentialClient.Do(req)
+	tokenResp, status, err := h.doTokenRequest(req, "refresh token request")
 	if err != nil {
-		return nil, fmt.Errorf("failed to send refresh token request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Accept any 2xx status; some authorization servers (e.g. Supabase) return
-	// 201 Created for successful token responses.
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
-		err := extractOAuthError(body, resp.StatusCode, "refresh token request failed")
 		var oauthErr OAuthError
-		if errors.As(err, &oauthErr) && refusesRefreshToken(resp.StatusCode, oauthErr.ErrorCode) {
+		if errors.As(err, &oauthErr) && refusesRefreshToken(status, oauthErr.ErrorCode) {
 			h.noteRefused(refreshToken)
 		}
 		return nil, err
-	}
-
-	// Read the response body for parsing
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token response body: %w", err)
-	}
-
-	// GitHub returns HTTP 200 even for errors, with error details in the JSON body
-	// Check if the response contains an error field before parsing as Token
-	var oauthErr OAuthError
-	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.ErrorCode != "" {
-		if refusesRefreshToken(resp.StatusCode, oauthErr.ErrorCode) {
-			h.noteRefused(refreshToken)
-		}
-		return nil, fmt.Errorf("refresh token request failed: %w", oauthErr)
-	}
-
-	var tokenResp Token
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to decode token response: %w", err)
-	}
-	if err := checkTokenResponse(&tokenResp); err != nil {
-		return nil, err
-	}
-
-	// Set expiration time
-	if tokenResp.ExpiresIn > 0 {
-		tokenResp.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
 
 	// If no new refresh token is provided, keep the old one
@@ -821,11 +783,11 @@ func (h *OAuthHandler) refreshToken(ctx context.Context, stored *Token, gen uint
 	tokenResp.Issuer = metadata.Issuer
 	tokenResp.ClientID = clientID
 
-	if err := h.saveIssuedToken(ctx, &tokenResp, gen); err != nil {
+	if err := h.saveIssuedToken(ctx, tokenResp, gen); err != nil {
 		return nil, err
 	}
 
-	return &tokenResp, nil
+	return tokenResp, nil
 }
 
 // RefreshToken refreshes a token with refreshToken. When it is the stored
@@ -2206,50 +2168,16 @@ func (h *OAuthHandler) exchangeAuthorizationCode(ctx context.Context, code, code
 		return fmt.Errorf("failed to create token request: %w", err)
 	}
 
-	resp, err := h.credentialClient.Do(req)
+	tokenResp, _, err := h.doTokenRequest(req, "token request")
 	if err != nil {
-		return fmt.Errorf("failed to send token request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Accept any 2xx status; some authorization servers (e.g. Supabase) return
-	// 201 Created for successful token responses.
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
-		return extractOAuthError(body, resp.StatusCode, "token request failed")
-	}
-
-	// Read the response body for parsing
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
-	if err != nil {
-		return fmt.Errorf("failed to read token response body: %w", err)
-	}
-
-	// GitHub returns HTTP 200 even for errors, with error details in the JSON body
-	// Check if the response contains an error field before parsing as Token
-	var oauthErr OAuthError
-	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.ErrorCode != "" {
-		return fmt.Errorf("token request failed: %w", oauthErr)
-	}
-
-	var tokenResp Token
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return fmt.Errorf("failed to decode token response: %w", err)
-	}
-	if err := checkTokenResponse(&tokenResp); err != nil {
 		return err
-	}
-
-	// Set expiration time
-	if tokenResp.ExpiresIn > 0 {
-		tokenResp.ExpiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
 	// Record what the token is for, who issued it and to which client.
 	tokenResp.Resource = resourceURL
 	tokenResp.Issuer = metadata.Issuer
 	tokenResp.ClientID = clientID
 
-	return h.saveIssuedToken(ctx, &tokenResp, gen)
+	return h.saveIssuedToken(ctx, tokenResp, gen)
 }
 
 // checkTokenResponse refuses a token response without an access token, or
@@ -2385,6 +2313,49 @@ func (h *OAuthHandler) newTokenRequest(ctx context.Context, metadata *AuthServer
 		req.SetBasicAuth(url.QueryEscape(creds.id), url.QueryEscape(creds.secret))
 	}
 	return req, creds.id, nil
+}
+
+// doTokenRequest sends req, the token request what names in its errors, and
+// returns the token issued, with its expiry set, and the response's status,
+// zero when none arrived. An OAuthError in the error is the authorization
+// server's answer.
+func (h *OAuthHandler) doTokenRequest(req *http.Request, what string) (*Token, int, error) {
+	resp, err := h.credentialClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to send %s: %w", what, err)
+	}
+	defer resp.Body.Close()
+
+	// Accept any 2xx status; some authorization servers (e.g. Supabase) return
+	// 201 Created for successful token responses.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
+		return nil, resp.StatusCode, extractOAuthError(body, resp.StatusCode, what+" failed")
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("failed to read token response body: %w", err)
+	}
+
+	// GitHub returns HTTP 200 even for errors, with error details in the JSON body
+	// Check if the response contains an error field before parsing as Token
+	var oauthErr OAuthError
+	if err := json.Unmarshal(body, &oauthErr); err == nil && oauthErr.ErrorCode != "" {
+		return nil, resp.StatusCode, fmt.Errorf("%s failed: %w", what, oauthErr)
+	}
+
+	var token Token
+	if err := json.Unmarshal(body, &token); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("failed to decode token response: %w", err)
+	}
+	if err := checkTokenResponse(&token); err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if token.ExpiresIn > 0 {
+		token.ExpiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+	}
+	return &token, resp.StatusCode, nil
 }
 
 // GetAuthorizationURL returns the URL for the authorization endpoint.
