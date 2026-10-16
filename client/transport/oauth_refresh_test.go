@@ -277,3 +277,95 @@ func TestOAuthHandler_ARefreshKeepsTheGrantedScope(t *testing.T) {
 	assert.Equal(t, "new-access", saved.AccessToken, "the token was refreshed")
 	assert.Equal(t, "files:read", saved.Scope)
 }
+
+// A token is refreshed shortly before it expires, not after: its expiry is
+// counted from when the response arrived, later than the server's clock
+// started it, and a request sent just before the instant reaches the server
+// after it. The margin is at most half the token's lifetime, a token without
+// a refresh token is used to the end, and a token that has not expired is
+// still used when the early refresh fails.
+func TestOAuthHandler_RefreshesATokenAboutToExpire(t *testing.T) {
+	refused := func(w http.ResponseWriter, _ string) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+	}
+	tests := []struct {
+		name         string
+		expiresIn    int64
+		left         time.Duration
+		refreshToken string
+		token        func(http.ResponseWriter, string)
+		wantHeader   string
+		wantRefresh  int32
+	}{
+		{"inside the margin", 3600, 5 * time.Second, "single-use", singleUseTokens(0), "Bearer new-access", 1},
+		{"outside the margin", 3600, time.Hour, "single-use", singleUseTokens(0), "Bearer old-access", 0},
+		{"a short-lived token keeps half its life", 10, 8 * time.Second, "single-use", singleUseTokens(0), "Bearer old-access", 0},
+		{"no refresh token", 3600, 5 * time.Second, "", singleUseTokens(0), "Bearer old-access", 0},
+		{"a failed early refresh", 3600, 5 * time.Second, "single-use", refused, "Bearer old-access", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newRefreshServer(t, tt.token)
+			store := NewMemoryTokenStore()
+			require.NoError(t, store.SaveToken(t.Context(), &Token{
+				AccessToken:  "old-access",
+				TokenType:    "Bearer",
+				RefreshToken: tt.refreshToken,
+				ExpiresIn:    tt.expiresIn,
+				ExpiresAt:    time.Now().Add(tt.left),
+				Issuer:       server.URL,
+			}))
+			handler := NewOAuthHandler(OAuthConfig{
+				ClientID:              "client",
+				TokenStore:            store,
+				AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
+			})
+			handler.SetBaseURL(server.URL + "/mcp")
+
+			header, err := handler.GetAuthorizationHeader(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantHeader, header)
+			assert.Equal(t, tt.wantRefresh, server.refreshes.Load(), "refresh requests")
+		})
+	}
+}
+
+// The token kept when an early refresh fails is still checked against the
+// server the handler targets: a base URL change while the refresh ran leaves
+// it another server's token.
+func TestOAuthHandler_AFailedEarlyRefreshKeepsNoTokenAcrossARetarget(t *testing.T) {
+	arrived, release := make(chan struct{}), make(chan struct{})
+	server := newRefreshServer(t, func(w http.ResponseWriter, _ string) {
+		close(arrived)
+		<-release
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+	})
+	store := NewMemoryTokenStore()
+	require.NoError(t, store.SaveToken(t.Context(), &Token{
+		AccessToken:  "old-access",
+		TokenType:    "Bearer",
+		RefreshToken: "single-use",
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(5 * time.Second),
+		Resource:     server.URL + "/mcp",
+		Issuer:       server.URL,
+	}))
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		TokenStore:            store,
+		AuthServerMetadataURL: server.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(server.URL + "/mcp")
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := handler.authorizationHeader(t.Context(), server.URL+"/mcp")
+		errs <- err
+	}()
+	<-arrived
+	handler.SetBaseURL("https://other.example/mcp")
+	close(release)
+	assert.ErrorIs(t, <-errs, ErrOAuthAuthorizationRequired)
+}

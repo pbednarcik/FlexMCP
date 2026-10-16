@@ -206,6 +206,30 @@ func (t *Token) IsExpired() bool {
 	return time.Now().After(t.ExpiresAt)
 }
 
+// maxExpiryMargin is how long before a token's expiry the handler refreshes
+// it, as golang.org/x/oauth2 does: ExpiresAt is counted from when the token
+// response arrived, later than the authorization server's own clock started
+// it, and a request sent just before the instant reaches the server after it.
+const maxExpiryMargin = 10 * time.Second
+
+// sendable reports whether t can be sent as it is: it has an access token
+// that has not expired and, when there is a refresh token to spend, will not
+// within the expiry margin. The margin is at most half the token's lifetime,
+// so a short-lived token is not refreshed on every request.
+func (t *Token) sendable() bool {
+	if t.AccessToken == "" || t.IsExpired() {
+		return false
+	}
+	if t.RefreshToken == "" || t.ExpiresAt.IsZero() {
+		return true
+	}
+	margin := maxExpiryMargin
+	if t.ExpiresIn > 0 {
+		margin = min(margin, time.Duration(t.ExpiresIn)*time.Second/2)
+	}
+	return time.Until(t.ExpiresAt) > margin
+}
+
 // MemoryTokenStore is a simple in-memory token store
 type MemoryTokenStore struct {
 	token *Token
@@ -557,7 +581,7 @@ func (h *OAuthHandler) getValidToken(ctx context.Context, recipient string) (*To
 	if err == nil && !h.tokenIsFor(token, recipient) {
 		return nil, ErrOAuthAuthorizationRequired
 	}
-	if err == nil && !token.IsExpired() && token.AccessToken != "" {
+	if err == nil && token.sendable() {
 		return token, nil
 	}
 	if err != nil || token.RefreshToken == "" {
@@ -584,6 +608,11 @@ func (h *OAuthHandler) getValidToken(ctx context.Context, recipient string) (*To
 	// one found in the store, which another refresh may have left there, or
 	// one refreshed for the server the handler targeted before a change.
 	if refresh.err != nil || !h.tokenIsFor(refresh.token, recipient) {
+		// A refresh made inside the expiry margin leaves a token that has
+		// not expired yet, still this recipient's to use.
+		if token.AccessToken != "" && !token.IsExpired() && h.tokenIsFor(token, recipient) {
+			return token, nil
+		}
 		return nil, ErrOAuthAuthorizationRequired
 	}
 	return refresh.token, nil
@@ -627,7 +656,7 @@ func (h *OAuthHandler) refreshStoredToken(ctx context.Context) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !token.IsExpired() && token.AccessToken != "" {
+	if token.sendable() {
 		return token, nil
 	}
 	if token.RefreshToken == "" {
