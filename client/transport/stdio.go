@@ -599,8 +599,11 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			if err := json.Unmarshal(encoded, &baseMessage); err != nil {
 				continue
 			}
+			// The id is a value as the decoder gave it, so it is read by its
+			// own UnmarshalJSON, called directly: through json.Unmarshal it
+			// would be made on the heap.
 			var id mcp.RequestId
-			readableID := len(baseMessage.ID) > 0 && json.Unmarshal(baseMessage.ID, &id) == nil && !id.IsNil()
+			readableID := len(baseMessage.ID) > 0 && id.UnmarshalJSON(baseMessage.ID) == nil && !id.IsNil()
 
 			// A request id is a string or an integer and never null: a
 			// request whose id cannot be read is answered as invalid, with a

@@ -67,3 +67,35 @@ func BenchmarkStdioRoundTrip(b *testing.B) {
 		})
 	}
 }
+
+// A round trip costs a bounded number of allocations, the in-memory
+// server's included: 15, one fewer than when the response id was decoded
+// through json.Unmarshal, which put it on the heap.
+func TestStdioRoundTripAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	go echoResults(serverIn, serverOut, 512)
+	stdio := NewIO(clientIn, clientOut, nil)
+	if err := stdio.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdio.Close()
+		_ = serverOut.Close()
+	})
+	request := JSONRPCRequest{JSONRPC: "2.0", Method: "ping"}
+	var id int64
+	allocs := testing.AllocsPerRun(500, func() {
+		id++
+		request.ID = mcp.NewRequestId(id)
+		if _, err := stdio.SendRequest(t.Context(), request); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs > 15 {
+		t.Errorf("%v allocations per round trip, want at most 15", allocs)
+	}
+}
