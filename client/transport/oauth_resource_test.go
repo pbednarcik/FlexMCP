@@ -330,3 +330,63 @@ func TestOAuthHandler_RedeemsTheCodeOnlyForTheResourceItWasObtainedFor(t *testin
 	defer as.mu.Unlock()
 	assert.Empty(t, as.forms)
 }
+
+// Without a resource_metadata pointer the client requests the protected
+// resource metadata at the MCP server's path first and at the host's root
+// next (MCP authorization 2025-11-25, Protected Resource Metadata Discovery):
+// a server mounted at a path that publishes only the root document is found
+// through it, and a path document, when there is one, wins.
+func TestOAuthHandler_FindsProtectedResourceMetadataAtTheRoot(t *testing.T) {
+	authServer := func(t *testing.T) *httptest.Server {
+		var as *httptest.Server
+		as = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/.well-known/oauth-authorization-server" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           as.URL,
+				"authorization_endpoint":           as.URL + "/authorize",
+				"token_endpoint":                   as.URL + "/token",
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		}))
+		t.Cleanup(as.Close)
+		return as
+	}
+	for name, withPathDocument := range map[string]bool{"root only": false, "path and root": true} {
+		t.Run(name, func(t *testing.T) {
+			rootAS, pathAS := authServer(t), authServer(t)
+			var mcp *httptest.Server
+			mcp = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var named string
+				switch {
+				case r.URL.Path == "/.well-known/oauth-protected-resource":
+					named = rootAS.URL
+				case r.URL.Path == "/.well-known/oauth-protected-resource/mcp" && withPathDocument:
+					named = pathAS.URL
+				default:
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"resource":              mcp.URL,
+					"authorization_servers": []string{named},
+				})
+			}))
+			t.Cleanup(mcp.Close)
+			handler := NewOAuthHandler(OAuthConfig{ClientID: "client", TokenStore: NewMemoryTokenStore()})
+			handler.SetBaseURL(mcp.URL + "/mcp")
+
+			metadata, err := handler.GetServerMetadata(t.Context())
+			require.NoError(t, err)
+			want := rootAS.URL
+			if withPathDocument {
+				want = pathAS.URL
+			}
+			assert.Equal(t, want, metadata.Issuer)
+		})
+	}
+}

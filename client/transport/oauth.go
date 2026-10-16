@@ -1252,43 +1252,35 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		return metadataDiscoveryResult{}, ErrResourceUnknown
 	}
 
-	// Determine the protected resource metadata URL with priority:
+	// Determine the protected resource metadata URLs with priority:
 	// 1. Explicit: advertised in the challenge (RFC 9728 §5.1) or configured
-	// 2. Constructed from base URL
-	var protectedResourceURL string
+	// 2. Constructed from the base URL: at the MCP server's path, then at the
+	//    host's root (MCP authorization, Protected Resource Metadata Discovery)
 	explicitMetadataURL := protectedResourceMetadataURL != ""
-	if explicitMetadataURL {
-		protectedResourceURL = protectedResourceMetadataURL
-	} else {
+	candidates := []string{protectedResourceMetadataURL}
+	if !explicitMetadataURL {
 		var err error
-		protectedResourceURL, err = buildWellKnownURL(baseURL, "oauth-protected-resource")
+		candidates, err = protectedResourceMetadataURLs(baseURL)
 		if err != nil {
 			return metadataDiscoveryResult{}, fmt.Errorf("failed to build protected resource URL: %w", err)
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, protectedResourceURL, nil)
-	if err != nil {
-		return metadataDiscoveryResult{}, fmt.Errorf("failed to create protected resource request: %w", err)
-	}
-
-	req.Header.Set("Accept", "application/json")
-	// Advertise the latest protocol version this client supports. Metadata
-	// discovery happens before the MCP initialize handshake, so no negotiated
-	// version is available yet; servers that don't recognise it can fall back
-	// per the MCP spec.
-	req.Header.Set("MCP-Protocol-Version", mcp.LATEST_PROTOCOL_VERSION)
-
-	resp, err := h.discoveryClient.Do(req)
-	if err != nil {
-		return metadataDiscoveryResult{}, fmt.Errorf("failed to send protected resource request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// If we can't get the protected resource metadata, try OAuth Authorization Server discovery.
-	// However, if the resource_metadata URL was explicitly provided (via RFC 9728), don't
-	// fall back to baseURL-derived discovery — the server specifically indicated where to
-	// find metadata, so falling back would mask the signal.
-	if resp.StatusCode != http.StatusOK {
+	var protectedResourceURL string
+	var resp *http.Response
+	for _, candidate := range candidates {
+		protectedResourceURL = candidate
+		var err error
+		resp, err = h.requestProtectedResource(ctx, candidate)
+		if err != nil {
+			return metadataDiscoveryResult{}, err
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		resp.Body.Close()
+		// If the resource_metadata URL was explicitly provided (via RFC 9728),
+		// don't fall back to baseURL-derived discovery: the server indicated
+		// where to find the metadata, so falling back would mask the signal.
 		if explicitMetadataURL {
 			return metadataDiscoveryResult{}, fmt.Errorf("protected resource metadata discovery failed for explicit URL %q: status %d", protectedResourceURL, resp.StatusCode)
 		}
@@ -1296,6 +1288,12 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		if isServerFailure(resp.StatusCode) {
 			return metadataDiscoveryResult{}, fmt.Errorf("protected resource metadata request to %q failed: status %d", protectedResourceURL, resp.StatusCode)
 		}
+		resp = nil
+	}
+
+	// Without protected resource metadata, try OAuth Authorization Server
+	// discovery from the MCP server's own URL.
+	if resp == nil {
 		var fetchErr error
 		for _, c := range legacyMetadataCandidates(baseURL) {
 			// Any failed fetch moves on to the next candidate URL, but metadata
@@ -1338,6 +1336,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 		}
 		return metadataDiscoveryResult{metadata: metadata, resourceURL: resourceURL}, nil
 	}
+	defer resp.Body.Close()
 
 	// Parse the protected resource metadata
 	var protectedResource OAuthProtectedResource
@@ -1485,6 +1484,46 @@ func legacyMetadataCandidates(baseURL string) []legacyCandidate {
 		candidates = append(candidates, legacyCandidate{url: u, issuer: origin})
 	}
 	return candidates
+}
+
+// protectedResourceMetadataURLs lists where protected resource metadata is
+// looked for when no URL was advertised or configured: at the MCP server's
+// path (RFC 9728 §3.1 path insertion), then at the host's root, the order MCP
+// authorization prescribes. A server at the root has the one URL.
+func protectedResourceMetadataURLs(baseURL string) ([]string, error) {
+	atPath, err := buildWellKnownURL(baseURL, "oauth-protected-resource")
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	atRoot := parsed.Scheme + "://" + parsed.Host + "/.well-known/oauth-protected-resource"
+	if atRoot == atPath {
+		return []string{atPath}, nil
+	}
+	return []string{atPath, atRoot}, nil
+}
+
+// requestProtectedResource sends the GET for a protected resource metadata
+// document; the caller closes the response body.
+func (h *OAuthHandler) requestProtectedResource(ctx context.Context, metadataURL string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create protected resource request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	// Advertise the latest protocol version this client supports. Metadata
+	// discovery happens before the MCP initialize handshake, so no negotiated
+	// version is available yet; servers that don't recognise it can fall back
+	// per the MCP spec.
+	req.Header.Set("MCP-Protocol-Version", mcp.LATEST_PROTOCOL_VERSION)
+	resp, err := h.discoveryClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send protected resource request: %w", err)
+	}
+	return resp, nil
 }
 
 // buildWellKnownURL constructs a well-known discovery URL by inserting the
