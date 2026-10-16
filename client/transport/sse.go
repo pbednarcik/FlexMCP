@@ -567,10 +567,10 @@ func (c *SSE) SendRequest(
 	request JSONRPCRequest,
 ) (*JSONRPCResponse, error) {
 	if !c.started.Load() {
-		return nil, fmt.Errorf("transport not started yet")
+		return nil, errors.New("transport not started yet")
 	}
 	if c.closed.Load() {
-		return nil, fmt.Errorf("transport has been closed")
+		return nil, errors.New("transport has been closed")
 	}
 
 	c.mu.RLock()
@@ -578,7 +578,7 @@ func (c *SSE) SendRequest(
 	c.mu.RUnlock()
 
 	if endpoint == nil {
-		return nil, fmt.Errorf("endpoint not received")
+		return nil, errors.New("endpoint not received")
 	}
 
 	// Marshal request
@@ -709,7 +709,7 @@ func (c *SSE) SendRequest(
 		if ok {
 			return response, nil
 		}
-		return nil, fmt.Errorf("connection has been closed")
+		return nil, errors.New("connection has been closed")
 	}
 }
 
@@ -791,7 +791,7 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 	c.mu.RUnlock()
 
 	if endpoint == nil {
-		return fmt.Errorf("endpoint not received")
+		return errors.New("endpoint not received")
 	}
 
 	req, err := http.NewRequestWithContext(

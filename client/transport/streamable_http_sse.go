@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -132,7 +133,7 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 			if resumeErr != nil {
 				return nil, fmt.Errorf("failed to resume the SSE stream for the response: %w", resumeErr)
 			}
-			return nil, fmt.Errorf("unexpected nil response")
+			return nil, errors.New("unexpected nil response")
 		}
 		return response, nil
 	case <-ctx.Done():

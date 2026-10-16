@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -286,7 +287,7 @@ func UnmarshalContent(data []byte) (Content, error) {
 
 	contentType, ok := raw.Type.(string)
 	if !ok {
-		return nil, fmt.Errorf("missing or invalid type field")
+		return nil, errors.New("missing or invalid type field")
 	}
 
 	switch contentType {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -504,7 +505,7 @@ func describeSchemaType(prop headerSchemaProperty) string {
 // syntax (1*tchar).
 func validateHeaderToken(name string) error {
 	if name == "" {
-		return fmt.Errorf("x-mcp-header value must be a non-empty string")
+		return errors.New("x-mcp-header value must be a non-empty string")
 	}
 	for _, c := range name {
 		if !isTChar(c) {

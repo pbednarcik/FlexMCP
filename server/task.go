@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -417,9 +418,9 @@ func (s *MCPServer) getTaskEntry(ctx context.Context, taskID string) (*taskEntry
 // other, so the tombstone tells no one else that the ID existed.
 func (s *MCPServer) taskUnreachableLocked(taskID, sessionID string) error {
 	if owner, wasExpired := s.expiredTasks[taskID]; wasExpired && owner == sessionID {
-		return fmt.Errorf("task has expired")
+		return errors.New("task has expired")
 	}
-	return fmt.Errorf("task not found")
+	return errors.New("task not found")
 }
 
 // listTasks returns copies of the tasks of the caller's session. A caller whose

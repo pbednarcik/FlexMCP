@@ -454,7 +454,7 @@ func (c *StreamableHTTP) SendRequest(
 	// Only proceed if we have a valid response.
 	if resp == nil {
 		cancel()
-		return nil, fmt.Errorf("failed to send request: no response received")
+		return nil, errors.New("failed to send request: no response received")
 	}
 	// Cancel the context before closing the body. On HTTP/2, Close() blocks in a
 	// select on cs.donec (stream cleanup) or cs.ctx.Done() (context cancellation).

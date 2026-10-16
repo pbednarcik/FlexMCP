@@ -49,7 +49,7 @@ func GenerateState() (string, error) {
 // 3.1.2). This helper is advisory: the OAuth handler does not call it.
 func ValidateRedirectURI(redirectURI string) error {
 	if redirectURI == "" {
-		return fmt.Errorf("redirect URI cannot be empty")
+		return errors.New("redirect URI cannot be empty")
 	}
 
 	parsedURL, err := url.Parse(redirectURI)
@@ -58,13 +58,13 @@ func ValidateRedirectURI(redirectURI string) error {
 	}
 	hostname := parsedURL.Hostname()
 	if hostname == "" {
-		return fmt.Errorf("redirect URI must have a host")
+		return errors.New("redirect URI must have a host")
 	}
 	if parsedURL.User != nil {
-		return fmt.Errorf("redirect URI must not carry credentials")
+		return errors.New("redirect URI must not carry credentials")
 	}
 	if parsedURL.Fragment != "" || strings.HasSuffix(redirectURI, "#") {
-		return fmt.Errorf("redirect URI must not have a fragment")
+		return errors.New("redirect URI must not have a fragment")
 	}
 
 	switch parsedURL.Scheme {
@@ -77,7 +77,7 @@ func ValidateRedirectURI(redirectURI string) error {
 		if ip := net.ParseIP(hostname); ip != nil && ip.IsLoopback() {
 			return nil
 		}
-		return fmt.Errorf("HTTP redirect URI must use a loopback host")
+		return errors.New("HTTP redirect URI must use a loopback host")
 	}
-	return fmt.Errorf("redirect URI must use either HTTP on a loopback host or HTTPS")
+	return errors.New("redirect URI must use either HTTP on a loopback host or HTTPS")
 }

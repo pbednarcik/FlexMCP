@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -89,7 +90,7 @@ func ParseContent(contentMap map[string]any) (Content, error) {
 		data := ExtractString(contentMap, "data")
 		mimeType := ExtractString(contentMap, "mimeType")
 		if data == "" || mimeType == "" {
-			return nil, fmt.Errorf("image data or mimeType is missing")
+			return nil, errors.New("image data or mimeType is missing")
 		}
 		c := NewImageContent(data, mimeType)
 		c.Annotations = annotations
@@ -100,7 +101,7 @@ func ParseContent(contentMap map[string]any) (Content, error) {
 		data := ExtractString(contentMap, "data")
 		mimeType := ExtractString(contentMap, "mimeType")
 		if data == "" || mimeType == "" {
-			return nil, fmt.Errorf("audio data or mimeType is missing")
+			return nil, errors.New("audio data or mimeType is missing")
 		}
 		c := NewAudioContent(data, mimeType)
 		c.Annotations = annotations
@@ -113,7 +114,7 @@ func ParseContent(contentMap map[string]any) (Content, error) {
 		description := ExtractString(contentMap, "description")
 		mimeType := ExtractString(contentMap, "mimeType")
 		if uri == "" || name == "" {
-			return nil, fmt.Errorf("resource_link uri or name is missing")
+			return nil, errors.New("resource_link uri or name is missing")
 		}
 		c := NewResourceLink(uri, name, description, mimeType)
 		c.Title = ExtractString(contentMap, "title")
@@ -129,7 +130,7 @@ func ParseContent(contentMap map[string]any) (Content, error) {
 	case ContentTypeResource:
 		resourceMap := ExtractMap(contentMap, "resource")
 		if resourceMap == nil {
-			return nil, fmt.Errorf("resource is missing")
+			return nil, errors.New("resource is missing")
 		}
 
 		resourceContents, err := ParseResourceContents(resourceMap)
@@ -145,11 +146,11 @@ func ParseContent(contentMap map[string]any) (Content, error) {
 	case ContentTypeToolUse:
 		id := ExtractString(contentMap, "id")
 		if id == "" {
-			return nil, fmt.Errorf("tool_use id is missing")
+			return nil, errors.New("tool_use id is missing")
 		}
 		name := ExtractString(contentMap, "name")
 		if name == "" {
-			return nil, fmt.Errorf("tool_use name is missing")
+			return nil, errors.New("tool_use name is missing")
 		}
 		input := contentMap["input"]
 		c := NewToolUseContent(id, name, input)
@@ -160,7 +161,7 @@ func ParseContent(contentMap map[string]any) (Content, error) {
 	case ContentTypeToolResult:
 		toolUseID := ExtractString(contentMap, "toolUseId")
 		if toolUseID == "" {
-			return nil, fmt.Errorf("tool_result toolUseId is missing")
+			return nil, errors.New("tool_result toolUseId is missing")
 		}
 		isError, _ := contentMap["isError"].(bool)
 		var contentItems []Content
@@ -236,7 +237,7 @@ func parseResultEnvelope(rawMessage json.RawMessage) (resultEnvelope, error) {
 
 func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error) {
 	if rawMessage == nil {
-		return nil, fmt.Errorf("response is nil")
+		return nil, errors.New("response is nil")
 	}
 
 	var jsonContent map[string]any
@@ -275,7 +276,7 @@ func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error)
 	if ok && messages != nil {
 		messagesArr, ok := messages.([]any)
 		if !ok {
-			return nil, fmt.Errorf("messages is not an array")
+			return nil, errors.New("messages is not an array")
 		}
 
 		// An explicit empty array stays an empty array (upstream #1060).
@@ -283,7 +284,7 @@ func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error)
 		for _, message := range messagesArr {
 			messageMap, ok := message.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("message is not an object")
+				return nil, errors.New("message is not an object")
 			}
 
 			// Extract role
@@ -295,7 +296,7 @@ func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error)
 			// Extract content
 			contentMap, ok := messageMap["content"].(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("content is not an object")
+				return nil, errors.New("content is not an object")
 			}
 
 			// Process content
@@ -315,7 +316,7 @@ func ParseGetPromptResult(rawMessage *json.RawMessage) (*GetPromptResult, error)
 
 func ParseCallToolResult(rawMessage *json.RawMessage) (*CallToolResult, error) {
 	if rawMessage == nil {
-		return nil, fmt.Errorf("response is nil")
+		return nil, errors.New("response is nil")
 	}
 
 	var probe struct {
@@ -329,7 +330,7 @@ func ParseCallToolResult(rawMessage *json.RawMessage) (*CallToolResult, error) {
 	// (SEP-2322) holds the input requests and the request state, and one
 	// accepted as a task (the Tasks extension) holds the task.
 	if probe.Content == nil && probe.ResultType.IsComplete() {
-		return nil, fmt.Errorf("content is missing")
+		return nil, errors.New("content is missing")
 	}
 
 	var result CallToolResult
@@ -338,7 +339,7 @@ func ParseCallToolResult(rawMessage *json.RawMessage) (*CallToolResult, error) {
 	}
 	// A task the client cannot name is no handle to poll with.
 	if result.Task != nil && result.Task.TaskId == "" {
-		return nil, fmt.Errorf("task result without a taskId")
+		return nil, errors.New("task result without a taskId")
 	}
 
 	return &result, nil
@@ -347,7 +348,7 @@ func ParseCallToolResult(rawMessage *json.RawMessage) (*CallToolResult, error) {
 func ParseResourceContents(contentMap map[string]any) (ResourceContents, error) {
 	uri := ExtractString(contentMap, "uri")
 	if uri == "" {
-		return nil, fmt.Errorf("resource uri is missing")
+		return nil, errors.New("resource uri is missing")
 	}
 
 	mimeType := ExtractString(contentMap, "mimeType")
@@ -355,7 +356,7 @@ func ParseResourceContents(contentMap map[string]any) (ResourceContents, error) 
 	meta := ExtractMap(contentMap, "_meta")
 
 	if _, present := contentMap["_meta"]; present && meta == nil {
-		return nil, fmt.Errorf("_meta must be an object")
+		return nil, errors.New("_meta must be an object")
 	}
 
 	// Select the variant on the presence of a string "text" or "blob" field,
@@ -380,12 +381,12 @@ func ParseResourceContents(contentMap map[string]any) (ResourceContents, error) 
 		}, nil
 	}
 
-	return nil, fmt.Errorf("unsupported resource type")
+	return nil, errors.New("unsupported resource type")
 }
 
 func ParseReadResourceResult(rawMessage *json.RawMessage) (*ReadResourceResult, error) {
 	if rawMessage == nil {
-		return nil, fmt.Errorf("response is nil")
+		return nil, errors.New("response is nil")
 	}
 
 	var jsonContent map[string]any
@@ -419,12 +420,12 @@ func ParseReadResourceResult(rawMessage *json.RawMessage) (*ReadResourceResult, 
 		if result.NeedsInput() {
 			return &result, nil
 		}
-		return nil, fmt.Errorf("contents is missing")
+		return nil, errors.New("contents is missing")
 	}
 
 	contentArr, ok := contents.([]any)
 	if !ok {
-		return nil, fmt.Errorf("contents is not an array")
+		return nil, errors.New("contents is not an array")
 	}
 
 	// An explicit empty array stays an empty array (upstream #1060).
@@ -433,7 +434,7 @@ func ParseReadResourceResult(rawMessage *json.RawMessage) (*ReadResourceResult, 
 		// Extract content
 		contentMap, ok := content.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("content is not an object")
+			return nil, errors.New("content is not an object")
 		}
 
 		// Process content
@@ -482,7 +483,7 @@ func GetTextFromContent(content any) string {
 // a field of the wrong type fails the parse rather than vanish.
 func ParseCancelTaskResult(rawMessage *json.RawMessage) (*CancelTaskResult, error) {
 	if rawMessage == nil {
-		return nil, fmt.Errorf("response is nil")
+		return nil, errors.New("response is nil")
 	}
 	var result CancelTaskResult
 	if err := json.Unmarshal(*rawMessage, &result); err != nil {
@@ -495,7 +496,7 @@ func ParseCancelTaskResult(rawMessage *json.RawMessage) (*CancelTaskResult, erro
 // ListTasksResult; see ParseCancelTaskResult.
 func ParseListTasksResult(rawMessage *json.RawMessage) (*ListTasksResult, error) {
 	if rawMessage == nil {
-		return nil, fmt.Errorf("response is nil")
+		return nil, errors.New("response is nil")
 	}
 	var result ListTasksResult
 	if err := json.Unmarshal(*rawMessage, &result); err != nil {
@@ -507,7 +508,7 @@ func ParseListTasksResult(rawMessage *json.RawMessage) (*ListTasksResult, error)
 // ParseTaskResultResult parses a JSON message and converts it to a TaskResultResult.
 func ParseTaskResultResult(rawMessage *json.RawMessage) (*TaskResultResult, error) {
 	if rawMessage == nil {
-		return nil, fmt.Errorf("response is nil")
+		return nil, errors.New("response is nil")
 	}
 
 	// Content holds interface values, so it is decoded element by element -
@@ -553,7 +554,7 @@ func ParseTaskResultResult(rawMessage *json.RawMessage) (*TaskResultResult, erro
 // GetTaskResult; see ParseCancelTaskResult.
 func ParseGetTaskResult(rawMessage *json.RawMessage) (*GetTaskResult, error) {
 	if rawMessage == nil {
-		return nil, fmt.Errorf("response is nil")
+		return nil, errors.New("response is nil")
 	}
 	var result GetTaskResult
 	if err := json.Unmarshal(*rawMessage, &result); err != nil {

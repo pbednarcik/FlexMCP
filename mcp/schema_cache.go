@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -181,7 +182,7 @@ func (c *SchemaCache) MarshalJSON() ([]byte, error) {
 // schemas; values are stored verbatim as raw JSON.
 func (c *SchemaCache) UnmarshalJSON(data []byte) error {
 	if c == nil {
-		return fmt.Errorf("mcp: SchemaCache.UnmarshalJSON on nil receiver")
+		return errors.New("mcp: SchemaCache.UnmarshalJSON on nil receiver")
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -203,7 +204,7 @@ func (c *SchemaCache) UnmarshalJSON(data []byte) error {
 // and renaming it into place.
 func (c *SchemaCache) Save(path string) error {
 	if c == nil {
-		return fmt.Errorf("mcp: SchemaCache.Save on nil receiver")
+		return errors.New("mcp: SchemaCache.Save on nil receiver")
 	}
 	data, err := c.MarshalJSON()
 	if err != nil {

@@ -154,10 +154,10 @@ func (c *Client) fulfillInputRequest(
 	switch request.Method {
 	case mcp.MethodElicitationCreate:
 		if c.elicitationHandler == nil {
-			return mcp.InputResponse{}, fmt.Errorf("no elicitation handler configured")
+			return mcp.InputResponse{}, errors.New("no elicitation handler configured")
 		}
 		if request.Elicitation == nil {
-			return mcp.InputResponse{}, fmt.Errorf("elicitation input request has no params")
+			return mcp.InputResponse{}, errors.New("elicitation input request has no params")
 		}
 		if err := c.checkElicitation(*request.Elicitation); err != nil {
 			return mcp.InputResponse{}, err
@@ -175,16 +175,16 @@ func (c *Client) fulfillInputRequest(
 			return mcp.NewElicitationInputResponse(mcp.ElicitationResult{Action: mcp.ElicitationResponseActionCancel}), nil
 		}
 		if result == nil {
-			return mcp.InputResponse{}, fmt.Errorf("elicitation handler returned no result")
+			return mcp.InputResponse{}, errors.New("elicitation handler returned no result")
 		}
 		return mcp.NewElicitationInputResponse(*result), nil
 
 	case mcp.MethodSamplingCreateMessage:
 		if c.samplingHandler == nil {
-			return mcp.InputResponse{}, fmt.Errorf("no sampling handler configured")
+			return mcp.InputResponse{}, errors.New("no sampling handler configured")
 		}
 		if request.Sampling == nil {
-			return mcp.InputResponse{}, fmt.Errorf("sampling input request has no params")
+			return mcp.InputResponse{}, errors.New("sampling input request has no params")
 		}
 		params, err := typedSamplingParams(*request.Sampling)
 		if err != nil {
@@ -198,13 +198,13 @@ func (c *Client) fulfillInputRequest(
 			return mcp.InputResponse{}, err
 		}
 		if result == nil {
-			return mcp.InputResponse{}, fmt.Errorf("sampling handler returned no result")
+			return mcp.InputResponse{}, errors.New("sampling handler returned no result")
 		}
 		return mcp.NewSamplingInputResponse(*result), nil
 
 	case mcp.MethodListRoots:
 		if c.rootsHandler == nil {
-			return mcp.InputResponse{}, fmt.Errorf("no roots handler configured")
+			return mcp.InputResponse{}, errors.New("no roots handler configured")
 		}
 		result, err := c.rootsHandler.ListRoots(ctx, mcp.ListRootsRequest{
 			Method: string(mcp.MethodListRoots),
@@ -213,7 +213,7 @@ func (c *Client) fulfillInputRequest(
 			return mcp.InputResponse{}, err
 		}
 		if result == nil {
-			return mcp.InputResponse{}, fmt.Errorf("roots handler returned no result")
+			return mcp.InputResponse{}, errors.New("roots handler returned no result")
 		}
 		result, err = checkRoots(result)
 		if err != nil {

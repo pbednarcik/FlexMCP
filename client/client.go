@@ -188,7 +188,7 @@ func NewClient(transport transport.Interface, options ...ClientOption) *Client {
 // Must be called before using the client.
 func (c *Client) Start(ctx context.Context) error {
 	if c.transport == nil {
-		return fmt.Errorf("transport is nil")
+		return errors.New("transport is nil")
 	}
 
 	// Start is idempotent - transports handle being called multiple times
@@ -264,7 +264,7 @@ func (c *Client) sendRequestIn(
 	header http.Header,
 ) (*json.RawMessage, error) {
 	if !c.initialized.Load() && method != "initialize" && method != string(mcp.MethodServerDiscover) {
-		return nil, fmt.Errorf("client not initialized")
+		return nil, errors.New("client not initialized")
 	}
 
 	// Protocol version 2026-07-28 carries the protocol version, client
@@ -996,7 +996,7 @@ func (c *Client) handleSamplingRequestTransport(ctx context.Context, request tra
 		return nil, err
 	}
 	if result == nil {
-		return nil, fmt.Errorf("sampling handler returned no result")
+		return nil, errors.New("sampling handler returned no result")
 	}
 
 	// Marshal the result
@@ -1046,7 +1046,7 @@ func (c *Client) handleListRootsRequestTransport(ctx context.Context, request tr
 		return nil, err
 	}
 	if result == nil {
-		return nil, fmt.Errorf("roots handler returned no result")
+		return nil, errors.New("roots handler returned no result")
 	}
 	result, err = checkRoots(result)
 	if err != nil {
@@ -1099,7 +1099,7 @@ func (c *Client) handleElicitationRequestTransport(ctx context.Context, request 
 		return nil, err
 	}
 	if result == nil {
-		return nil, fmt.Errorf("elicitation handler returned no result")
+		return nil, errors.New("elicitation handler returned no result")
 	}
 
 	// Marshal the result

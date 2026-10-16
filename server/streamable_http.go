@@ -370,7 +370,7 @@ func (s *StreamableHTTPServer) Start(addr string) error {
 
 	if s.tlsCertFile != "" || s.tlsKeyFile != "" {
 		if s.tlsCertFile == "" || s.tlsKeyFile == "" {
-			return fmt.Errorf("both TLS cert and key must be provided")
+			return errors.New("both TLS cert and key must be provided")
 		}
 		if _, err := os.Stat(s.tlsCertFile); err != nil {
 			return fmt.Errorf("failed to find TLS certificate file: %w", err)

@@ -1,6 +1,9 @@
 package mcp
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 /* Elicitation */
 
@@ -42,13 +45,13 @@ func (p ElicitationParams) Validate() error {
 	switch mode {
 	case ElicitationModeForm:
 		if p.RequestedSchema == nil {
-			return fmt.Errorf("requestedSchema is required for form elicitation")
+			return errors.New("requestedSchema is required for form elicitation")
 		}
 	case ElicitationModeURL:
 		// elicitationId was removed from URL mode in 2026-07-28; a request
 		// may still carry one for a 2025-11-25 client, but needs only its URL.
 		if p.URL == "" {
-			return fmt.Errorf("url is required for url elicitation")
+			return errors.New("url is required for url elicitation")
 		}
 	default:
 		return fmt.Errorf("invalid elicitation mode: %s", mode)

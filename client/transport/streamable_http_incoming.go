@@ -88,10 +88,10 @@ func (c *StreamableHTTP) listenForever(ctx context.Context) {
 
 var (
 	// ErrSessionTerminated indicates the server no longer recognizes the current session.
-	ErrSessionTerminated   = fmt.Errorf("session terminated (404). need to re-initialize")
-	ErrGetMethodNotAllowed = fmt.Errorf("GET method not allowed")
-	ErrUnauthorized        = fmt.Errorf("unauthorized (401)")
-	ErrLegacySSEServer     = fmt.Errorf("server returned 4xx for initialize POST, likely a legacy SSE server")
+	ErrSessionTerminated   = errors.New("session terminated (404). need to re-initialize")
+	ErrGetMethodNotAllowed = errors.New("GET method not allowed")
+	ErrUnauthorized        = errors.New("unauthorized (401)")
+	ErrLegacySSEServer     = errors.New("server returned 4xx for initialize POST, likely a legacy SSE server")
 
 	retryInterval = 1 * time.Second // a variable is convenient for testing
 )

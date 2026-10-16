@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -29,7 +30,7 @@ func (r CallToolRequest) GetRawArguments() any {
 // This is useful for working with strongly-typed arguments
 func (r CallToolRequest) BindArguments(target any) error {
 	if target == nil || reflect.ValueOf(target).Kind() != reflect.Pointer {
-		return fmt.Errorf("target must be a non-nil pointer")
+		return errors.New("target must be a non-nil pointer")
 	}
 
 	if len(r.Params.RawArguments) > 0 {
