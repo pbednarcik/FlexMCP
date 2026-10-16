@@ -86,6 +86,11 @@ var (
 	// access token, or one of a type other than Bearer (RFC 6749 §5.1, §7.1;
 	// MCP authorization sends Bearer tokens only). Nothing from it is saved.
 	ErrInvalidTokenResponse = errors.New("invalid token response")
+
+	// ErrInvalidRegistrationResponse is returned when a dynamic client
+	// registration response carries no client_id (RFC 7591 §3.2.1). The
+	// credentials stay as they were.
+	ErrInvalidRegistrationResponse = errors.New("invalid client registration response")
 )
 
 // OAuthConfig holds the OAuth configuration for the client
@@ -1932,7 +1937,8 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 		regRequest["token_endpoint_auth_method"] = "client_secret_post"
 	}
 
-	// RFC 8707: Include resource parameter in client registration
+	// The MCP server the client registers for. RFC 7591 defines no such
+	// member; a server that does not know it ignores it (RFC 7591 §2).
 	if resourceURL := h.getResourceURL(); resourceURL != "" {
 		regRequest["resource"] = resourceURL
 	}
@@ -1974,6 +1980,9 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBodyBytes)).Decode(&regResponse); err != nil {
 		return fmt.Errorf("failed to decode registration response: %w", err)
+	}
+	if regResponse.ClientID == "" {
+		return fmt.Errorf("%w: no client_id", ErrInvalidRegistrationResponse)
 	}
 
 	// The registration replaces the whole credential set: a secret from an

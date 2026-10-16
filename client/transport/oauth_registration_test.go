@@ -163,6 +163,24 @@ func TestOAuthHandler_ClientIssuerBindsTheCredentialsFromTheStart(t *testing.T) 
 	assert.Empty(t, other.forms)
 }
 
+// A registration response carries the client_id it issued (RFC 7591
+// §3.2.1); one without it is refused and leaves the credentials as they were.
+func TestOAuthHandler_ARegistrationWithoutAClientIDIsRefused(t *testing.T) {
+	server := &tokenAuthServer{registration: map[string]any{"client_secret": "orphan"}}
+	httpServer := server.start(t)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "old",
+		ClientSecret:          "old-secret",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: httpServer.URL + "/.well-known/oauth-authorization-server",
+	})
+
+	require.ErrorIs(t, handler.RegisterClient(t.Context(), "test"), ErrInvalidRegistrationResponse)
+	assert.Equal(t, "old", handler.GetClientID())
+	assert.Equal(t, "old-secret", handler.GetClientSecret())
+}
+
 // Registering again replaces the whole credential set: a secret from the
 // earlier registration is not kept beside the new client ID.
 func TestOAuthHandler_RegistrationReplacesTheWholeCredentialSet(t *testing.T) {
