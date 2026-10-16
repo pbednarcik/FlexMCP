@@ -2306,5 +2306,10 @@ func (h *OAuthHandler) GetAuthorizationURL(ctx context.Context, state, codeChall
 	// RFC 8707: the resource parameter names the MCP server
 	params.Set("resource", resourceURL)
 
-	return metadata.AuthorizationEndpoint + "?" + params.Encode(), nil
+	// The endpoint's own query is kept (RFC 6749, section 3.1).
+	separator := "?"
+	if strings.Contains(metadata.AuthorizationEndpoint, "?") {
+		separator = "&"
+	}
+	return metadata.AuthorizationEndpoint + separator + params.Encode(), nil
 }

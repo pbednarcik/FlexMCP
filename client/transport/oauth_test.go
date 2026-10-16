@@ -2564,3 +2564,35 @@ func TestOAuthHandler_MetadataDiscovery_SendsLatestProtocolVersion(t *testing.T)
 			"oauth-authorization-server discovery must not hardcode the legacy protocol version")
 	})
 }
+
+// An authorization endpoint's own query is kept when the request's
+// parameters are added (RFC 6749, section 3.1).
+func TestOAuthHandler_AuthorizationURLKeepsTheEndpointsQuery(t *testing.T) {
+	var as *httptest.Server
+	as = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                           as.URL,
+			"authorization_endpoint":           as.URL + "/authorize?tenant=a",
+			"token_endpoint":                   as.URL + "/token",
+			"code_challenge_methods_supported": []string{"S256"},
+		})
+	}))
+	t.Cleanup(as.Close)
+	handler := NewOAuthHandler(OAuthConfig{
+		ClientID:              "client",
+		RedirectURI:           "http://localhost:8085/callback",
+		TokenStore:            NewMemoryTokenStore(),
+		AuthServerMetadataURL: as.URL + "/.well-known/oauth-authorization-server",
+	})
+	handler.SetBaseURL(as.URL + "/mcp")
+
+	authURL, err := handler.GetAuthorizationURL(t.Context(), "state", "challenge")
+	require.NoError(t, err)
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+	assert.Equal(t, "/authorize", parsed.Path)
+	assert.Equal(t, "a", parsed.Query().Get("tenant"))
+	assert.Equal(t, "client", parsed.Query().Get("client_id"))
+	assert.Equal(t, "state", parsed.Query().Get("state"))
+}
