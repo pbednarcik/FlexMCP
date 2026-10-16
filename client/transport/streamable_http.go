@@ -1236,12 +1236,11 @@ func (c *StreamableHTTP) handleIncomingRequest(ctx context.Context, request JSON
 				errorMessage = "request timed out"
 			} else {
 				// Generic error cases
+				errorCode = handlerErrorCode(err)
 				switch request.Method {
 				case string(mcp.MethodSamplingCreateMessage):
-					errorCode = mcp.INTERNAL_ERROR
 					errorMessage = fmt.Sprintf("sampling request failed: %v", err)
 				default:
-					errorCode = mcp.INTERNAL_ERROR
 					errorMessage = err.Error()
 				}
 			}

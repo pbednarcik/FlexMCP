@@ -871,7 +871,7 @@ func (c *Stdio) handleIncomingRequest(request JSONRPCRequest) {
 
 		response, err := handler(ctx, request)
 		if err != nil {
-			errorResponse := *NewJSONRPCErrorResponse(request.ID, mcp.INTERNAL_ERROR, err.Error(), nil)
+			errorResponse := *NewJSONRPCErrorResponse(request.ID, handlerErrorCode(err), err.Error(), nil)
 			c.sendResponse(errorResponse)
 			return
 		}

@@ -922,6 +922,23 @@ func (c *Client) RootListChanges(
 	return nil
 }
 
+// requestError is a server request the client could not serve: its text as
+// written, and its kind, mcp.ErrMethodNotFound or mcp.ErrInvalidParams,
+// which the transport answers with the matching JSON-RPC code.
+type requestError struct {
+	kind error
+	err  error
+}
+
+func (e requestError) Error() string   { return e.err.Error() }
+func (e requestError) Unwrap() []error { return []error{e.kind, e.err} }
+
+// requestFailed is a requestError of kind, its text formatted as fmt.Errorf
+// formats it.
+func requestFailed(kind error, format string, args ...any) error {
+	return requestError{kind: kind, err: fmt.Errorf(format, args...)}
+}
+
 // handleIncomingRequest processes incoming requests from the server.
 // This is the main entry point for server-to-client requests like sampling and elicitation.
 func (c *Client) handleIncomingRequest(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
@@ -935,14 +952,14 @@ func (c *Client) handleIncomingRequest(ctx context.Context, request transport.JS
 	case string(mcp.MethodListRoots):
 		return c.handleListRootsRequestTransport(ctx, request)
 	default:
-		return nil, fmt.Errorf("unsupported request method: %s", request.Method)
+		return nil, requestFailed(mcp.ErrMethodNotFound, "unsupported request method: %s", request.Method)
 	}
 }
 
 // handleSamplingRequestTransport handles sampling requests at the transport level.
 func (c *Client) handleSamplingRequestTransport(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
 	if c.samplingHandler == nil {
-		return nil, fmt.Errorf("no sampling handler configured")
+		return nil, requestFailed(mcp.ErrMethodNotFound, "no sampling handler configured")
 	}
 
 	// Parse the request parameters
@@ -953,7 +970,7 @@ func (c *Client) handleSamplingRequestTransport(ctx context.Context, request tra
 			return nil, fmt.Errorf("failed to marshal params: %w", err)
 		}
 		if err := json.Unmarshal(paramsBytes, &params); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal params: %w", err)
+			return nil, requestFailed(mcp.ErrInvalidParams, "failed to unmarshal params: %w", err)
 		}
 	}
 
@@ -1015,7 +1032,7 @@ func checkRoots(result *mcp.ListRootsResult) (*mcp.ListRootsResult, error) {
 // handleListRootsRequestTransport handles list roots requests at the transport level.
 func (c *Client) handleListRootsRequestTransport(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
 	if c.rootsHandler == nil {
-		return nil, fmt.Errorf("no roots handler configured")
+		return nil, requestFailed(mcp.ErrMethodNotFound, "no roots handler configured")
 	}
 
 	// Create the MCP request
@@ -1051,7 +1068,7 @@ func (c *Client) handleListRootsRequestTransport(ctx context.Context, request tr
 // handleElicitationRequestTransport handles elicitation requests at the transport level.
 func (c *Client) handleElicitationRequestTransport(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
 	if c.elicitationHandler == nil {
-		return nil, fmt.Errorf("no elicitation handler configured")
+		return nil, requestFailed(mcp.ErrMethodNotFound, "no elicitation handler configured")
 	}
 
 	// Parse the request parameters
@@ -1062,12 +1079,12 @@ func (c *Client) handleElicitationRequestTransport(ctx context.Context, request 
 			return nil, fmt.Errorf("failed to marshal params: %w", err)
 		}
 		if err := json.Unmarshal(paramsBytes, &params); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal params: %w", err)
+			return nil, requestFailed(mcp.ErrInvalidParams, "failed to unmarshal params: %w", err)
 		}
 	}
 
 	if err := params.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid elicitation params: %w", err)
+		return nil, requestFailed(mcp.ErrInvalidParams, "invalid elicitation params: %w", err)
 	}
 
 	// Create the MCP request
