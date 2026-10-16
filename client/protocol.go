@@ -292,6 +292,29 @@ func (c *Client) toolForCall(params json.RawMessage) *mcp.Tool {
 	return &tool
 }
 
+// InvalidToolHandler is called for each tool definition that ListTools,
+// ListToolsByPage and IterTools exclude because its x-mcp-header annotations
+// violate SEP-2243. err is the error returned by
+// mcp.ValidateParamHeaderAnnotations.
+//
+// The handler runs synchronously on the goroutine that listed the tools, once
+// per excluded tool and page, with that request's context, so a caller can
+// correlate the call with its own span or request. It must not block.
+type InvalidToolHandler func(ctx context.Context, tool mcp.Tool, err error)
+
+// WithInvalidToolHandler sets the handler notified about tools excluded for
+// their invalid x-mcp-header annotations.
+//
+// Exclusion itself is unchanged: the tool is still dropped from the listing and
+// forgotten from the cache, and one warning per listing is still logged.
+// Without this option, that warning, which names only the first excluded
+// tool, is the only signal that a tool disappeared.
+func WithInvalidToolHandler(handler InvalidToolHandler) ClientOption {
+	return func(c *Client) {
+		c.invalidToolHandler = handler
+	}
+}
+
 // withoutInvalidHeaderTools drops the tool definitions whose x-mcp-header
 // annotations break the constraints of SEP-2243. A client using Streamable
 // HTTP MUST exclude such a tool from the tools/list result, so that one bad
@@ -313,6 +336,9 @@ func (c *Client) withoutInvalidHeaderTools(ctx context.Context, tools []mcp.Tool
 				first, firstErr = tool.Name, err
 			}
 			excluded++
+			if c.invalidToolHandler != nil {
+				c.invalidToolHandler(ctx, tool, err)
+			}
 			c.forgetTool(tool.Name)
 			continue
 		}
