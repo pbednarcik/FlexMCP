@@ -327,3 +327,22 @@ func TestOAuthHandler_ARefreshTokenWithoutARecordGoesOnlyToClientIssuer(t *testi
 		})
 	}
 }
+
+// Requests check their tokens against the handler's target together: a
+// check takes the metadata lock to read, so it does not wait for another.
+func TestOAuthHandler_TokenChecksShareTheMetadataLock(t *testing.T) {
+	const base = "https://mcp.example.com/mcp"
+	handler := NewOAuthHandler(OAuthConfig{ClientID: "client", TokenStore: NewMemoryTokenStore()})
+	handler.SetBaseURL(base)
+
+	handler.metadataMu.RLock()
+	defer handler.metadataMu.RUnlock()
+	checked := make(chan bool, 1)
+	go func() { checked <- handler.tokenIsFor(&Token{AccessToken: "a"}, base) }()
+	select {
+	case ok := <-checked:
+		assert.True(t, ok)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a token check waited for another reader of the metadata lock")
+	}
+}

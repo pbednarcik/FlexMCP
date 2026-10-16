@@ -23,10 +23,10 @@ func (h *OAuthHandler) tokenIsForThisServer(token *Token) bool {
 // then as tokenIsForThisServer says. An empty recipient is the handler's own
 // target.
 func (h *OAuthHandler) tokenIsFor(token *Token, recipient string) bool {
-	h.metadataMu.Lock()
+	h.metadataMu.RLock()
 	resource, base := h.resourceURL, h.baseURL
 	issuer := h.knownIssuer
-	h.metadataMu.Unlock()
+	h.metadataMu.RUnlock()
 	if recipient != "" && recipient != base {
 		return false
 	}

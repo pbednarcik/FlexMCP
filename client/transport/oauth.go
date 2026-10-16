@@ -106,8 +106,9 @@ type OAuthHandler struct {
 	// metadataFetchErr, metadataOnce, config.ProtectedResourceMetadataURL,
 	// resourceURL, knownIssuer and resourceScopes. It MUST NOT be held across HTTP I/O —
 	// see getServerMetadata for the snapshot/publish discipline that keeps
-	// network round trips out of the critical section (#871).
-	metadataMu  sync.Mutex
+	// network round trips out of the critical section (#871). The token check
+	// every request makes reads under RLock; everything else takes Lock.
+	metadataMu  sync.RWMutex
 	resourceURL string // RFC 8707 resource indicator; set from protected resource metadata
 	// knownIssuer is the issuer discovery last named for the base URL. It
 	// survives a reset of discovery, so a token from another issuer stays
