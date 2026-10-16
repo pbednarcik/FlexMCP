@@ -435,14 +435,13 @@ func (c *Client) Initialize(
 		// Fall through to the handshake: the server is not modern.
 	}
 
-	return c.initializeLegacy(ctx, request, preferred, &next, header)
+	return c.initializeLegacy(ctx, preferred, &next, header)
 }
 
 // initializeLegacy performs the initialize/initialized handshake used by
 // protocol versions up to and including 2025-11-25.
 func (c *Client) initializeLegacy(
 	ctx context.Context,
-	request mcp.InitializeRequest,
 	preferred string,
 	next *era,
 	header http.Header,
@@ -456,7 +455,7 @@ func (c *Client) initializeLegacy(
 		Capabilities    mcp.ClientCapabilities `json:"capabilities"`
 	}{
 		ProtocolVersion: preferred,
-		ClientInfo:      request.Params.ClientInfo,
+		ClientInfo:      next.clientInfo,
 		Capabilities:    capabilities,
 	}
 
