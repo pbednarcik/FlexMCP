@@ -28,6 +28,9 @@ var (
 	// ErrChildShutdownTimeout is returned when a stdio subprocess still has not exited
 	// after the forced shutdown path has been attempted.
 	ErrChildShutdownTimeout = errors.New("stdio child did not exit after forced shutdown")
+	// ErrTransportNotStarted is returned when sending through a stdio
+	// transport before Start.
+	ErrTransportNotStarted = errors.New("stdio client not started")
 )
 
 // Stdio implements the transport layer of the MCP protocol using stdio communication.
@@ -194,9 +197,9 @@ func WithCommandStderrWriter(w io.Writer) StdioOption {
 	}
 }
 
-// NewStdio creates a new stdio transport to communicate with a subprocess.
-// It launches the specified command with given arguments and sets up stdin/stdout pipes for communication.
-// Returns an error if the subprocess cannot be started or the pipes cannot be created.
+// NewStdio creates a stdio transport for a subprocess running command with
+// args and env. Nothing is launched until Start, which spawns the command,
+// sets up its pipes and reports any failure to do so.
 func NewStdio(
 	command string,
 	env []string,
@@ -205,11 +208,9 @@ func NewStdio(
 	return NewStdioWithOptions(command, env, args)
 }
 
-// NewStdioWithOptions creates a new stdio transport to communicate with a subprocess.
-// It launches the specified command with given arguments and sets up stdin/stdout pipes for communication.
-// Returns an error if the subprocess cannot be started or the pipes cannot be created.
-// Optional configuration functions can be provided to customize the transport before it starts,
-// such as setting a custom command factory.
+// NewStdioWithOptions is NewStdio with options that customize the transport
+// before it starts, such as a custom command factory. Nothing is launched
+// until Start.
 func NewStdioWithOptions(
 	command string,
 	env []string,
@@ -236,7 +237,8 @@ func NewStdioWithOptions(
 
 // NewIO returns a new stdio-based transport using existing input, output, and
 // logging streams instead of spawning a subprocess.
-// This is useful for testing and simulating client behavior.
+// This is useful for testing and simulating client behavior. Close closes
+// output and logging; input is the caller's to close.
 func NewIO(input io.Reader, output io.WriteCloser, logging io.ReadCloser) *Stdio {
 	return &Stdio{
 		stdin:  output,
@@ -446,10 +448,9 @@ func (c *Stdio) Close() error {
 	}
 	c.ctxMu.RUnlock()
 
-	// Perform resource cleanup exactly once, even if readResponses already
-	// called closeDone() (e.g. server died). Without this, the old early-return
-	// guard would skip stdin/stderr cleanup and cmd.Wait(), causing FD leaks
-	// and zombie processes.
+	// Clean up exactly once, even when readResponses already called
+	// closeDone (the server died): stdin and stderr are closed and the child
+	// is waited for, so no descriptor or zombie process is left behind.
 	var closeErr error
 	c.closeCleanupOnce.Do(func() {
 		// Closed after the child exits: on Windows a pipe Close blocks while
@@ -736,7 +737,7 @@ func (c *Stdio) SendRequest(
 	}
 
 	if c.stdin == nil {
-		return nil, fmt.Errorf("stdio client not started")
+		return nil, ErrTransportNotStarted
 	}
 
 	// Marshal request
@@ -798,7 +799,7 @@ func (c *Stdio) SendNotification(
 	}
 
 	if c.stdin == nil {
-		return fmt.Errorf("stdio client not started")
+		return ErrTransportNotStarted
 	}
 
 	notificationBytes, err := json.Marshal(notification)
