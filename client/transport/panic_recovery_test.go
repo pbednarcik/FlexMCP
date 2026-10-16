@@ -70,10 +70,8 @@ func (l *panicTestLogger) waitForMessage(substr string, timeout time.Duration) b
 func TestPanicRecovery_HandleIncomingRequest(t *testing.T) {
 	logger := &panicTestLogger{}
 
-	c := &StreamableHTTP{
-		logger: logger.slogger(),
-		closed: make(chan struct{}),
-	}
+	c, err := NewStreamableHTTP("http://127.0.0.1:1/mcp", WithHTTPLogger(logger.slogger()))
+	require.NoError(t, err)
 
 	// Set a handler that panics
 	c.requestHandler = func(_ context.Context, _ JSONRPCRequest) (*JSONRPCResponse, error) {
@@ -93,31 +91,25 @@ func TestPanicRecovery_HandleIncomingRequest(t *testing.T) {
 		"expected panic recovery log message within timeout")
 }
 
-// TestContextAwareOfClientClose_CleanShutdown verifies that the context-close
-// watcher goroutine completes without crashing when the closed channel fires.
+// TestContextAwareOfClientClose_CleanShutdown verifies that Close cancels a
+// request's context, and that nothing panics on the way.
 func TestContextAwareOfClientClose_CleanShutdown(t *testing.T) {
 	logger := &panicTestLogger{}
 
-	c := &StreamableHTTP{
-		logger: logger.slogger(),
-		closed: make(chan struct{}),
-	}
+	c, err := NewStreamableHTTP("http://127.0.0.1:1/mcp", WithHTTPLogger(logger.slogger()))
+	require.NoError(t, err)
 
 	childCtx, childCancel := c.contextAwareOfClientClose(t.Context())
 	defer childCancel()
 
-	// Close the client channel to trigger the goroutine's select case
-	close(c.closed)
+	require.NoError(t, c.Close())
 
-	// Wait for the goroutine to cancel the child context (proves it ran)
 	select {
 	case <-childCtx.Done():
-		// Goroutine fired cancel() as expected
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for context cancellation")
 	}
 
-	// No panic means the recovery defer is in place and the goroutine exits cleanly
 	assert.False(t, logger.hasMessageContaining("panic"),
 		"unexpected panic logged during clean shutdown")
 }

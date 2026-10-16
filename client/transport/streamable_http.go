@@ -159,8 +159,12 @@ type StreamableHTTP struct {
 	requestHandler RequestHandler
 	requestMu      sync.RWMutex
 
-	closed    chan struct{}
-	closeOnce sync.Once
+	// closing ends when Close runs, and closed is its Done channel; a
+	// request's context watches closing through context.AfterFunc.
+	closing        context.Context
+	closeTransport context.CancelFunc
+	closed         <-chan struct{}
+	closeOnce      sync.Once
 
 	// OAuth support
 	oauthHandler *OAuthHandler
@@ -181,10 +185,11 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 		serverURL:   parsedURL,
 		httpClient:  &http.Client{},
 		headers:     make(map[string]string),
-		closed:      make(chan struct{}),
 		logger:      slog.Default(),
 		initialized: make(chan struct{}),
 	}
+	smc.closing, smc.closeTransport = context.WithCancel(context.Background())
+	smc.closed = smc.closing.Done()
 	smc.sessionID.Store("") // set initial value to simplify later usage
 
 	for _, opt := range options {
@@ -249,7 +254,7 @@ func (c *StreamableHTTP) Start(ctx context.Context) error {
 func (c *StreamableHTTP) Close() error {
 	c.closeOnce.Do(func() {
 		// Cancel all in-flight requests
-		close(c.closed)
+		c.closeTransport()
 
 		// Protocol version 2026-07-28 removed protocol-level sessions, so
 		// there is nothing to terminate and DELETE is not part of the
@@ -710,21 +715,13 @@ func (c *StreamableHTTP) IsOAuthEnabled() bool {
 
 func (c *StreamableHTTP) contextAwareOfClientClose(ctx context.Context) (context.Context, context.CancelFunc) {
 	newCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Error("panic in context-close watcher", "panic", r)
-			}
-		}()
-		select {
-		case <-c.closed:
-			cancel()
-		case <-newCtx.Done():
-			// The original context was canceled
-			cancel()
-		}
-	}()
-	return newCtx, cancel
+	// Close cancels the request without a goroutine to watch for it, and
+	// the request's end lets go of the watch.
+	stop := context.AfterFunc(c.closing, cancel)
+	return newCtx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // answers says whether response is request's answer: it carries the request's
