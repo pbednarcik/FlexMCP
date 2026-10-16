@@ -141,3 +141,24 @@ func TestDispatchMalformedParamsAreInvalidParams(t *testing.T) {
 		})
 	}
 }
+
+// tasks/list and tasks/cancel sit behind their own sub-capabilities: a
+// server that advertises tasks without tasks.list or tasks.cancel does not
+// serve them, and still serves tasks/get.
+func TestDispatchTaskMethodsBehindTheirSubCapabilities(t *testing.T) {
+	without := NewMCPServer("tasks", "1.0.0", WithTaskCapabilities(false, false, true))
+	for method, capability := range map[mcp.MCPMethod]string{
+		mcp.MethodTasksList:   "tasks.list",
+		mcp.MethodTasksCancel: "tasks.cancel",
+	} {
+		details := dispatch(t, without, method, `{"taskId":"unknown"}`)
+		assert.Equal(t, mcp.METHOD_NOT_FOUND, details.Code, "%s", method)
+		assert.Equal(t, capability+" not supported", details.Message, "%s", method)
+	}
+	assert.NotEqual(t, mcp.METHOD_NOT_FOUND, dispatch(t, without, mcp.MethodTasksGet, `{"taskId":"unknown"}`).Code, "tasks/get")
+
+	with := NewMCPServer("tasks", "1.0.0", WithTaskCapabilities(true, true, true))
+	_, listed := with.HandleMessage(t.Context(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tasks/list","params":{}}`)).(mcp.JSONRPCResponse)
+	assert.True(t, listed, "tasks/list with tasks.list")
+	assert.NotEqual(t, mcp.METHOD_NOT_FOUND, dispatch(t, with, mcp.MethodTasksCancel, `{"taskId":"unknown"}`).Code, "tasks/cancel with tasks.cancel")
+}

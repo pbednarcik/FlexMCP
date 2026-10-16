@@ -392,6 +392,12 @@ func WithTaskCapabilities(list, cancel, toolCallTasks bool) ServerOption {
 			toolCallTasks: toolCallTasks,
 		}
 		s.markServed(servesTasks)
+		if list {
+			s.markServed(servesTasksList)
+		}
+		if cancel {
+			s.markServed(servesTasksCancel)
+		}
 	}
 }
 

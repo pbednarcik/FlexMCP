@@ -202,6 +202,10 @@ const (
 	servesPrompts
 	servesTools
 	servesTasks
+	// servesTasksList and servesTasksCancel are the tasks.list and
+	// tasks.cancel sub-capabilities, each set only with servesTasks.
+	servesTasksList
+	servesTasksCancel
 	servesCompletions
 )
 

@@ -587,11 +587,11 @@ func (s *MCPServer) handleMessageRead(
 				code: mcp.METHOD_NOT_FOUND,
 				err:  fmt.Errorf("%q %w", baseMessage.Method, ErrRemovedInProtocolVersion),
 			}
-		} else if !s.serves(servesTasks) {
+		} else if !s.serves(servesTasksList) {
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.METHOD_NOT_FOUND,
-				err:  fmt.Errorf("tasks %w", ErrUnsupported),
+				err:  fmt.Errorf("tasks.list %w", ErrUnsupported),
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
@@ -647,11 +647,11 @@ func (s *MCPServer) handleMessageRead(
 	case mcp.MethodTasksCancel:
 		var request mcp.CancelTaskRequest
 		var result *mcp.CancelTaskResult
-		if !s.serves(servesTasks) {
+		if !s.serves(servesTasksCancel) {
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.METHOD_NOT_FOUND,
-				err:  fmt.Errorf("tasks %w", ErrUnsupported),
+				err:  fmt.Errorf("tasks.cancel %w", ErrUnsupported),
 			}
 		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
 			err = &requestError{
