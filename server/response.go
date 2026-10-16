@@ -331,3 +331,19 @@ func (s *MCPServer) cachedHeaderBindings(name string, tool *mcp.Tool) []mcp.Para
 	}
 	return mcp.ExtractParamHeaderBindings(tool)
 }
+
+func createResponse(id any, result any) mcp.JSONRPCMessage {
+	return mcp.NewJSONRPCResultResponse(mcp.NewRequestId(id), result)
+}
+
+func createErrorResponse(
+	id any,
+	code int,
+	message string,
+) mcp.JSONRPCMessage {
+	return mcp.JSONRPCError{
+		JSONRPC: mcp.JSONRPC_VERSION,
+		ID:      mcp.NewRequestId(id),
+		Error:   mcp.NewJSONRPCErrorDetails(code, message, nil),
+	}
+}

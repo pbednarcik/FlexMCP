@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -68,4 +69,68 @@ var errTaskHookPanicked = errors.New("a task hook panicked while the task was cr
 // error, which leaves the server nothing to send.
 func noResultError(kind, name string) error {
 	return fmt.Errorf("%s '%s' handler returned no result", kind, name)
+}
+
+// UnparsableMessageError is attached to the RequestError when json.Unmarshal
+// fails on the request.
+type UnparsableMessageError struct {
+	message json.RawMessage
+	method  mcp.MCPMethod
+	err     error
+}
+
+func (e *UnparsableMessageError) Error() string {
+	return fmt.Sprintf("unparsable %s request: %s", e.method, e.err)
+}
+
+func (e *UnparsableMessageError) Unwrap() error {
+	return e.err
+}
+
+func (e *UnparsableMessageError) GetMessage() json.RawMessage {
+	return e.message
+}
+
+func (e *UnparsableMessageError) GetMethod() mcp.MCPMethod {
+	return e.method
+}
+
+// undecodableParamsMessage is what a client is told about params that could
+// not be decoded: the decoder's own text names Go types and fields, so it
+// stays on the server, for hooks and logs.
+func undecodableParamsMessage(method mcp.MCPMethod) *string {
+	message := "invalid params for " + string(method)
+	return &message
+}
+
+// RequestError is an error that can be converted to a JSON-RPC error.
+// Implements Unwrap() to allow inspecting the error chain.
+type requestError struct {
+	id   any
+	code int
+	err  error
+	// message, when set, is sent instead of err.Error().
+	message *string
+	// data, when set, is sent as the data member of the JSON-RPC error.
+	data any
+}
+
+func (e *requestError) Error() string {
+	return fmt.Sprintf("request error: %s", e.err)
+}
+
+func (e *requestError) ToJSONRPCError() mcp.JSONRPCError {
+	message := e.err.Error()
+	if e.message != nil {
+		message = *e.message
+	}
+	return mcp.JSONRPCError{
+		JSONRPC: mcp.JSONRPC_VERSION,
+		ID:      mcp.NewRequestId(e.id),
+		Error:   mcp.NewJSONRPCErrorDetails(e.code, message, e.data),
+	}
+}
+
+func (e *requestError) Unwrap() error {
+	return e.err
 }

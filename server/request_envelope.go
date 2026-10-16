@@ -79,3 +79,28 @@ func readByTransport(ctx context.Context, message json.RawMessage) *requestEnvel
 func hooksHoldTheMessage(hooks *Hooks) bool {
 	return hooks != nil && len(hooks.OnRequestInitialization) > 0
 }
+
+// requestIDValue decodes a JSON-RPC id from the wire as mcp.RequestId does: a
+// string, or an integer kept exact, so an id past 2^53 is echoed and matched
+// as sent. An absent id is nil, a notification's. ok is false for any other
+// id, null, a fraction, a boolean, an object, an array or a number no type
+// holds such as 1e400: a request id is a string or an integer and never null
+// (MCP base protocol), and such a request is invalid, never run or answered
+// as some other id.
+func requestIDValue(raw json.RawMessage) (id any, ok bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	// raw is a value as a decoder gave it, so it is read by the id's own
+	// UnmarshalJSON, called directly: through json.Unmarshal the id would be
+	// made on the heap.
+	var requestID mcp.RequestId
+	if requestID.UnmarshalJSON(raw) != nil {
+		return nil, false
+	}
+	switch value := requestID.Value(); value.(type) {
+	case string, int64, json.Number:
+		return value, true
+	}
+	return nil, false
+}
