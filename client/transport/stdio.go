@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -557,6 +556,9 @@ func (c *Stdio) SetRequestHandler(handler RequestHandler) {
 // The ready channel, if non-nil, is closed once the read loop is entered, signaling
 // to Start() that the transport is actively processing responses.
 func (c *Stdio) readResponses(ready chan struct{}) {
+	// Each line is read into buf, reused from line to line: every decode
+	// below copies what it keeps.
+	var buf []byte
 	for {
 		// Signal readiness on the first iteration, inside the loop, so that
 		// Start() only unblocks after the reader is actively processing.
@@ -568,7 +570,11 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 		case <-c.done:
 			return
 		default:
-			line, err := c.stdout.ReadString('\n')
+			encoded, err := readLine(c.stdout, buf)
+			buf = encoded[:0]
+			if cap(buf) > maxRetainedLine {
+				buf = nil
+			}
 			if err != nil {
 				if err != io.EOF && !errors.Is(err, context.Canceled) && !errors.Is(err, fs.ErrClosed) {
 					c.logger.Error("Error reading from stdout", "err", err)
@@ -579,9 +585,6 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				return
 			}
 
-			line = strings.TrimRight(line, "\r\n")
-			// Every decode below reads these bytes, and none keeps them.
-			encoded := []byte(line)
 			// First try to parse as a generic message to check for ID field
 			var baseMessage struct {
 				JSONRPC string          `json:"jsonrpc"`
@@ -657,6 +660,24 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			}
 			c.answer(response.ID.String(), &response)
 		}
+	}
+}
+
+// maxRetainedLine is the largest line buffer readResponses keeps for the
+// next line; one a larger message grew is let go.
+const maxRetainedLine = 1 << 20
+
+// readLine reads the next line from r into buf, whose storage it reuses, and
+// returns it without its line end. The line lives in buf until the next read.
+func readLine(r *bufio.Reader, buf []byte) ([]byte, error) {
+	buf = buf[:0]
+	for {
+		chunk, err := r.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return bytes.TrimRight(buf, "\r\n"), err
 	}
 }
 

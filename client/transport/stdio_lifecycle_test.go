@@ -126,3 +126,23 @@ func TestStdio_AnUndecodableAnswerFailsItsRequest(t *testing.T) {
 	require.NotErrorIs(t, err, context.DeadlineExceeded, "the request waited for its deadline")
 	require.ErrorContains(t, err, "failed to decode response")
 }
+
+// The read loop reuses one buffer from line to line, so nothing decoded from
+// a line may keep its bytes: an answer still reads as it arrived after the
+// next line, of the same length, has overwritten the buffer.
+func TestStdio_AnAnswerOutlivesTheNextLine(t *testing.T) {
+	serverOut, toClient := io.Pipe()
+	t.Cleanup(func() { _ = toClient.Close() })
+	stdio := NewIO(serverOut, answeringWriter{stdout: toClient, answer: `{"jsonrpc":"2.0","id":1,"result":{"text":"aaaaaaaa"}}`}, nil)
+	next := make(chan struct{})
+	stdio.SetNotificationHandler(func(mcp.JSONRPCNotification) { close(next) })
+	require.NoError(t, stdio.Start(t.Context()))
+	t.Cleanup(func() { _ = stdio.Close() })
+
+	response, err := stdio.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "ping"})
+	require.NoError(t, err)
+	_, err = fmt.Fprintln(toClient, `{"jsonrpc":"2.0","method":"zzzzzzzzzzzzzzz","params":{}}`)
+	require.NoError(t, err)
+	<-next
+	require.JSONEq(t, `{"text":"aaaaaaaa"}`, string(response.Result))
+}
