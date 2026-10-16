@@ -175,3 +175,48 @@ func TestSSE_ACloseDuringSendRequestEndsIt(t *testing.T) {
 	assert.Less(t, time.Since(begin), time.Second, "the request outlived the Close")
 	assert.Zero(t, server.posts.Load(), "the request was sent after Close")
 }
+
+// A Start that fails has already told its caller so: the connection-lost
+// handler, which callers answer by reconnecting, does not fire for it.
+func TestSSE_AFailedStartDoesNotReportALostConnection(t *testing.T) {
+	server := newScriptedSSEServer()
+	server.noEndpoint = true
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	c, err := NewSSE(httpServer.URL, WithEndpointTimeout(200*time.Millisecond))
+	require.NoError(t, err)
+	var lost atomic.Int32
+	c.SetConnectionLostHandler(func(error) { lost.Add(1) })
+
+	require.Error(t, c.Start(t.Context()))
+	time.Sleep(300 * time.Millisecond)
+	assert.Zero(t, lost.Load(), "the connection-lost handler ran for a Start that failed")
+}
+
+// A stream that ends as Start completes is reported one way or the other:
+// Start fails, or it succeeds and the connection-lost handler fires. It is
+// never a successful Start on a stream that is gone, reported to no one.
+func TestSSE_AStreamEndingAsStartCompletesIsReported(t *testing.T) {
+	for range 20 {
+		// The endpoint and the stream's end go out in one write, so the
+		// reader can see the end before Start has published its success.
+		httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /message\n\n")
+		}))
+		c, err := NewSSE(httpServer.URL)
+		require.NoError(t, err)
+		lost := make(chan struct{}, 1)
+		c.SetConnectionLostHandler(func(error) { lost <- struct{}{} })
+
+		if c.Start(t.Context()) == nil {
+			select {
+			case <-lost:
+			case <-time.After(time.Second):
+				t.Fatal("Start succeeded on an ended stream and no connection loss was reported")
+			}
+		}
+		_ = c.Close()
+		httpServer.Close()
+	}
+}

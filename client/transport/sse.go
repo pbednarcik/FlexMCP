@@ -346,11 +346,17 @@ func (c *SSE) start(ctx context.Context) error {
 		return fmt.Errorf("timeout waiting for endpoint after %v", endpointTimeout)
 	}
 
-	// Do not publish a successful start after a concurrent Close has won.
+	// Do not publish a successful start after a concurrent Close has won,
+	// or on a stream that has already ended: its reader saw no started
+	// transport to report the end to.
 	c.lifecycleMu.Lock()
 	if c.closed.Load() {
 		c.lifecycleMu.Unlock()
 		return ErrTransportClosed
+	}
+	if c.ended.Load() {
+		c.lifecycleMu.Unlock()
+		return errors.New("the SSE stream ended while starting")
 	}
 	c.started.Store(true)
 	startSucceeded = true
@@ -389,9 +395,22 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 				}
 			}
 			// A stream an earlier attempt opened ends nothing a later one
-			// serves.
-			if c.attempt.Load() == attempt {
-				c.endStream()
+			// serves. Under lifecycleMu, as Start publishes its success: the
+			// end is reported to the handler if Start succeeded first, and
+			// by Start's error otherwise.
+			c.lifecycleMu.Lock()
+			current := c.attempt.Load() == attempt
+			if current {
+				c.ended.Store(true)
+			}
+			started := current && c.started.Load()
+			c.lifecycleMu.Unlock()
+			if !current {
+				return
+			}
+			c.failPending()
+			if !started {
+				return
 			}
 			c.connectionLostMu.RLock()
 			handler := c.onConnectionLost
@@ -429,11 +448,10 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 	}
 }
 
-// endStream marks the stream ended and fails the requests waiting on it.
-// Requests register under mu after checking ended, so each is either failed
-// here or refused.
-func (c *SSE) endStream() {
-	c.ended.Store(true)
+// failPending fails the requests waiting on a stream that ended. Requests
+// register under mu after checking ended, which is set first, so each is
+// either failed here or refused.
+func (c *SSE) failPending() {
 	c.mu.Lock()
 	for _, ch := range c.responses {
 		close(ch)

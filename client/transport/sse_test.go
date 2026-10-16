@@ -674,7 +674,9 @@ func TestSSE(t *testing.T) {
 			connectionLostError = err
 		})
 
-		// Directly test the readSSE method with our mock reader that simulates ERROR
+		// Directly test the readSSE method with our mock reader that simulates
+		// ERROR on a started transport: a drop of a stream in use.
+		trans.started.Store(true)
 		go trans.readSSE(mockReader, make(chan struct{}), &sync.Once{}, 0)
 		// Wait for connection lost handler to be called
 		timeout := time.After(1 * time.Second)
@@ -736,6 +738,7 @@ func TestSSE(t *testing.T) {
 				connectionLostCalled = true
 			})
 
+			trans.started.Store(true)
 			trans.closed.Store(tc.closedBefore)
 
 			done := make(chan struct{})

@@ -43,6 +43,10 @@ func TestSSE_WithOAuth(t *testing.T) {
 				t.Errorf("Failed to write SSE endpoint event: %v", err)
 			}
 			sseEndpointSent = true
+			// The stream stays open, as a server's does: one that ends
+			// while Start completes fails the Start.
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
 			return
 		}
 
