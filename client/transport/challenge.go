@@ -313,3 +313,14 @@ func authorizationError(resp *http.Response, handler *OAuthHandler, recipient st
 	handler.recordChallenge(challenge, recipient)
 	return &OAuthAuthorizationRequiredError{Handler: handler, AuthorizationRequiredError: base}
 }
+
+// isAuthTokenChar reports whether c is a valid RFC 9110 §5.6.2 token
+// character — the character class used for scheme and parameter names in
+// WWW-Authenticate.
+func isAuthTokenChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	return strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0
+}

@@ -106,3 +106,24 @@ var errMetadataUnavailable = errors.New("metadata unavailable")
 
 // ErrInvalidState is returned when the state parameter doesn't match the expected value
 var ErrInvalidState = errors.New("invalid state parameter, possible CSRF attack")
+
+// ErrOAuthAuthorizationRequired is a sentinel error for OAuth authorization required
+var ErrOAuthAuthorizationRequired = errors.New("no valid token available, authorization required")
+
+// OAuthAuthorizationRequiredError is returned when OAuth authorization is required
+// and an OAuth handler is available.
+type OAuthAuthorizationRequiredError struct {
+	Handler *OAuthHandler
+	AuthorizationRequiredError
+}
+
+func (e *OAuthAuthorizationRequiredError) Error() string {
+	return ErrOAuthAuthorizationRequired.Error()
+}
+
+// Unwrap exposes both the OAuth sentinel and the embedded
+// AuthorizationRequiredError, so the base predicates and errors.As on the
+// base type match this error too.
+func (e *OAuthAuthorizationRequiredError) Unwrap() []error {
+	return []error{ErrOAuthAuthorizationRequired, &e.AuthorizationRequiredError}
+}
