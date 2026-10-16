@@ -94,3 +94,35 @@ func TestStdio_SendsQueuedBehindABlockedWriteHonorTheirContext(t *testing.T) {
 		t.Fatal("the blocked write outlived Close")
 	}
 }
+
+// answeringWriter is the child's stdin: each line written to it is answered
+// on the child's stdout with answer.
+type answeringWriter struct {
+	stdout *io.PipeWriter
+	answer string
+}
+
+func (w answeringWriter) Write(p []byte) (int, error) {
+	go func() { _, _ = fmt.Fprintln(w.stdout, w.answer) }()
+	return len(p), nil
+}
+
+func (answeringWriter) Close() error { return nil }
+
+// An answer to a pending request that names its id but cannot be decoded
+// fails that request at once, as on Streamable HTTP, rather than leave it
+// waiting for its deadline with nothing said.
+func TestStdio_AnUndecodableAnswerFailsItsRequest(t *testing.T) {
+	serverOut, toClient := io.Pipe()
+	t.Cleanup(func() { _ = toClient.Close() })
+	stdio := NewIO(serverOut, answeringWriter{stdout: toClient, answer: `{"jsonrpc":"2.0","id":3,"error":{"code":"oops"}}`}, nil)
+	require.NoError(t, stdio.Start(t.Context()))
+	t.Cleanup(func() { _ = stdio.Close() })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	_, err := stdio.SendRequest(ctx, JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(3)), Method: "ping"})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.DeadlineExceeded, "the request waited for its deadline")
+	require.ErrorContains(t, err, "failed to decode response")
+}

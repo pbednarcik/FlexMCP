@@ -646,27 +646,45 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				continue
 			}
 
-			// Otherwise, it's a response to our request
+			// Otherwise, it's a response to our request. One that names its
+			// request but cannot be decoded fails that request, rather than
+			// leave it waiting for its deadline.
 			var response JSONRPCResponse
 			if err := json.Unmarshal(encoded, &response); err != nil {
+				c.logger.Error("Failing a request whose response cannot be decoded", "id", id.String(), "err", err)
+				c.answer(id.String(), nil)
 				continue
 			}
-
-			// Create string key for map lookup
-			idKey := response.ID.String()
-
-			c.mu.RLock()
-			ch, exists := c.responses[idKey]
-			c.mu.RUnlock()
-
-			if exists {
-				ch <- &response
-				c.mu.Lock()
-				delete(c.responses, idKey)
-				c.mu.Unlock()
-			}
+			c.answer(response.ID.String(), &response)
 		}
 	}
+}
+
+// answer hands response to the request waiting under idKey, if any; a nil
+// response tells it the answer could not be decoded.
+func (c *Stdio) answer(idKey string, response *JSONRPCResponse) {
+	c.mu.RLock()
+	ch, exists := c.responses[idKey]
+	c.mu.RUnlock()
+	if exists {
+		ch <- response
+		c.mu.Lock()
+		delete(c.responses, idKey)
+		c.mu.Unlock()
+	}
+}
+
+// errUndecodableResponse is the error of a request whose response named it
+// but could not be decoded.
+var errUndecodableResponse = errors.New("failed to decode response")
+
+// received is SendRequest's result for what arrived on its response
+// channel: nil there is an answer that could not be decoded.
+func received(response *JSONRPCResponse) (*JSONRPCResponse, error) {
+	if response == nil {
+		return nil, errUndecodableResponse
+	}
+	return response, nil
 }
 
 // SendRequest sends a JSON-RPC request to the server and waits for a response.
@@ -722,7 +740,7 @@ func (c *Stdio) SendRequest(
 		// just before readResponses closed the done channel on EOF.
 		select {
 		case response := <-responseChan:
-			return response, nil
+			return received(response)
 		default:
 		}
 		deleteResponseChan()
@@ -731,7 +749,7 @@ func (c *Stdio) SendRequest(
 		deleteResponseChan()
 		return nil, ctx.Err()
 	case response := <-responseChan:
-		return response, nil
+		return received(response)
 	}
 }
 
