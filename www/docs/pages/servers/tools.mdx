@@ -940,6 +940,20 @@ func handleJSONTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 }
 ```
 
+### Limiting Result Size
+
+`WithToolResultSizeLimit` caps the size of a tool result's JSON. A result
+over the limit, `_meta` included, is replaced with an error result, on a
+synchronous call and on both task paths, before it is sent or stored. Zero or
+a negative limit, the default, leaves results unchecked.
+
+```go
+s := server.NewMCPServer("demo", "1.0.0",
+    server.WithToolCapabilities(true),
+    server.WithToolResultSizeLimit(1<<20), // 1 MiB
+)
+```
+
 ### Multiple Content Types
 
 ```go

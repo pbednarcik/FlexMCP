@@ -304,6 +304,19 @@ need code are marked **(code)**.
   refused operation's and are replaced by the next challenge.
 - Dynamic client registration states an `application_type`: `web` for an
   `https` redirect, `native` for any other.
+- Without a `resource_metadata` pointer, protected resource metadata is asked
+  for at the MCP server's path, then at the host's root, before endpoints are
+  guessed. An authorization endpoint's own query is kept in the
+  authorization URL.
+- A token that carries a refresh token is renewed in the last 10 seconds of
+  its life, at most half of it; a failed early refresh keeps the token while
+  it is valid. A refresh token the authorization server refused with an OAuth
+  error is not sent again; a network or server failure is retried.
+- A token response without an `access_token`, or with a `token_type` other
+  than Bearer, is refused (`ErrInvalidTokenResponse`) and nothing from it is
+  saved; one naming no type is taken as Bearer. A registration response
+  without a `client_id` is refused (`ErrInvalidRegistrationResponse`) and the
+  credentials stay as they were.
 
 ### Results and capabilities
 
@@ -316,7 +329,17 @@ need code are marked **(code)**.
 - Roots must be `file://` URIs. On this revision `listChanged` is not declared
   and `RootListChanges` sends nothing.
 - A tool call refused for a stale `Mcp-Param-*` header lists the tools again
-  and retries once.
+  and retries once. A complete `IterTools` walk replaces the tool cache, as
+  `ListTools` does; one stopped early merges what it read.
+  `WithInvalidToolHandler` is told of each tool excluded for invalid
+  `x-mcp-header` annotations.
+- `WaitForTask` also returns a task in `input_required`, which only the
+  requestor can move on.
+- A server request the client cannot serve is answered with the code its
+  failure calls for: an unknown method, or a feature with no handler,
+  `-32601`; params that do not decode or validate `-32602`; anything else
+  `-32603`. A handler's panic is answered `-32603` rather than ending the
+  process.
 
 ### Transport
 
@@ -337,6 +360,15 @@ need code are marked **(code)**.
   another id is an error; on a stream such a response is skipped, and the
   stream is read on for the request's own. An `initialize` left without its
   answer gives back the session ID its headers carried.
+- A server request whose `jsonrpc` member is not `"2.0"` is answered `-32600`
+  with its id, on every transport; responses and notifications are taken as
+  they come.
+- Over stdio, `Start` after `Close` is `ErrTransportClosed` and a send before
+  `Start` is `ErrTransportNotStarted`. `Close` cancels the handlers of server
+  requests. A send queued behind a write the child is not reading gives up
+  with its context. An answer that names a pending request but cannot be
+  decoded fails that request. A notification handler may set the handler, but
+  must not wait for a request's answer, which the read loop delivers.
 
 ## Request ids and progress tokens
 
