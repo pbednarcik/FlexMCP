@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -71,6 +73,43 @@ func BenchmarkStreamableHTTPToolCall(b *testing.B) {
 				b.Fatalf("leg %s: status %d body %s", leg.name, w.Code, w.Body.String())
 			}
 
+			b.ReportAllocs()
+			for b.Loop() {
+				w := httptest.NewRecorder()
+				r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+				r.Header = header
+				httpSrv.ServeHTTP(w, r)
+			}
+		})
+	}
+}
+
+// BenchmarkStreamableHTTPToolCallBody is the modern tools/call with an
+// argument of the given size: what reading a larger body costs.
+func BenchmarkStreamableHTTPToolCallBody(b *testing.B) {
+	for _, size := range []int{512, 8 << 10, 48 << 10, 256 << 10} {
+		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
+			srv := NewMCPServer("bench", "1.0.0", WithToolCapabilities(false))
+			srv.AddTool(mcp.NewToolWithRawSchema("echo", "echo", json.RawMessage(`{"type":"object"}`)),
+				func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return mcp.NewToolResultText("ok"), nil
+				})
+			httpSrv := NewStreamableHTTPServer(srv)
+			_, header := toolCallRequest(b, false)
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": mcp.MethodToolsCall, "params": map[string]any{
+				"name": "echo", "arguments": map[string]any{"a": strings.Repeat("y", size)}, "_meta": modernMeta(),
+			}})
+			if err != nil {
+				b.Fatal(err)
+			}
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+			r.Header = header
+			httpSrv.ServeHTTP(w, r)
+			if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"ok"`)) {
+				b.Fatalf("status %d body %.300s", w.Code, w.Body.String())
+			}
+			b.SetBytes(int64(len(body)))
 			b.ReportAllocs()
 			for b.Loop() {
 				w := httptest.NewRecorder()

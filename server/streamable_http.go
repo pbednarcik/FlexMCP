@@ -195,7 +195,7 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			// drain the body.
 			bodyErr = errBodyTooLarge
 		default:
-			body, bodyErr = readBounded(r.Body, limit)
+			body, bodyErr = readBounded(r.Body, limit, r.ContentLength)
 		}
 		if deadline != nil && bodyErr == nil {
 			_ = deadline.SetReadDeadline(time.Time{})
@@ -302,20 +302,44 @@ func serverHasWriteTimeout(ctx context.Context) bool {
 // errBodyTooLarge is the read error of a POST body over the bound.
 var errBodyTooLarge = errors.New("request body too large")
 
+// firstBodyBuffer is the most the first buffer for a POST body is sized for
+// from the length the request names; past it, the buffer grows with the
+// bytes that arrive.
+const firstBodyBuffer = 64 << 10
+
 // readBounded reads r to its end, up to limit bytes; a longer r is
 // errBodyTooLarge. It is io.ReadAll with the bound checked as the buffer
 // grows, and without a reader of its own, which would allocate on every
-// request. Content-Length is not trusted: middleware may replace the body.
-func readBounded(r io.Reader, limit int64) ([]byte, error) {
+// request. length is the Content-Length, -1 when unknown. It sizes the first
+// buffer, up to firstBodyBuffer, and cuts a step of growth that would pass
+// it, but never makes a step larger: middleware may replace the body, and a
+// client may name a length it never sends.
+func readBounded(r io.Reader, limit, length int64) ([]byte, error) {
 	// The reader is never offered more than the bound and one byte, the one
 	// that proves the body too long, whatever the buffer's capacity. A bound
 	// at the top of int's range has no room for that byte: a body that
 	// fills it is too long as well.
 	most := int(min(limit, math.MaxInt-1)) + 1
-	b := make([]byte, 0, min(512, most))
+	// A body of the named length fits with a byte to spare, so its end is
+	// read without growing the buffer.
+	first := 512
+	if length >= 0 {
+		first = int(min(length+1, firstBodyBuffer))
+	}
+	b := make([]byte, 0, min(first, most))
 	for {
 		if len(b) == cap(b) {
-			b = slices.Grow(b, min(cap(b), most-len(b)))
+			grow := min(max(cap(b), 512), most-len(b))
+			// A step that would pass the named length stops a byte past it,
+			// in a buffer made at that size, which append's growth would
+			// round past.
+			if rest := length + 1 - int64(len(b)); rest > 0 && rest < int64(grow) {
+				grown := make([]byte, len(b), len(b)+int(rest))
+				copy(grown, b)
+				b = grown
+			} else {
+				b = slices.Grow(b, grow)
+			}
 		}
 		n, err := r.Read(b[len(b):min(cap(b), most)])
 		b = b[:len(b)+n]

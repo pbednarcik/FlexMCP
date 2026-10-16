@@ -90,7 +90,7 @@ func (r *countingReader) Read(p []byte) (int, error) {
 func TestReadBoundedNeverReadsPastTheBound(t *testing.T) {
 	for _, limit := range []int64{1, 100, 511, 512, 513, 1024, 1 << 20} {
 		reader := &countingReader{Reader: bytes.NewReader(bytes.Repeat([]byte("z"), 2<<20))}
-		_, err := readBounded(reader, limit)
+		_, err := readBounded(reader, limit, -1)
 		require.ErrorIs(t, err, errBodyTooLarge, "limit %d", limit)
 		assert.LessOrEqual(t, reader.n, limit+1, "limit %d", limit)
 	}
@@ -129,7 +129,7 @@ func TestReadBounded(t *testing.T) {
 			if limit == 0 {
 				limit = 1024
 			}
-			got, err := readBounded(reader, limit)
+			got, err := readBounded(reader, limit, -1)
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
 				return
@@ -138,4 +138,46 @@ func TestReadBounded(t *testing.T) {
 			assert.Equal(t, data, got)
 		})
 	}
+}
+
+// A body whose length the request names is read into one buffer of that
+// size; the length is the size of the first buffer only, so a request that
+// names a length it never sends costs no more than firstBodyBuffer.
+func TestReadBoundedSizesTheBufferFromTheNamedLength(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	const limit = 4 << 20
+	data := bytes.Repeat([]byte("y"), 8<<10)
+	reader := bytes.NewReader(data)
+	allocs := testing.AllocsPerRun(100, func() {
+		reader.Reset(data)
+		got, err := readBounded(reader, limit, int64(len(data)))
+		if err != nil || len(got) != len(data) {
+			t.Fatalf("read %d bytes, %v", len(got), err)
+		}
+	})
+	assert.Equal(t, 1.0, allocs, "allocations for a body of the named length")
+
+	short := []byte(`{}`)
+	perRead := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			reader.Reset(short)
+			_, _ = readBounded(reader, limit, 1<<20)
+		}
+	}).AllocedBytesPerOp()
+	assert.LessOrEqual(t, perRead, int64(firstBodyBuffer+64), "bytes for a body far shorter than its named length")
+
+	// Past the first buffer, growth follows the bytes that arrive, never
+	// the length named.
+	partial := bytes.Repeat([]byte("y"), 100<<10)
+	perRead = testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			reader.Reset(partial)
+			_, _ = readBounded(reader, limit, limit)
+		}
+	}).AllocedBytesPerOp()
+	assert.LessOrEqual(t, perRead, int64(4*len(partial)), "bytes for a body a fortieth of its named length")
 }
