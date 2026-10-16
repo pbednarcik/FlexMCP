@@ -590,7 +590,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 
 			// First try to parse as a generic message to check for ID field
 			var baseMessage struct {
-				JSONRPC string          `json:"jsonrpc"`
+				JSONRPC jsonrpcVersion  `json:"jsonrpc"`
 				ID      json.RawMessage `json:"id,omitempty"`
 				Method  jsonrpc.Method  `json:"method"`
 				Result  json.RawMessage `json:"result,omitempty"`
@@ -647,6 +647,10 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			// If it has a method and an ID, it's an incoming request, and never
 			// a response, even when it cannot be decoded.
 			if baseMessage.Method.Present {
+				if !baseMessage.JSONRPC.is20 {
+					c.sendResponse(*invalidVersionResponse(id))
+					continue
+				}
 				var request JSONRPCRequest
 				if err := json.Unmarshal(encoded, &request); err != nil {
 					c.logger.Error("Dropping a server request that cannot be decoded", "err", err)
@@ -659,7 +663,13 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			// Otherwise, it's a response to our request, built from the one
 			// decode above. One whose error cannot be decoded fails the request
 			// it names, rather than leave it waiting for its deadline.
-			response := JSONRPCResponse{JSONRPC: baseMessage.JSONRPC, ID: id, Result: baseMessage.Result}
+			// A response is taken whatever its jsonrpc member says; one that
+			// is not "2.0" is recorded with none.
+			var version string
+			if baseMessage.JSONRPC.is20 {
+				version = mcp.JSONRPC_VERSION
+			}
+			response := JSONRPCResponse{JSONRPC: version, ID: id, Result: baseMessage.Result}
 			if len(baseMessage.Error) > 0 && string(baseMessage.Error) != "null" {
 				var details mcp.JSONRPCErrorDetails
 				if err := json.Unmarshal(baseMessage.Error, &details); err != nil {

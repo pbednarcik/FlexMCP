@@ -744,8 +744,9 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 			// Every decode below reads these bytes, and none keeps them.
 			encoded := []byte(data)
 			var envelope struct {
-				ID     json.RawMessage `json:"id"`
-				Method jsonrpc.Method  `json:"method"`
+				JSONRPC jsonrpcVersion  `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Method  jsonrpc.Method  `json:"method"`
 			}
 			if err := json.Unmarshal(encoded, &envelope); err != nil {
 				c.logger.Info("failed to unmarshal message (non-fatal)", "err", err, "message_len", len(data))
@@ -778,6 +779,8 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 				// A request id is a string or an integer and never null: a
 				// server request whose id cannot be read is answered as invalid.
 				c.sendResponseToServer(ctx, NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
+			case envelope.Method.Present && !envelope.JSONRPC.is20:
+				c.sendResponseToServer(ctx, invalidVersionResponse(id))
 			case envelope.Method.Present:
 				var request JSONRPCRequest
 				if err := json.Unmarshal(encoded, &request); err != nil {

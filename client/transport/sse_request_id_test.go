@@ -94,9 +94,10 @@ func TestSSE_AnErrorWithANullIDIsNotANotification(t *testing.T) {
 // The SSE transport serves no server requests, but a request is never left
 // unanswered (JSON-RPC 2.0, section 5): ping, which the receiver MUST answer
 // on the earlier revisions, gets an empty result; any other method is not
-// found; a request whose id cannot be read is invalid, answered with a null id.
+// found; a request whose id cannot be read is invalid, answered with a null id,
+// and one whose jsonrpc member is not "2.0" is invalid, answered with its id.
 func TestSSE_AServerRequestIsAnswered(t *testing.T) {
-	posted := make(chan string, 6)
+	posted := make(chan string, 10)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/message" {
@@ -114,6 +115,10 @@ func TestSSE_AServerRequestIsAnswered(t *testing.T) {
 			`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`,
 			`{"jsonrpc":"2.0","id":9,"method":""}`,
 			`{"jsonrpc":"2.0","id":10,"method":null,"result":{}}`,
+			`{"jsonrpc":"1.0","id":11,"method":"ping"}`,
+			`{"id":12,"method":"ping"}`,
+			`{"jsonrpc":2,"id":13,"method":"ping"}`,
+			`{"jsonrpc":"2\u002e0","id":14,"method":"ping"}`,
 		} {
 			_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", request)
 		}
@@ -137,6 +142,10 @@ func TestSSE_AServerRequestIsAnswered(t *testing.T) {
 		`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid request id"}}`,
 		`{"jsonrpc":"2.0","id":9,"error":{"code":-32601,"message":"Method not found: the SSE transport serves no server requests"}}`,
 		`{"jsonrpc":"2.0","id":10,"error":{"code":-32600,"message":"Invalid request: method must be a string"}}`,
+		`{"jsonrpc":"2.0","id":11,"error":{"code":-32600,"message":"Invalid request: jsonrpc must be \"2.0\""}}`,
+		`{"jsonrpc":"2.0","id":12,"error":{"code":-32600,"message":"Invalid request: jsonrpc must be \"2.0\""}}`,
+		`{"jsonrpc":"2.0","id":13,"error":{"code":-32600,"message":"Invalid request: jsonrpc must be \"2.0\""}}`,
+		`{"jsonrpc":"2.0","id":14,"result":{}}`,
 	}
 	for _, answer := range want {
 		select {

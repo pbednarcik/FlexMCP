@@ -466,8 +466,9 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 		// Every decode below reads these bytes, and none keeps them.
 		encoded := []byte(data)
 		var envelope struct {
-			ID     json.RawMessage `json:"id"`
-			Method jsonrpc.Method  `json:"method"`
+			JSONRPC jsonrpcVersion  `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Method  jsonrpc.Method  `json:"method"`
 		}
 		if err := json.Unmarshal(encoded, &envelope); err != nil {
 			c.logger.Error("Error unmarshaling message", "err", err)
@@ -500,6 +501,9 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 		case envelope.Method.Present && !readableID:
 			// A request id is a string or an integer and never null.
 			c.answer(NewJSONRPCErrorResponse(mcp.NewRequestId(nil), mcp.INVALID_REQUEST, "Invalid request id", nil))
+			return
+		case envelope.Method.Present && !envelope.JSONRPC.is20:
+			c.answer(invalidVersionResponse(id))
 			return
 		case envelope.Method.Name == string(mcp.MethodPing):
 			// The receiver of a ping MUST answer it on the earlier revisions.
