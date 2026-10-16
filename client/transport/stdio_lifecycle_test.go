@@ -146,3 +146,28 @@ func TestStdio_AnAnswerOutlivesTheNextLine(t *testing.T) {
 	<-next
 	require.JSONEq(t, `{"text":"aaaaaaaa"}`, string(response.Result))
 }
+
+// A notification handler runs outside the transport's lock, so one that
+// sets the handler, as a client replacing its own does, does not deadlock
+// the read loop.
+func TestStdio_ANotificationHandlerMaySetTheHandler(t *testing.T) {
+	serverOut, toClient := io.Pipe()
+	t.Cleanup(func() { _ = toClient.Close() })
+	stdio := NewIO(serverOut, nopWriteCloser{Writer: io.Discard}, nil)
+	second := make(chan struct{})
+	stdio.SetNotificationHandler(func(mcp.JSONRPCNotification) {
+		stdio.SetNotificationHandler(func(mcp.JSONRPCNotification) { close(second) })
+	})
+	require.NoError(t, stdio.Start(t.Context()))
+	t.Cleanup(func() { _ = stdio.Close() })
+
+	go func() {
+		_, _ = fmt.Fprintln(toClient, `{"jsonrpc":"2.0","method":"notifications/first"}`)
+		_, _ = fmt.Fprintln(toClient, `{"jsonrpc":"2.0","method":"notifications/second"}`)
+	}()
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the read loop deadlocked in a handler that set the handler")
+	}
+}

@@ -534,6 +534,8 @@ func (c *Stdio) GetSessionId() string {
 
 // SetNotificationHandler sets the handler function to be called when a notification is received.
 // Only one handler can be set at a time; setting a new one replaces the previous handler.
+// The handler runs on the read loop: it may set the handler, but must not wait
+// for the answer to a request, which the read loop would have to deliver.
 func (c *Stdio) SetNotificationHandler(
 	handler func(notification mcp.JSONRPCNotification),
 ) {
@@ -630,11 +632,14 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				if err := json.Unmarshal(encoded, &notification); err != nil {
 					continue
 				}
+				// The handler runs outside the lock, so one that sets the
+				// handler does not deadlock the read loop.
 				c.notifyMu.RLock()
-				if c.onNotification != nil {
-					c.onNotification(notification)
-				}
+				handler := c.onNotification
 				c.notifyMu.RUnlock()
+				if handler != nil {
+					handler(notification)
+				}
 				continue
 			}
 
