@@ -23,11 +23,22 @@ func BenchmarkStdioListen(b *testing.B) {
 		return mcp.NewToolResultText("ok"), nil
 	})
 	var input bytes.Buffer
-	for range requests {
-		input.WriteString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n")
+	// Each request has its own id: requests run concurrently, and an id
+	// still in flight is refused.
+	for i := range requests {
+		fmt.Fprintf(&input, `{"jsonrpc":"2.0","id":%d,"method":"tools/list"}`+"\n", i+1)
 	}
 	stdioServer := NewStdioServer(mcpServer)
 	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+	// Every request is answered with its list, not refused: the figure is
+	// the cost of tools/list.
+	var out bytes.Buffer
+	if err := stdioServer.Listen(b.Context(), bytes.NewReader(input.Bytes()), &out); err != nil {
+		b.Fatal(err)
+	}
+	if got := bytes.Count(out.Bytes(), []byte(`"tools":`)); got != requests {
+		b.Fatalf("listed tools for %d of %d requests", got, requests)
+	}
 
 	b.ReportAllocs()
 	for b.Loop() {
