@@ -711,13 +711,7 @@ func (c *Stdio) SendRequest(
 		c.mu.Unlock()
 	}
 
-	// Send request. stdinMu serializes frame writes so concurrent
-	// SendRequest/SendNotification/sendResponse calls cannot interleave
-	// JSON-RPC lines on the subprocess's stdin.
-	c.stdinMu.Lock()
-	_, err = c.stdin.Write(requestBytes)
-	c.stdinMu.Unlock()
-	if err != nil {
+	if err := c.writeLine(ctx, requestBytes); err != nil {
 		deleteResponseChan()
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
@@ -764,14 +758,63 @@ func (c *Stdio) SendNotification(
 	}
 	notificationBytes = append(notificationBytes, '\n')
 
-	c.stdinMu.Lock()
-	_, err = c.stdin.Write(notificationBytes)
-	c.stdinMu.Unlock()
-	if err != nil {
+	if err := c.writeLine(ctx, notificationBytes); err != nil {
 		return fmt.Errorf("failed to write notification: %w", err)
 	}
 
 	return nil
+}
+
+// writeLine writes one JSON-RPC line to stdin. stdinMu keeps concurrent
+// writes from interleaving their lines. A child that stops reading blocks the
+// write inside the pipe, where only Close, closing stdin, ends it. A send
+// that finds stdin free writes in place, at no cost; one that finds it busy
+// and whose ctx can end waits from a goroutine of its own and gives up with
+// ctx, and if its turn comes after that, it writes nothing. A write that
+// Close cut short is ErrTransportClosed.
+func (c *Stdio) writeLine(ctx context.Context, line []byte) error {
+	if c.stdinMu.TryLock() {
+		_, err := c.stdin.Write(line)
+		c.stdinMu.Unlock()
+		return c.writeError(err)
+	}
+	if ctx.Done() == nil {
+		c.stdinMu.Lock()
+		_, err := c.stdin.Write(line)
+		c.stdinMu.Unlock()
+		return c.writeError(err)
+	}
+	written := make(chan error, 1)
+	go func() {
+		c.stdinMu.Lock()
+		defer c.stdinMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			written <- err
+			return
+		}
+		_, err := c.stdin.Write(line)
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		return c.writeError(err)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// writeError is the error of a stdin write: ErrTransportClosed when the
+// transport closed under it, which closes stdin.
+func (c *Stdio) writeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	select {
+	case <-c.done:
+		return fmt.Errorf("%w: %w", ErrTransportClosed, err)
+	default:
+		return err
+	}
 }
 
 // handleIncomingRequest processes incoming requests from the server.
@@ -836,10 +879,9 @@ func (c *Stdio) sendResponse(response JSONRPCResponse) {
 	}
 	responseBytes = append(responseBytes, '\n')
 
-	c.stdinMu.Lock()
-	_, err = c.stdin.Write(responseBytes)
-	c.stdinMu.Unlock()
-	if err != nil {
+	// An answer is owed whatever the handler's context did; Close, closing
+	// stdin, bounds the write.
+	if err := c.writeLine(context.Background(), responseBytes); err != nil && !errors.Is(err, ErrTransportClosed) {
 		c.logger.Error("Error writing response", "err", err)
 	}
 }
