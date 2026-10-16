@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
-	"uuid"
+
+	"github.com/google/uuid"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
