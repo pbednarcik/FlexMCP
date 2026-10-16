@@ -1028,6 +1028,25 @@ func TestToolResultSizeLimit(t *testing.T) {
 	}
 }
 
+// The limit is checked without keeping a copy of the encoding: a large
+// result costs the check a small, fixed amount, not its own size again.
+func TestToolResultSizeLimitKeepsNoCopy(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	const size = 256 << 10
+	server := NewMCPServer("test", "1.0.0", WithToolResultSizeLimit(2*size))
+	result := mcp.NewToolResultText(strings.Repeat("x", size))
+	require.Same(t, result, server.limitToolResult(result))
+	perCheck := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			server.limitToolResult(result)
+		}
+	}).AllocedBytesPerOp()
+	assert.Less(t, perCheck, int64(size/4), "bytes allocated per check")
+}
+
 func TestToolResultSizeLimitOnTasks(t *testing.T) {
 	big := strings.Repeat("x", 200)
 	bigMeta := strings.Repeat("m", 200)

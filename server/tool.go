@@ -499,9 +499,18 @@ func (s *MCPServer) limitToolResult(result *mcp.CallToolResult) *mcp.CallToolRes
 	if result == nil || s.toolResultSizeLimit <= 0 {
 		return result
 	}
-	encoded, err := json.Marshal(result)
-	if err != nil || len(encoded) <= s.toolResultSizeLimit {
+	// The encoding is counted, not kept; Encode adds a newline Marshal does not.
+	var size byteCounter
+	if err := json.NewEncoder(&size).Encode(result); err != nil || int(size)-1 <= s.toolResultSizeLimit {
 		return result
 	}
 	return mcp.NewToolResultError(fmt.Sprintf("tool result exceeds %d bytes", s.toolResultSizeLimit))
+}
+
+// byteCounter counts the bytes written to it and keeps none.
+type byteCounter int
+
+func (c *byteCounter) Write(p []byte) (int, error) {
+	*c += byteCounter(len(p))
+	return len(p), nil
 }
