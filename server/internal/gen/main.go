@@ -36,6 +36,7 @@ func RenderTemplateToFile(templateContent, destPath, fileName string, data any) 
 	// Parse and execute template to temp file
 	tmpl, err := template.New(fileName).Funcs(template.FuncMap{
 		"toLower": strings.ToLower,
+		"title":   func(s string) string { return strings.ToUpper(s[:1]) + s[1:] },
 	}).Parse(templateContent)
 	if err != nil {
 		return err

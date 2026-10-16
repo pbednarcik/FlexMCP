@@ -237,7 +237,7 @@ func (s *MCPServer) handleMessageRead(
 				code: mcp.METHOD_NOT_FOUND,
 				err:  fmt.Errorf("%q %w", baseMessage.Method, ErrRequiresModernProtocol),
 			}
-		} else {{ end }}{{ if .Group }}if s.capabilities.{{.Group}} == nil {
+		} else {{ end }}{{ if .Group }}if !s.serves(serves{{title .Group}}) {
 			err = &requestError{
 				id:   baseMessage.ID,
 				code: mcp.METHOD_NOT_FOUND,

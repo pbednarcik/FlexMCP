@@ -75,6 +75,7 @@ func WithResourceCapabilities(_ bool, listChanged bool) ServerOption {
 		s.capabilities.resources = &resourceCapabilities{
 			listChanged: listChanged,
 		}
+		s.markServed(servesResources)
 	}
 }
 
@@ -358,6 +359,7 @@ func WithPromptCapabilities(listChanged bool) ServerOption {
 		s.capabilities.prompts = &promptCapabilities{
 			listChanged: listChanged,
 		}
+		s.markServed(servesPrompts)
 	}
 }
 
@@ -368,6 +370,7 @@ func WithToolCapabilities(listChanged bool) ServerOption {
 		s.capabilities.tools = &toolCapabilities{
 			listChanged: listChanged,
 		}
+		s.markServed(servesTools)
 	}
 }
 
@@ -375,6 +378,7 @@ func WithToolCapabilities(listChanged bool) ServerOption {
 func WithLogging() ServerOption {
 	return func(s *MCPServer) {
 		s.capabilities.logging = new(true)
+		s.markServed(servesLogging)
 	}
 }
 
@@ -387,6 +391,7 @@ func WithTaskCapabilities(list, cancel, toolCallTasks bool) ServerOption {
 			cancel:        cancel,
 			toolCallTasks: toolCallTasks,
 		}
+		s.markServed(servesTasks)
 	}
 }
 
@@ -401,6 +406,7 @@ func WithInstructions(instructions string) ServerOption {
 func WithCompletions() ServerOption {
 	return func(s *MCPServer) {
 		s.capabilities.completions = new(true)
+		s.markServed(servesCompletions)
 	}
 }
 

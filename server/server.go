@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -149,7 +150,10 @@ type MCPServer struct {
 	promptCompletionProvider   PromptCompletionProvider
 	resourceCompletionProvider ResourceCompletionProvider
 	capabilities               serverCapabilities
-	cacheHints                 map[mcp.MCPMethod]cacheHints
+	// served holds a bit for each capability group in capabilities, set
+	// with it: the dispatch gate reads it without capabilitiesMu.
+	served     atomic.Uint32
+	cacheHints map[mcp.MCPMethod]cacheHints
 	// toolHeaderBindings holds each registered tool's x-mcp-header bindings,
 	// extracted once at registration so a tools/call never re-reads the input
 	// schema. Keyed like tools and taskTools and kept in step with them under
@@ -186,6 +190,31 @@ type serverCapabilities struct {
 	completions  *bool
 	experimental map[string]any
 	extensions   map[string]any
+}
+
+// capabilityGroup is a capability group a request method needs, as a bit of
+// MCPServer.served.
+type capabilityGroup uint32
+
+const (
+	servesLogging capabilityGroup = 1 << iota
+	servesResources
+	servesPrompts
+	servesTools
+	servesTasks
+	servesCompletions
+)
+
+// serves reports whether the server has the capability group: its object in
+// capabilities is set, or is being set under capabilitiesMu.
+func (s *MCPServer) serves(group capabilityGroup) bool {
+	return capabilityGroup(s.served.Load())&group != 0
+}
+
+// markServed records that the server has the capability group; whoever sets
+// the group's object in capabilities calls it.
+func (s *MCPServer) markServed(group capabilityGroup) {
+	s.served.Or(uint32(group))
 }
 
 // resourceCapabilities defines the supported resource-related features
@@ -267,21 +296,30 @@ func (s *MCPServer) GenerateInProcessSessionID() string {
 func (s *MCPServer) implicitlyRegisterToolCapabilities() {
 	s.implicitlyRegisterCapabilities(
 		func() bool { return s.capabilities.tools != nil },
-		func() { s.capabilities.tools = &toolCapabilities{listChanged: true} },
+		func() {
+			s.capabilities.tools = &toolCapabilities{listChanged: true}
+			s.markServed(servesTools)
+		},
 	)
 }
 
 func (s *MCPServer) implicitlyRegisterResourceCapabilities() {
 	s.implicitlyRegisterCapabilities(
 		func() bool { return s.capabilities.resources != nil },
-		func() { s.capabilities.resources = &resourceCapabilities{} },
+		func() {
+			s.capabilities.resources = &resourceCapabilities{}
+			s.markServed(servesResources)
+		},
 	)
 }
 
 func (s *MCPServer) implicitlyRegisterPromptCapabilities() {
 	s.implicitlyRegisterCapabilities(
 		func() bool { return s.capabilities.prompts != nil },
-		func() { s.capabilities.prompts = &promptCapabilities{} },
+		func() {
+			s.capabilities.prompts = &promptCapabilities{}
+			s.markServed(servesPrompts)
+		},
 	)
 }
 
