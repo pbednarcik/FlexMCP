@@ -50,7 +50,7 @@ func TestSSE_Start_RetryAfterFailure(t *testing.T) {
 // panic.
 func TestSSE_HandleSSEEvent_PerAttemptEndpointIsolation(t *testing.T) {
 	sse := newBareSSE()
-	const endpointData = "http://127.0.0.1:1/messages"
+	endpointData := []byte("http://127.0.0.1:1/messages")
 
 	first := make(chan struct{})
 	firstOnce := &sync.Once{}

@@ -354,12 +354,16 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 	defer reader.Close()
 
 	br := bufio.NewReader(reader)
-	var event, data string
+	// The line, the event's name and its data are read into buffers kept
+	// from one event to the next; one a message grew past maxRetainedLine is
+	// let go.
+	var line, event, data []byte
 
 	for {
 		// when close or start's ctx cancel, the reader will be closed
 		// and the for loop will break.
-		line, err := br.ReadString('\n')
+		var err error
+		line, err = readLine(br, line)
 		if err != nil {
 			// Close() cancels the stream context, which surfaces here as a read
 			// error; firing the handler would reconnect a transport the caller
@@ -369,12 +373,8 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			}
 			if err == io.EOF {
 				// Process any pending event before exit
-				if data != "" {
-					// If no event type is specified, use empty string (default event type)
-					if event == "" {
-						event = "message"
-					}
-					c.handleSSEEvent(event, data, endpointChan, endpointOnce, attempt)
+				if len(data) > 0 {
+					c.handleSSEEvent(sseEventName(event), data, endpointChan, endpointOnce, attempt)
 				}
 			}
 			// A stream an earlier attempt opened ends nothing a later one
@@ -413,28 +413,39 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			return
 		}
 
-		// Remove only newline markers
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
+		if len(line) == 0 {
 			// Empty line means end of event
-			if data != "" {
-				// If no event type is specified, use empty string (default event type)
-				if event == "" {
-					event = "message"
+			if len(data) > 0 {
+				c.handleSSEEvent(sseEventName(event), data, endpointChan, endpointOnce, attempt)
+				event, data = event[:0], data[:0]
+				if cap(data) > maxRetainedLine {
+					data = nil
 				}
-				c.handleSSEEvent(event, data, endpointChan, endpointOnce, attempt)
-				event = ""
-				data = ""
 			}
 			continue
 		}
 
-		if after, ok := strings.CutPrefix(line, "event:"); ok {
-			event = strings.TrimSpace(after)
-		} else if after, ok := strings.CutPrefix(line, "data:"); ok {
-			data = appendSSEData(data, after)
+		if after, ok := bytes.CutPrefix(line, []byte("event:")); ok {
+			event = append(event[:0], bytes.TrimSpace(after)...)
+		} else if after, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			data = appendSSEDataBytes(data, after)
+		}
+		if cap(line) > maxRetainedLine {
+			line = nil
 		}
 	}
+}
+
+// sseEventName is the name an event is handled by: "message" for one the
+// stream named none, as SSE specifies.
+func sseEventName(event []byte) string {
+	switch string(event) {
+	case "", "message":
+		return "message"
+	case "endpoint":
+		return "endpoint"
+	}
+	return string(event)
 }
 
 // failPending fails the requests waiting on a stream that ended. Requests
@@ -498,18 +509,27 @@ func appendSSEData(existing, line string) string {
 	return existing + "\n" + value
 }
 
+// appendSSEDataBytes is appendSSEData appending into existing's storage.
+func appendSSEDataBytes(existing, line []byte) []byte {
+	value := bytes.TrimPrefix(line, []byte(" "))
+	if len(existing) > 0 {
+		existing = append(existing, '\n')
+	}
+	return append(existing, value...)
+}
+
 // handleSSEEvent processes SSE events based on their type.
 // Handles 'endpoint' events for connection setup and 'message' events for JSON-RPC communication.
 // attempt is the Start attempt whose stream carried the event: once a later
 // attempt has begun, the event is dropped, so a superseded reader neither
 // replaces the endpoint nor dispatches what it had already read.
-func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, endpointOnce *sync.Once, attempt uint64) {
+func (c *SSE) handleSSEEvent(event string, data []byte, endpointChan chan struct{}, endpointOnce *sync.Once, attempt uint64) {
 	if c.attempt.Load() != attempt {
 		return
 	}
 	switch event {
 	case "endpoint":
-		endpoint, err := c.baseURL.Parse(data)
+		endpoint, err := c.baseURL.Parse(string(data))
 		if err != nil {
 			c.logger.Error("Error parsing endpoint URL", "err", err)
 			return
@@ -540,8 +560,9 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			close(endpointChan)
 		})
 	case "message":
-		// Every decode below reads these bytes, and none keeps them.
-		encoded := []byte(data)
+		// Every decode below reads these bytes, and none keeps them: they are
+		// the reader's, reused for the next event.
+		encoded := data
 		var envelope struct {
 			JSONRPC jsonrpcVersion  `json:"jsonrpc"`
 			ID      json.RawMessage `json:"id"`

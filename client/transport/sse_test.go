@@ -221,10 +221,13 @@ func TestAppendSSEData(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			data := ""
+			var dataBytes []byte
 			for _, line := range tt.lines {
 				data = appendSSEData(data, line)
+				dataBytes = appendSSEDataBytes(dataBytes, []byte(line))
 			}
 			require.Equal(t, tt.want, data)
+			require.Equal(t, tt.want, string(dataBytes), "appendSSEDataBytes")
 		})
 	}
 
@@ -1840,7 +1843,7 @@ func TestSSE_CloseConcurrentWithMessageDoesNotPanic(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		close(entering)
-		trans.handleSSEEvent("message", msg, make(chan struct{}), &sync.Once{}, 0)
+		trans.handleSSEEvent("message", []byte(msg), make(chan struct{}), &sync.Once{}, 0)
 	}()
 
 	// Wait until the sender owns trans.mu: TryLock fails exactly while the

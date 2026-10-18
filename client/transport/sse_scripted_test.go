@@ -426,3 +426,32 @@ func sendPing(t *testing.T, c *SSE) error {
 func sendInitialized(t *testing.T, c *SSE) error {
 	return c.SendNotification(t.Context(), mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/initialized"})
 }
+
+// readSSE reads the stream as SSE frames it: CRLF line ends, data lines
+// joined with a newline and one leading space dropped, a comment ignored, an
+// event with no name a message, one with a name it does not know dropped,
+// and the data still pending at EOF handled. A message larger than the line
+// buffer readSSE keeps is read whole, and the one after it is not mixed
+// with it.
+func TestSSE_TheStreamIsReadAsItIsFramed(t *testing.T) {
+	big := strings.Repeat("y", maxRetainedLine+10)
+	stream := "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"a\",\r\ndata:  \"params\":{\"v\":\"one\"}}\r\n\r\n" +
+		": a comment\n" +
+		"data:{\"jsonrpc\":\"2.0\",\"method\":\"b\",\"params\":{\"v\":\"" + big + "\"}}\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"method\":\"c\",\"params\":{\"v\":\"three\"}}\n\n" +
+		"event: other\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"d\",\"params\":{\"v\":\"dropped\"}}\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"method\":\"e\",\"params\":{\"v\":\"at EOF\"}}\n"
+	c, err := NewSSE("http://127.0.0.1:1/sse")
+	require.NoError(t, err)
+	var got []string
+	c.SetNotificationHandler(func(n mcp.JSONRPCNotification) {
+		v, _ := n.Params.AdditionalFields["v"].(string)
+		if v == big {
+			v = "big"
+		}
+		got = append(got, n.Method+"="+v)
+	})
+
+	c.readSSE(io.NopCloser(strings.NewReader(stream)), make(chan struct{}), &sync.Once{}, 0)
+	assert.Equal(t, []string{"a=one", "b=big", "c=three", "e=at EOF"}, got)
+}
