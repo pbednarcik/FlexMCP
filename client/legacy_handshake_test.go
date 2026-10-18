@@ -116,3 +116,47 @@ func TestClient_LegacyElicitationInAnUndeclaredModeIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// Form mode is declared by a form sub-object, or by an elicitation object
+// with neither sub-object, which means form only (ClientFeatures.md row 1);
+// an elicitation without a mode is form (row 4). A client that declared url
+// alone refuses a form elicitation -32602 before the handler sees it.
+func TestClient_LegacyFormElicitationNeedsFormDeclared(t *testing.T) {
+	for _, mode := range []string{"form", ""} {
+		formRequest := transport.JSONRPCRequest{
+			JSONRPC: "2.0",
+			ID:      mcp.NewRequestId(int64(1)),
+			Method:  string(mcp.MethodElicitationCreate),
+			Params: map[string]any{"mode": mode, "message": "fill this", "requestedSchema": map[string]any{
+				"type": "object", "properties": map[string]any{},
+			}},
+		}
+		for name, tt := range map[string]struct {
+			declared *mcp.ElicitationCapability
+			refused  bool
+		}{
+			"url only":      {declared: &mcp.ElicitationCapability{URL: &struct{}{}}, refused: true},
+			"empty object":  {declared: &mcp.ElicitationCapability{}},
+			"form declared": {declared: &mcp.ElicitationCapability{Form: &struct{}{}}},
+			"both declared": {declared: &mcp.ElicitationCapability{Form: &struct{}{}, URL: &struct{}{}}},
+		} {
+			t.Run("mode="+mode+"/"+name, func(t *testing.T) {
+				handler := &recordingElicitation{}
+				c := NewClient(&handshakeServer{version: mcp.LATEST_LEGACY_PROTOCOL_VERSION}, WithElicitationHandler(handler))
+				request := mcp.InitializeRequest{}
+				request.Params.Capabilities.Elicitation = tt.declared
+				_, err := c.Initialize(t.Context(), request)
+				require.NoError(t, err)
+
+				_, err = c.handleIncomingRequest(t.Context(), formRequest)
+				if tt.refused {
+					assert.ErrorIs(t, err, mcp.ErrInvalidParams)
+					assert.False(t, handler.asked, "the handler saw an undeclared mode")
+					return
+				}
+				assert.NoError(t, err)
+				assert.True(t, handler.asked)
+			})
+		}
+	}
+}

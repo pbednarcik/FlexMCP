@@ -228,16 +228,22 @@ func (c *Client) fulfillInputRequest(
 
 // checkElicitation refuses an elicitation that is not valid, or asks for a
 // mode this client did not declare (ClientFeatures.md rows 1-2, 4, 7): the
-// handler sees only what the client said it can answer.
+// handler sees only what the client said it can answer. Form mode, which an
+// elicitation without a mode is in, is declared by a form sub-object or by
+// an elicitation object with neither sub-object.
 func (c *Client) checkElicitation(params mcp.ElicitationParams) error {
 	if err := params.Validate(); err != nil {
 		return fmt.Errorf("invalid elicitation params: %w", err)
 	}
+	declared := c.effectiveCapabilities(c.currentEra()).Elicitation
 	if params.Mode == mcp.ElicitationModeURL {
-		declared := c.effectiveCapabilities(c.currentEra()).Elicitation
 		if declared == nil || declared.URL == nil {
 			return errors.New("elicitation in url mode was not declared by this client")
 		}
+		return nil
+	}
+	if declared == nil || (declared.Form == nil && declared.URL != nil) {
+		return errors.New("elicitation in form mode was not declared by this client")
 	}
 	return nil
 }
