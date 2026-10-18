@@ -216,8 +216,12 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close shuts down the client and closes the transport.
+// Close shuts down the client and closes the transport. A client without a
+// transport has nothing to close.
 func (c *Client) Close() error {
+	if c.transport == nil {
+		return nil
+	}
 	return c.transport.Close()
 }
 

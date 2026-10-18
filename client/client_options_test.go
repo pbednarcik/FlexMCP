@@ -101,6 +101,8 @@ func TestClientWithoutATransportCannotStart(t *testing.T) {
 	require.EqualError(t, c.Start(t.Context()), "transport is nil")
 	assert.Empty(t, c.GetSessionId())
 	assert.Empty(t, c.ProtocolVersion())
+	// Nothing was opened, so Close has nothing to close.
+	assert.NoError(t, c.Close())
 }
 
 func TestInitializeRecordsTheServerCapabilities(t *testing.T) {
