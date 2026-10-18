@@ -21,9 +21,12 @@ import (
 type Client struct {
 	transport transport.Interface
 
-	initialized   atomic.Bool
-	notifications []func(mcp.JSONRPCNotification)
-	notifyMu      sync.RWMutex
+	initialized atomic.Bool
+	// notifications is the handlers in the order registered. A dispatch reads
+	// the list without a lock; OnNotification, under notifyMu, publishes a
+	// new list and never changes one published.
+	notifications atomic.Pointer[[]func(mcp.JSONRPCNotification)]
+	notifyMu      sync.Mutex
 	requestID     atomic.Int64
 
 	// era is the connection's negotiated state: the protocol version, the
@@ -198,13 +201,13 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	c.transport.SetNotificationHandler(func(notification mcp.JSONRPCNotification) {
-		// The handlers run on a snapshot taken under the lock, so a handler
-		// that registers another handler does not wait on itself.
-		c.notifyMu.RLock()
-		handlers := slices.Clone(c.notifications)
-		c.notifyMu.RUnlock()
-		for _, handler := range handlers {
-			handler(notification)
+		// The handlers run on the list published when the notification
+		// arrived, so a handler that registers another handler does not wait
+		// on itself, and the new one sees the next notification.
+		if handlers := c.notifications.Load(); handlers != nil {
+			for _, handler := range *handlers {
+				handler(notification)
+			}
 		}
 	})
 
@@ -233,7 +236,12 @@ func (c *Client) OnNotification(
 ) {
 	c.notifyMu.Lock()
 	defer c.notifyMu.Unlock()
-	c.notifications = append(c.notifications, handler)
+	var next []func(mcp.JSONRPCNotification)
+	if handlers := c.notifications.Load(); handlers != nil {
+		next = slices.Clone(*handlers)
+	}
+	next = append(next, handler)
+	c.notifications.Store(&next)
 }
 
 // OnConnectionLost registers a handler function to be called when the connection is lost.

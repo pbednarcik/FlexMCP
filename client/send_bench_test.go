@@ -78,3 +78,35 @@ func BenchmarkCallToolModernWithMeta(b *testing.B) {
 func BenchmarkCallToolLegacy(b *testing.B) {
 	benchmarkCallTool(b, mcp.LATEST_LEGACY_PROTOCOL_VERSION, benchmarkCall())
 }
+
+// capturingTransport is encodingTransport keeping the handler the client sets
+// for notifications, so a benchmark can deliver them.
+type capturingTransport struct {
+	encodingTransport
+	notify func(mcp.JSONRPCNotification)
+}
+
+func (t *capturingTransport) SetNotificationHandler(handler func(mcp.JSONRPCNotification)) {
+	t.notify = handler
+}
+
+// BenchmarkNotificationDispatch is one notification delivered to a client
+// with two handlers registered.
+func BenchmarkNotificationDispatch(b *testing.B) {
+	tr := &capturingTransport{}
+	c := NewClient(tr)
+	if err := c.Start(b.Context()); err != nil {
+		b.Fatal(err)
+	}
+	var n int
+	c.OnNotification(func(mcp.JSONRPCNotification) { n++ })
+	c.OnNotification(func(mcp.JSONRPCNotification) { n++ })
+	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/progress"}
+	b.ReportAllocs()
+	for b.Loop() {
+		tr.notify(notification)
+	}
+	if n == 0 {
+		b.Fatal("no handler ran")
+	}
+}
