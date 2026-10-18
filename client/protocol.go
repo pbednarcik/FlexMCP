@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,21 @@ type era struct {
 	clientInfo         mcp.Implementation
 	clientCapabilities mcp.ClientCapabilities
 	serverCapabilities mcp.ServerCapabilities
+	// meta is the era's _meta entries, encoded when it was published.
+	meta *eraMeta
+}
+
+// eraMeta is the _meta entries a request of a protocol version 2026-07-28
+// era carries, encoded once: object is the whole _meta of a request without
+// one of its own, and the entries are merged into one that has. of is the
+// era they were encoded for; a copy of it, such as Initialize's probe, has
+// its own address and encodes its own.
+type eraMeta struct {
+	of           *era
+	version      json.RawMessage
+	capabilities json.RawMessage
+	info         json.RawMessage
+	object       json.RawMessage
 }
 
 // currentEra is the era in effect; a Client built as a literal has an
@@ -57,7 +73,48 @@ func (c *Client) currentEra() *era {
 func (c *Client) updateEra(update func(*era)) {
 	next := *c.currentEra()
 	update(&next)
-	c.era.Store(&next)
+	c.publishEra(&next)
+}
+
+// publishEra makes e the era in effect, with its _meta entries encoded. A
+// published era is never changed again.
+func (c *Client) publishEra(e *era) {
+	e.meta = c.encodeEraMeta(e)
+	c.era.Store(e)
+}
+
+// encodeEraMeta encodes the _meta entries of era e; an era before protocol
+// version 2026-07-28 has none. An entry that does not encode is left out.
+func (c *Client) encodeEraMeta(e *era) *eraMeta {
+	if !mcp.IsModernProtocol(e.version) {
+		return nil
+	}
+	m := &eraMeta{of: e}
+	entries := make(map[string]json.RawMessage, 3)
+	put := func(key string, value any) json.RawMessage {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil
+		}
+		entries[key] = encoded
+		return encoded
+	}
+	m.version = put(mcp.MetaKeyProtocolVersion, e.version)
+	m.capabilities = put(mcp.MetaKeyClientCapabilities, c.effectiveCapabilities(e))
+	if e.clientInfo.Name != "" {
+		m.info = put(mcp.MetaKeyClientInfo, e.clientInfo)
+	}
+	m.object, _ = json.Marshal(entries)
+	return m
+}
+
+// requestMeta is the _meta entries of era e: those encoded when it was
+// published, or, for an era that never was, encoded now.
+func (c *Client) requestMeta(e *era) *eraMeta {
+	if m := e.meta; m != nil && m.of == e {
+		return m
+	}
+	return c.encodeEraMeta(e)
 }
 
 // isModern reports whether the client is speaking the stateless protocol core.
@@ -168,40 +225,60 @@ func (c *Client) effectiveCapabilities(e *era) mcp.ClientCapabilities {
 // It is a no-op for legacy connections, whose protocol version, identity, and
 // capabilities were fixed by the initialize handshake. The caller's own
 // _meta entries are carried as the bytes they encode to, so an integer
-// progress token keeps every digit.
+// progress token keeps every digit. The params are returned encoded, so the
+// headers and the transport do not encode them again.
 func (c *Client) applyRequestMeta(e *era, params any) any {
 	if !mcp.IsModernProtocol(e.version) {
 		return params
 	}
 
-	fields := map[string]json.RawMessage{}
+	encoded := []byte("{}")
 	if params != nil {
-		encoded, err := json.Marshal(params)
-		if err != nil {
-			return params
-		}
-		if err := json.Unmarshal(encoded, &fields); err != nil {
-			// Params that are not a JSON object cannot carry _meta.
+		var err error
+		if encoded, err = json.Marshal(params); err != nil {
 			return params
 		}
 	}
+	m := c.requestMeta(e)
+	level := c.currentLogLevel()
 
+	// Params with no _meta of their own, and no log level to declare, take
+	// the era's _meta whole, as their last member. Any mention of "_meta",
+	// even inside a value, takes the merge below.
+	if n := len(encoded); level == "" && m.object != nil && n >= 2 && encoded[0] == '{' && encoded[n-1] == '}' &&
+		!bytes.Contains(encoded, []byte(`"_meta"`)) {
+		spliced := make([]byte, 0, n+len(`,"_meta":`)+len(m.object))
+		spliced = append(spliced, encoded[:n-1]...)
+		if n > 2 {
+			spliced = append(spliced, ',')
+		}
+		spliced = append(spliced, `"_meta":`...)
+		spliced = append(spliced, m.object...)
+		return json.RawMessage(append(spliced, '}'))
+	}
+
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		// Params that are not a JSON object cannot carry _meta.
+		return params
+	}
 	meta := map[string]json.RawMessage{}
 	if raw, ok := fields["_meta"]; ok {
 		_ = json.Unmarshal(raw, &meta)
 	}
-	set := func(key string, value any) {
-		if encoded, err := json.Marshal(value); err == nil {
-			meta[key] = encoded
+	if m.version != nil {
+		meta[mcp.MetaKeyProtocolVersion] = m.version
+	}
+	if m.capabilities != nil {
+		meta[mcp.MetaKeyClientCapabilities] = m.capabilities
+	}
+	if m.info != nil {
+		meta[mcp.MetaKeyClientInfo] = m.info
+	}
+	if level != "" {
+		if encodedLevel, err := json.Marshal(level); err == nil {
+			meta[mcp.MetaKeyLogLevel] = encodedLevel
 		}
-	}
-	set(mcp.MetaKeyProtocolVersion, e.version)
-	set(mcp.MetaKeyClientCapabilities, c.effectiveCapabilities(e))
-	if e.clientInfo.Name != "" {
-		set(mcp.MetaKeyClientInfo, e.clientInfo)
-	}
-	if level := c.currentLogLevel(); level != "" {
-		set(mcp.MetaKeyLogLevel, level)
 	}
 
 	encodedMeta, err := json.Marshal(meta)
@@ -209,7 +286,11 @@ func (c *Client) applyRequestMeta(e *era, params any) any {
 		return params
 	}
 	fields["_meta"] = encodedMeta
-	return fields
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return fields
+	}
+	return json.RawMessage(merged)
 }
 
 // currentLogLevel returns the per-request log level to declare, if any.
@@ -245,9 +326,13 @@ func (c *Client) applyStandardHeaders(e *era, header http.Header, method string,
 		return header
 	}
 
-	encoded, err := json.Marshal(params)
-	if err != nil {
-		return header
+	// Params applyRequestMeta encoded are not encoded again.
+	encoded, ok := params.(json.RawMessage)
+	if !ok {
+		var err error
+		if encoded, err = json.Marshal(params); err != nil {
+			return header
+		}
 	}
 
 	standard := mcp.StandardHeaders(e.version, mcp.MCPMethod(method), encoded)

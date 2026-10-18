@@ -175,7 +175,7 @@ func NewClient(transport transport.Interface, options ...ClientOption) *Client {
 		tracer:     tracing.NoopTracer(),
 		propagator: tracing.NoopPropagator(),
 	}
-	client.era.Store(&era{clientInfo: defaultClientInfo()})
+	client.publishEra(&era{clientInfo: defaultClientInfo()})
 
 	for _, opt := range options {
 		opt(client)
@@ -434,7 +434,7 @@ func (c *Client) Initialize(
 		discovered, modern, err := c.negotiateModern(ctx, preferred, &next, header)
 		if err == nil {
 			next.serverCapabilities = discovered.Capabilities
-			c.era.Store(&next)
+			c.publishEra(&next)
 			c.setTransportVersion(next.version)
 			c.initialized.Store(true)
 			return initializeResultFromDiscover(next.version, discovered), nil
@@ -496,7 +496,7 @@ func (c *Client) initializeLegacy(
 	// Publish the era: the server's capabilities and the negotiated version.
 	next.serverCapabilities = result.Capabilities
 	next.version = result.ProtocolVersion
-	c.era.Store(next)
+	c.publishEra(next)
 	c.setTransportVersion(next.version)
 
 	// Send initialized notification
