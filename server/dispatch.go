@@ -1,0 +1,225 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+
+	"github.com/mark3labs/mcp-go/internal/jsonrpc"
+	"github.com/mark3labs/mcp-go/mcp"
+)
+
+// HandleMessage processes an incoming JSON-RPC message and returns an appropriate response
+func (s *MCPServer) HandleMessage(
+	ctx context.Context,
+	message json.RawMessage,
+) mcp.JSONRPCMessage {
+	return s.handleMessageRead(ctx, message, readByTransport(ctx, message))
+}
+
+// handleMessageRead handles message; envelope is the transport's read of it,
+// or nil when there is none.
+func (s *MCPServer) handleMessageRead(
+	ctx context.Context,
+	message json.RawMessage,
+	envelope *requestEnvelope,
+) (resp mcp.JSONRPCMessage) {
+	// Add server to context
+	layers := new(messageContext)
+	layers.server = serverContext{Context: ctx, srv: s}
+	ctx = &layers.server
+
+	// The message is read once, with what the checks before dispatch need
+	// from params. Should params or _meta not be an object, the JSON-RPC
+	// members alone are read and those checks read the body on their own, as
+	// they always did, so a malformed request gets the same answer.
+	// A transport that read the message already hands its read over.
+	readOnce := envelope != nil
+	if envelope == nil {
+		envelope = new(requestEnvelope)
+		readOnce = readEnvelope(message, envelope) == nil
+	}
+	baseMessage := &envelope.jsonrpcEnvelope
+	var readErr error
+	if !readOnce {
+		*envelope = requestEnvelope{}
+		readErr = json.Unmarshal(message, baseMessage)
+	}
+	if readErr != nil {
+		// JSON that is not a request object is an invalid request; only
+		// text that is not JSON is a parse error (JSON-RPC 2.0, 5.1).
+		// The error repeats the id when it could still be read.
+		if json.Valid(message) {
+			id, _ := requestIDValue(baseMessage.RawID)
+			return createErrorResponse(id, mcp.INVALID_REQUEST, "Invalid request")
+		}
+		return createErrorResponse(
+			nil,
+			mcp.PARSE_ERROR,
+			"Failed to parse message",
+		)
+	}
+	// A response, success or error, to a request the server sent, such as a
+	// keep-alive ping: nothing waits for it, and a response is never answered,
+	// whatever its id, and a null result or error still makes one. A message
+	// with a method member is a request, whatever it carries besides.
+	method := jsonrpc.MethodOf(string(baseMessage.Method), message)
+	if !method.Present && len(baseMessage.RawID) > 0 && (len(baseMessage.Result) > 0 || len(baseMessage.Error) > 0) {
+		return nil
+	}
+	var validID bool
+	baseMessage.ID, validID = requestIDValue(baseMessage.RawID)
+	if !validID {
+		return createErrorResponse(nil, mcp.INVALID_REQUEST, "Invalid request id")
+	}
+
+	// Check for valid JSONRPC version
+	if baseMessage.JSONRPC != mcp.JSONRPC_VERSION {
+		return createErrorResponse(
+			baseMessage.ID,
+			mcp.INVALID_REQUEST,
+			"Invalid JSON-RPC version",
+		)
+	}
+
+	// A message with no method and no result or error is neither a request, a
+	// notification nor a response, and one whose method is not a string is no
+	// request: an invalid request, whose error repeats the id if it has one
+	// (JSON-RPC 2.0, section 5.1). A method named "" is a method all the same.
+	if !method.Present {
+		return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "Invalid request: no method")
+	}
+	if !method.IsString {
+		return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, "Invalid request: method must be a string")
+	}
+
+	if baseMessage.ID == nil {
+		// A notification is never answered, not even one whose params cannot
+		// be read: it is dropped.
+		var notification mcp.JSONRPCNotification
+		if err := json.Unmarshal(message, &notification); err != nil {
+			return nil
+		}
+		s.handleNotification(ctx, notification, message)
+		return nil
+	}
+
+	// The request may be cancelled by notifications/cancelled: it is filed
+	// under its id for the life of the call, with a context of its own that
+	// the cancellation ends. An id still in flight in the session is refused
+	// before any hook runs for it, and the request in flight is left alone
+	// (BaseProtocol.md row 4); the error hooks see the refusal. A request
+	// with no session scope to file it under, a modern HTTP request, keeps
+	// the context it came with: closing its stream is its cancel, and its
+	// handler's context ends when the HTTP request's does, not when the
+	// handler returns.
+	if key, ok := inflightKey(ctx, baseMessage.ID); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		inflight := &inflightRequest{cancel: cancel}
+		if _, taken := s.inflightCancels.LoadOrStore(key, inflight); taken {
+			if ClientSessionFromContext(ctx) != nil {
+				s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, message, ErrRequestIDInFlight)
+				return createErrorResponse(baseMessage.ID, mcp.INVALID_REQUEST, ErrRequestIDInFlight.Error())
+			}
+			// No session scopes the key: the callers are unrelated, and the
+			// newer request is the one filed, as before.
+			s.inflightCancels.Store(key, inflight)
+		}
+		defer s.inflightCancels.CompareAndDelete(key, inflight)
+	}
+
+	// Whether a hook holds the message is decided before the hooks run: one
+	// may remove itself while it changes the message.
+	heldByHook := hooksHoldTheMessage(s.hooks)
+	handleErr := s.hooks.onRequestInitialization(ctx, baseMessage.ID, message)
+	if handleErr != nil {
+		return createErrorResponse(
+			baseMessage.ID,
+			mcp.INVALID_REQUEST,
+			handleErr.Error(),
+		)
+	}
+	// A hook that held the message may have changed it, so the checks below
+	// read the message it left, as they did before the single read.
+	if heldByHook {
+		readOnce = false
+	}
+
+	// Get request header from ctx
+	h := ctx.Value(requestHeader)
+	headers, ok := h.(http.Header)
+
+	if headers == nil || !ok {
+		headers = make(http.Header)
+	}
+
+	// Determine which protocol era this request belongs to. Protocol version
+	// 2026-07-28 removed the initialize handshake: a modern request carries
+	// its protocol version, client identity, and client capabilities in _meta
+	// (SEP-2575). Anything else is served through the legacy path.
+	var protocolInfo *RequestProtocolInfo
+	var protocolErr error
+	if readOnce {
+		protocolInfo = &layers.info
+		protocolErr = readProtocolInfo(envelope.Params.Meta, protocolInfo)
+	} else {
+		protocolInfo, protocolErr = extractRequestProtocolInfo(message)
+	}
+	if protocolErr != nil {
+		return errorResponseForProtocolError(baseMessage.ID, protocolErr)
+	}
+	layers.protocol = protocolContext{Context: ctx, info: protocolInfo}
+	ctx = &layers.protocol
+
+	if protocolInfo.Modern {
+		if !mcp.IsValidProtocolVersion(protocolInfo.ProtocolVersion) {
+			return errorResponseForProtocolError(baseMessage.ID, mcp.UnsupportedProtocolVersionError{
+				Version:   protocolInfo.ProtocolVersion,
+				Supported: SupportedProtocolVersionsFromContext(ctx),
+			})
+		}
+		var headerErr error
+		if readOnce {
+			headerErr = s.validateStandardHeadersOfRequest(headers, protocolInfo.ProtocolVersion, baseMessage.Method, &envelope.Params, message)
+		} else {
+			headerErr = s.validateStandardHeadersForMessage(ctx, headers, protocolInfo.ProtocolVersion, baseMessage.Method, message)
+		}
+		if headerErr != nil {
+			return errorResponseForProtocolError(baseMessage.ID, headerErr)
+		}
+		// Synthesize the session state the handshake used to establish, so
+		// that hooks and handlers observing the session behave identically in
+		// both eras.
+		if session := ClientSessionFromContext(ctx); session != nil {
+			applyRequestProtocolInfoToSession(session, protocolInfo)
+		}
+	}
+
+	// Extract trace context from _meta before opening the server span so the span
+	// inherits the correct parent (SEP-414, transport-agnostic propagation).
+	// Only a server with a meta propagator pays the decode.
+	if s.metaPropagator != nil {
+		var metaWrapper struct {
+			Params struct {
+				Meta *mcp.Meta `json:"_meta"`
+			} `json:"params"`
+		}
+		if json.Unmarshal(message, &metaWrapper) == nil {
+			ctx = s.extractMeta(ctx, metaWrapper.Params.Meta)
+		}
+	}
+
+	ctx, endSpan := s.startMessageSpan(ctx, headers, string(baseMessage.Method))
+	defer func() { endSpan(resp) }()
+
+	endLog := s.startMessageLog(ctx, headers, string(baseMessage.Method))
+	defer func() { endLog(resp) }()
+
+	// Decorate outgoing results with the metadata required by protocol version
+	// 2026-07-28: resultType, serverInfo, and caching hints.
+	defer func() { resp = s.decorateResponse(ctx, protocolInfo, baseMessage.Method, resp) }()
+
+	return s.dispatchRequest(ctx, baseMessage, protocolInfo, headers, message)
+}
