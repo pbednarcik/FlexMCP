@@ -29,7 +29,7 @@ type SSE struct {
 	baseURL        *url.URL
 	endpoint       *url.URL
 	httpClient     *http.Client
-	responses      map[string]chan *JSONRPCResponse
+	responses      map[responseKey]chan *JSONRPCResponse
 	mu             sync.RWMutex
 	onNotification func(mcp.JSONRPCNotification)
 	notifyMu       sync.RWMutex
@@ -166,7 +166,7 @@ func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 	smc := &SSE{
 		baseURL:         parsedURL,
 		httpClient:      &http.Client{},
-		responses:       make(map[string]chan *JSONRPCResponse),
+		responses:       make(map[responseKey]chan *JSONRPCResponse),
 		headers:         make(map[string]string),
 		logger:          slog.Default(),
 		endpointTimeout: 30 * time.Second,
@@ -456,7 +456,7 @@ func (c *SSE) failPending() {
 	for _, ch := range c.responses {
 		close(ch)
 	}
-	c.responses = make(map[string]chan *JSONRPCResponse)
+	c.responses = make(map[responseKey]chan *JSONRPCResponse)
 	c.mu.Unlock()
 }
 
@@ -563,17 +563,21 @@ func (c *SSE) handleSSEEvent(event string, data []byte, endpointChan chan struct
 		// Every decode below reads these bytes, and none keeps them: they are
 		// the reader's, reused for the next event.
 		encoded := data
+		// A response's result and error are read here too, so a response is
+		// decoded once.
 		var envelope struct {
 			JSONRPC jsonrpcVersion  `json:"jsonrpc"`
 			ID      json.RawMessage `json:"id"`
 			Method  jsonrpc.Method  `json:"method"`
+			Result  json.RawMessage `json:"result"`
+			Error   json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal(encoded, &envelope); err != nil {
 			c.logger.Error("Error unmarshaling message", "err", err)
 			return
 		}
 		var id mcp.RequestId
-		readableID := len(envelope.ID) > 0 && json.Unmarshal(envelope.ID, &id) == nil && !id.IsNil()
+		readableID := len(envelope.ID) > 0 && id.UnmarshalJSON(envelope.ID) == nil && !id.IsNil()
 
 		// A message with a method member is a request or a notification,
 		// whatever its value; only one without is a response.
@@ -625,14 +629,26 @@ func (c *SSE) handleSSEEvent(event string, data []byte, endpointChan chan struct
 			return
 		}
 
-		var baseMessage JSONRPCResponse
-		if err := json.Unmarshal(encoded, &baseMessage); err != nil {
-			c.logger.Error("Error unmarshaling response", "err", err)
-			return
+		// A JSON-RPC 2.0 response is built from the envelope; one with any
+		// other jsonrpc member is decoded whole, as it always was, so its
+		// member is kept, or the response dropped when it is not a string.
+		baseMessage := JSONRPCResponse{JSONRPC: mcp.JSONRPC_VERSION, ID: id, Result: envelope.Result}
+		if !envelope.JSONRPC.is20 {
+			baseMessage = JSONRPCResponse{}
+			if err := json.Unmarshal(encoded, &baseMessage); err != nil {
+				c.logger.Error("Error unmarshaling response", "err", err)
+				return
+			}
+		} else if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+			var details mcp.JSONRPCErrorDetails
+			if err := json.Unmarshal(envelope.Error, &details); err != nil {
+				c.logger.Error("Error unmarshaling response", "err", err)
+				return
+			}
+			baseMessage.Error = &details
 		}
 
-		// Create string key for map lookup
-		idKey := baseMessage.ID.String()
+		idKey := responseKeyOf(id)
 
 		// Hold the write lock while sending: Close() also takes the write
 		// lock to close pending response channels, so the send can never
@@ -729,8 +745,7 @@ func (c *SSE) SendRequest(
 		req.Host = c.host
 	}
 
-	// Create string key for map lookup
-	idKey := request.ID.String()
+	idKey := responseKeyOf(request.ID)
 
 	// Register response channel
 	// Close sets closed before it fails the registered requests under mu, so
@@ -846,7 +861,7 @@ func (c *SSE) Close() error {
 	for _, ch := range c.responses {
 		close(ch)
 	}
-	c.responses = make(map[string]chan *JSONRPCResponse)
+	c.responses = make(map[responseKey]chan *JSONRPCResponse)
 	c.mu.Unlock()
 
 	return nil

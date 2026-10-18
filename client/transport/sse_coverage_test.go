@@ -24,7 +24,7 @@ func newBareSSE() *SSE {
 	sse := &SSE{
 		baseURL:    baseURL,
 		httpClient: http.DefaultClient,
-		responses:  make(map[string]chan *JSONRPCResponse),
+		responses:  make(map[responseKey]chan *JSONRPCResponse),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	sse.answers, sse.stopAnswers = context.WithCancel(context.Background())
@@ -318,7 +318,7 @@ func TestSSE_SendRequest_HeaderOptions(t *testing.T) {
 type chanClosingTransport struct {
 	base  http.RoundTripper
 	sse   *SSE
-	idKey string
+	idKey responseKey
 }
 
 // RoundTrip delegates to the base transport and then closes the registered
@@ -347,7 +347,7 @@ func TestSSE_SendRequest_ResponseChanClosed(t *testing.T) {
 	sse.started.Store(true)
 	sse.endpoint = mustURL(t, server.URL)
 	sse.responseTimeout = time.Minute
-	idKey := mcp.NewRequestId(int64(1)).String()
+	idKey := responseKeyOf(mcp.NewRequestId(int64(1)))
 	sse.httpClient = &http.Client{Transport: &chanClosingTransport{
 		base:  http.DefaultTransport,
 		sse:   sse,
@@ -449,7 +449,7 @@ func TestSSE_SendNotification_Success(t *testing.T) {
 func TestSSE_Close_WithoutStream(t *testing.T) {
 	sse := newBareSSE()
 	pending := make(chan *JSONRPCResponse)
-	sse.responses["pending"] = pending
+	sse.responses[responseKeyOf(mcp.NewRequestId("pending"))] = pending
 
 	require.NoError(t, sse.Close())
 	require.True(t, sse.closed.Load())

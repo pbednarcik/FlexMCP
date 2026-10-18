@@ -1823,9 +1823,9 @@ func TestSSE_CloseConcurrentWithMessageDoesNotPanic(t *testing.T) {
 	trans, err := NewSSE("http://127.0.0.1:1/")
 	require.NoError(t, err)
 
-	// RequestId.String() disambiguates JSON numbers and strings ("int64:1" vs
-	// "string:1"), so the registered key and the wire message must agree.
-	idKey := mcp.NewRequestId(int64(1)).String()
+	// The key tells a JSON number from a string, so the registered key and
+	// the wire message must agree.
+	idKey := responseKeyOf(mcp.NewRequestId(int64(1)))
 	// Unbuffered channel: the delivery blocks until somebody receives.
 	responseChan := make(chan *JSONRPCResponse)
 	trans.mu.Lock()

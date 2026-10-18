@@ -455,3 +455,58 @@ func TestSSE_TheStreamIsReadAsItIsFramed(t *testing.T) {
 	c.readSSE(io.NopCloser(strings.NewReader(stream)), make(chan struct{}), &sync.Once{}, 0)
 	assert.Equal(t, []string{"a=one", "b=big", "c=three", "e=at EOF"}, got)
 }
+
+// A response on the stream reaches its request as it was sent: the result's
+// bytes, the error with its data, a null error beside a result as none, and
+// a jsonrpc member other than "2.0" as it is. A response whose jsonrpc
+// member is not a string, or whose id is the request's in another type, is
+// no answer to it.
+func TestSSE_AResponseReachesItsRequestAsSent(t *testing.T) {
+	cases := []struct {
+		name     string
+		response string // %s is the request's id as sent
+		check    func(t *testing.T, response *JSONRPCResponse, err error)
+	}{
+		{"result", `{"jsonrpc":"2.0","id":%s,"result":{"a":[1,2.50]}}`, func(t *testing.T, r *JSONRPCResponse, err error) {
+			require.NoError(t, err)
+			assert.Equal(t, `{"a":[1,2.50]}`, string(r.Result))
+			assert.Nil(t, r.Error)
+			assert.Equal(t, "2.0", r.JSONRPC)
+			assert.Equal(t, mcp.NewRequestId(int64(1)), r.ID)
+		}},
+		{"error", `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"nope","data":{"x":1}}}`, func(t *testing.T, r *JSONRPCResponse, err error) {
+			require.NoError(t, err)
+			require.NotNil(t, r.Error)
+			assert.Equal(t, mcp.METHOD_NOT_FOUND, r.Error.Code)
+			assert.Equal(t, "nope", r.Error.Message)
+			assert.Equal(t, map[string]any{"x": float64(1)}, r.Error.Data)
+			assert.Empty(t, r.Result)
+		}},
+		{"null error", `{"jsonrpc":"2.0","id":%s,"result":{},"error":null}`, func(t *testing.T, r *JSONRPCResponse, err error) {
+			require.NoError(t, err)
+			assert.Nil(t, r.Error)
+			assert.Equal(t, `{}`, string(r.Result))
+		}},
+		{"other version", `{"jsonrpc":"1.0","id":%s,"result":{}}`, func(t *testing.T, r *JSONRPCResponse, err error) {
+			require.NoError(t, err)
+			assert.Equal(t, "1.0", r.JSONRPC)
+		}},
+		{"version not a string", `{"jsonrpc":2,"id":%s,"result":{}}`, func(t *testing.T, _ *JSONRPCResponse, err error) {
+			assert.ErrorIs(t, err, context.DeadlineExceeded)
+		}},
+		{"id of another type", `{"jsonrpc":"2.0","id":"%s","result":{}}`, func(t *testing.T, _ *JSONRPCResponse, err error) {
+			assert.ErrorIs(t, err, context.DeadlineExceeded)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newScriptedSSEServer()
+			server.onPost = func(id json.RawMessage, s *scriptedSSEServer) {
+				s.events <- "event: message\ndata: " + fmt.Sprintf(tc.response, id) + "\n\n"
+			}
+			c := startedSSE(t, server, WithResponseTimeout(300*time.Millisecond))
+			response, err := c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
+			tc.check(t, response, err)
+		})
+	}
+}
