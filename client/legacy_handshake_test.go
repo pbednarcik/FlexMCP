@@ -70,3 +70,49 @@ func TestClient_LegacyInitializeNamesTheClient(t *testing.T) {
 		})
 	}
 }
+
+// recordingElicitation answers every elicitation with a decline and records
+// that it was asked.
+type recordingElicitation struct{ asked bool }
+
+func (h *recordingElicitation) Elicit(context.Context, mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
+	h.asked = true
+	return &mcp.ElicitationResult{Action: mcp.ElicitationResponseActionDecline}, nil
+}
+
+// A handshake-era server's elicitation in a mode the client did not declare
+// is refused -32602 before the handler sees it, as a multi round-trip input
+// request is (ClientFeatures.md row 19); a declared mode reaches it.
+func TestClient_LegacyElicitationInAnUndeclaredModeIsRefused(t *testing.T) {
+	urlRequest := transport.JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      mcp.NewRequestId(int64(1)),
+		Method:  string(mcp.MethodElicitationCreate),
+		Params:  map[string]any{"mode": "url", "message": "sign in", "url": "https://example.com", "elicitationId": "e1"},
+	}
+	for name, tt := range map[string]struct {
+		declared *mcp.ElicitationCapability
+		refused  bool
+	}{
+		"form only":    {refused: true},
+		"url declared": {declared: &mcp.ElicitationCapability{URL: &struct{}{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler := &recordingElicitation{}
+			c := NewClient(&handshakeServer{version: mcp.LATEST_LEGACY_PROTOCOL_VERSION}, WithElicitationHandler(handler))
+			request := mcp.InitializeRequest{}
+			request.Params.Capabilities.Elicitation = tt.declared
+			_, err := c.Initialize(t.Context(), request)
+			require.NoError(t, err)
+
+			_, err = c.handleIncomingRequest(t.Context(), urlRequest)
+			if tt.refused {
+				assert.ErrorIs(t, err, mcp.ErrInvalidParams)
+				assert.False(t, handler.asked, "the handler saw an undeclared mode")
+				return
+			}
+			assert.NoError(t, err)
+			assert.True(t, handler.asked)
+		})
+	}
+}

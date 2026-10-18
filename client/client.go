@@ -1082,8 +1082,10 @@ func (c *Client) handleElicitationRequestTransport(ctx context.Context, request 
 		}
 	}
 
-	if err := params.Validate(); err != nil {
-		return nil, requestFailed(mcp.ErrInvalidParams, "invalid elicitation params: %w", err)
+	// As for a multi round-trip input request: valid, and in a mode this
+	// client declared.
+	if err := c.checkElicitation(params); err != nil {
+		return nil, requestFailed(mcp.ErrInvalidParams, "%w", err)
 	}
 
 	// Create the MCP request
