@@ -220,3 +220,28 @@ func TestSSE_AStreamEndingAsStartCompletesIsReported(t *testing.T) {
 		httpServer.Close()
 	}
 }
+
+// A notification sent after Close, or after the server ended the stream, is
+// refused and nothing is posted: the session it belonged to is over.
+func TestSSE_ANotificationAfterTheEndIsRefused(t *testing.T) {
+	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/initialized"}
+
+	t.Run("closed", func(t *testing.T) {
+		server := newScriptedSSEServer()
+		c := startedSSE(t, server)
+		require.NoError(t, c.Close())
+
+		assert.ErrorIs(t, c.SendNotification(t.Context(), notification), ErrTransportClosed)
+		assert.Zero(t, server.posts.Load(), "the notification was posted after Close")
+	})
+
+	t.Run("ended", func(t *testing.T) {
+		server := newScriptedSSEServer()
+		c := startedSSE(t, server)
+		server.end()
+		require.Eventually(t, c.ended.Load, 2*time.Second, 5*time.Millisecond)
+
+		assert.ErrorIs(t, c.SendNotification(t.Context(), notification), ErrTransportClosed)
+		assert.Zero(t, server.posts.Load(), "the notification was posted on an ended stream")
+	})
+}

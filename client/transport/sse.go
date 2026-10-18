@@ -463,6 +463,9 @@ func (c *SSE) failPending() {
 // errStreamEnded is the error of a request sent after the stream ended.
 var errStreamEnded = fmt.Errorf("the SSE stream has ended: %w", ErrTransportClosed)
 
+// errSSEClosed is the error of a message sent after Close.
+var errSSEClosed = fmt.Errorf("transport has been closed: %w", ErrTransportClosed)
+
 // appendSSEData joins the value of an SSE "data:" field onto any data already
 // accumulated for the current event. Per the Server-Sent Events specification,
 // a single event may carry multiple "data:" lines and they must be
@@ -849,6 +852,13 @@ func (c *SSE) answer(response *JSONRPCResponse) {
 // post sends one message, a notification or a response, to the endpoint;
 // what names it in errors.
 func (c *SSE) post(ctx context.Context, body []byte, what string) error {
+	if c.closed.Load() {
+		return errSSEClosed
+	}
+	if c.ended.Load() {
+		return errStreamEnded
+	}
+
 	c.mu.RLock()
 	endpoint := c.endpoint
 	c.mu.RUnlock()
