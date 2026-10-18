@@ -275,32 +275,8 @@ func (c *SSE) start(ctx context.Context) error {
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Connection", "keep-alive")
 
-	// set custom http headers
-	for k, v := range c.headers {
-		req.Header.Set(k, v)
-	}
-	if c.headerFunc != nil {
-		for k, v := range c.headerFunc(ctx) {
-			req.Header.Set(k, v)
-		}
-	}
-
-	// Add OAuth authorization if configured
-	if c.oauthHandler != nil {
-		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
-		if err != nil {
-			// If we get an authorization error, return a specific error that can be handled by the client
-			if errors.Is(err, ErrOAuthAuthorizationRequired) {
-				return &OAuthAuthorizationRequiredError{
-					Handler: c.oauthHandler,
-					AuthorizationRequiredError: AuthorizationRequiredError{
-						ResourceMetadataURL: "", // No response available in this code path
-					},
-				}
-			}
-			return fmt.Errorf("failed to get authorization header: %w", err)
-		}
-		req.Header.Set("Authorization", authHeader)
+	if err := c.setHeaders(ctx, req); err != nil {
+		return err
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -676,37 +652,13 @@ func (c *SSE) SendRequest(
 			}
 		}
 	}
-	for k, v := range c.headers {
-		req.Header.Set(k, v)
+	if err := c.setHeaders(ctx, req); err != nil {
+		return nil, err
 	}
 
 	// Set custom Host header if provided
 	if c.host != "" {
 		req.Host = c.host
-	}
-
-	// Add OAuth authorization if configured
-	if c.oauthHandler != nil {
-		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
-		if err != nil {
-			// If we get an authorization error, return a specific error that can be handled by the client
-			if errors.Is(err, ErrOAuthAuthorizationRequired) {
-				return nil, &OAuthAuthorizationRequiredError{
-					Handler: c.oauthHandler,
-					AuthorizationRequiredError: AuthorizationRequiredError{
-						ResourceMetadataURL: "", // No response available in this code path
-					},
-				}
-			}
-			return nil, fmt.Errorf("failed to get authorization header: %w", err)
-		}
-		req.Header.Set("Authorization", authHeader)
-	}
-
-	if c.headerFunc != nil {
-		for k, v := range c.headerFunc(ctx) {
-			req.Header.Set(k, v)
-		}
 	}
 
 	// Create string key for map lookup
@@ -900,33 +852,8 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 			}
 		}
 	}
-	// Set custom HTTP headers
-	for k, v := range c.headers {
-		req.Header.Set(k, v)
-	}
-
-	// Add OAuth authorization if configured
-	if c.oauthHandler != nil {
-		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
-		if err != nil {
-			// If we get an authorization error, return a specific error that can be handled by the client
-			if errors.Is(err, ErrOAuthAuthorizationRequired) {
-				return &OAuthAuthorizationRequiredError{
-					Handler: c.oauthHandler,
-					AuthorizationRequiredError: AuthorizationRequiredError{
-						ResourceMetadataURL: "", // No response available in this code path
-					},
-				}
-			}
-			return fmt.Errorf("failed to get authorization header: %w", err)
-		}
-		req.Header.Set("Authorization", authHeader)
-	}
-
-	if c.headerFunc != nil {
-		for k, v := range c.headerFunc(ctx) {
-			req.Header.Set(k, v)
-		}
+	if err := c.setHeaders(ctx, req); err != nil {
+		return err
 	}
 
 	// Set custom Host header if provided
@@ -955,6 +882,37 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 		)
 	}
 
+	return nil
+}
+
+// setHeaders sets the headers every request to the server carries, in
+// Streamable HTTP's order: the static headers, then the OAuth
+// Authorization, then headerFunc's, which win over both.
+func (c *SSE) setHeaders(ctx context.Context, req *http.Request) error {
+	for k, v := range c.headers {
+		req.Header.Set(k, v)
+	}
+	if c.oauthHandler != nil {
+		authHeader, err := c.oauthHandler.authorizationHeader(ctx, c.oauthRecipient)
+		if err != nil {
+			// An authorization error is returned as one the client can handle.
+			if errors.Is(err, ErrOAuthAuthorizationRequired) {
+				return &OAuthAuthorizationRequiredError{
+					Handler: c.oauthHandler,
+					AuthorizationRequiredError: AuthorizationRequiredError{
+						ResourceMetadataURL: "", // No response available in this code path
+					},
+				}
+			}
+			return fmt.Errorf("failed to get authorization header: %w", err)
+		}
+		req.Header.Set("Authorization", authHeader)
+	}
+	if c.headerFunc != nil {
+		for k, v := range c.headerFunc(ctx) {
+			req.Header.Set(k, v)
+		}
+	}
 	return nil
 }
 

@@ -265,3 +265,43 @@ func TestSSE_AReadErrorIsLoggedWithoutAHandler(t *testing.T) {
 	c.readSSE(io.NopCloser(iotest.ErrReader(errors.New("connection reset by peer"))), make(chan struct{}), &sync.Once{}, 0)
 	assert.Contains(t, logged.String(), "connection reset by peer")
 }
+
+// headerFunc's headers win over the OAuth Authorization on every request the
+// transport sends, as on Streamable HTTP: the stream's GET, a request and a
+// notification alike. The GET set them the other way round.
+func TestSSE_HeaderFuncWinsOverOAuthOnEveryRequest(t *testing.T) {
+	server := newScriptedSSEServer()
+	server.onPost = func(id json.RawMessage, s *scriptedSSEServer) {
+		if len(id) > 0 {
+			s.events <- fmt.Sprintf("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{}}\n\n", id)
+		}
+	}
+	var mu sync.Mutex
+	var sent []string
+	httpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sent = append(sent, r.Method+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
+		server.ServeHTTP(w, r)
+	}))
+	t.Cleanup(httpServer.Close)
+	store := NewMemoryTokenStore()
+	require.NoError(t, store.SaveToken(t.Context(), &Token{AccessToken: "from-oauth", TokenType: "Bearer", ExpiresAt: time.Now().Add(time.Hour)}))
+
+	c, err := NewSSE(httpServer.URL,
+		WithHTTPClient(httpServer.Client()),
+		WithOAuth(OAuthConfig{ClientID: "client", TokenStore: store}),
+		WithHeaderFunc(func(context.Context) map[string]string {
+			return map[string]string{"Authorization": "Bearer from-header-func"}
+		}))
+	require.NoError(t, err)
+	require.NoError(t, c.Start(t.Context()))
+	t.Cleanup(func() { _ = c.Close() })
+	_, err = c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
+	require.NoError(t, err)
+	require.NoError(t, c.SendNotification(t.Context(), mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/initialized"}))
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"GET Bearer from-header-func", "POST Bearer from-header-func", "POST Bearer from-header-func"}, sent)
+}
