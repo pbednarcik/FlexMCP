@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -310,7 +311,11 @@ func (c *Client) currentLogLevel() mcp.LoggingLevel {
 // transport's own copy never stands in for it: a probe sets that copy to
 // the version it tries while requests of the era in effect are in flight,
 // and a probe goes out before any version was negotiated.
-func (c *Client) applyStandardHeaders(e *era, header http.Header, method string, params any) http.Header {
+//
+// given is params as the caller gave them, before applyRequestMeta: a
+// tools/call names its tool there, so the name is not decoded back out of
+// params.
+func (c *Client) applyStandardHeaders(e *era, header http.Header, method string, params, given any) http.Header {
 	if e.version == "" {
 		return header
 	}
@@ -335,7 +340,16 @@ func (c *Client) applyStandardHeaders(e *era, header http.Header, method string,
 		}
 	}
 
-	standard := mcp.StandardHeaders(e.version, mcp.MCPMethod(method), encoded)
+	name, named := toolCallName(method, given)
+	var standard map[string]string
+	if named {
+		standard = map[string]string{mcp.HeaderMethod: method}
+		if value, ok := mcp.EncodeHeaderValue(name); ok {
+			standard[mcp.HeaderName] = value
+		}
+	} else {
+		standard = mcp.StandardHeaders(e.version, mcp.MCPMethod(method), encoded)
+	}
 	if header == nil {
 		header = make(http.Header, len(standard)+1)
 	} else {
@@ -349,7 +363,13 @@ func (c *Client) applyStandardHeaders(e *era, header http.Header, method string,
 	// Tool parameters annotated with x-mcp-header must be mirrored into
 	// Mcp-Param-* headers so gateways can route on them.
 	if mcp.MCPMethod(method) == mcp.MethodToolsCall {
-		if tool := c.toolForCall(encoded); tool != nil {
+		var tool *mcp.Tool
+		if named {
+			tool = c.toolNamed(name)
+		} else {
+			tool = c.toolForCall(encoded)
+		}
+		if tool != nil {
 			for name, value := range mcp.GenerateParamHeaders(tool, encoded) {
 				header.Set(name, value)
 			}
@@ -365,12 +385,36 @@ func (c *Client) toolForCall(params json.RawMessage) *mcp.Tool {
 	var call struct {
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(params, &call); err != nil || call.Name == "" {
+	if err := json.Unmarshal(params, &call); err != nil {
+		return nil
+	}
+	return c.toolNamed(call.Name)
+}
+
+// toolCallName returns the tool a tools/call names, when its params are
+// still the typed mcp.CallToolParams. A name that is not valid UTF-8 is not
+// returned: encoding replaces its invalid bytes, and the Mcp-Name header
+// must name what the body says.
+func toolCallName(method string, params any) (string, bool) {
+	if mcp.MCPMethod(method) != mcp.MethodToolsCall {
+		return "", false
+	}
+	call, ok := params.(mcp.CallToolParams)
+	if !ok || !utf8.ValidString(call.Name) {
+		return "", false
+	}
+	return call.Name, true
+}
+
+// toolNamed returns the cached definition of the tool named name, or nil
+// when the client has not listed it.
+func (c *Client) toolNamed(name string) *mcp.Tool {
+	if name == "" {
 		return nil
 	}
 	c.toolsMu.RLock()
 	defer c.toolsMu.RUnlock()
-	tool, ok := c.knownTools[call.Name]
+	tool, ok := c.knownTools[name]
 	if !ok {
 		return nil
 	}

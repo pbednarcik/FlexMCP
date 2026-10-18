@@ -283,8 +283,9 @@ func (c *Client) sendRequestIn(
 	// identity, and client capabilities in the _meta of every request, and
 	// mirrors the method and name into HTTP headers (SEP-2575, SEP-2243).
 	// Both are no-ops on legacy connections.
+	given := params
 	params = c.applyRequestMeta(e, params)
-	header = c.applyStandardHeaders(e, header, method, params)
+	header = c.applyStandardHeaders(e, header, method, params, given)
 
 	id := c.requestID.Add(1)
 
