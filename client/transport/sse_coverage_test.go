@@ -232,12 +232,13 @@ func TestSSE_SendRequest_UnauthorizedWithoutOAuth(t *testing.T) {
 }
 
 // TestSSE_SendRequest_ServerError verifies a 500 response is surfaced with the
-// status code in the error.
+// status code and the body the server sent in the error.
 func TestSSE_SendRequest_ServerError(t *testing.T) {
 	sse := newBareSSE()
 	sse.started.Store(true)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("the database is down"))
 	}))
 	defer server.Close()
 	sse.endpoint = mustURL(t, server.URL)
@@ -245,7 +246,7 @@ func TestSSE_SendRequest_ServerError(t *testing.T) {
 	_, err := sse.SendRequest(t.Context(), JSONRPCRequest{
 		JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)),
 	})
-	require.ErrorContains(t, err, "request failed with status 500")
+	require.EqualError(t, err, "request failed with status 500: the database is down")
 }
 
 // TestSSE_SendRequest_DeadlineAlreadyPassed verifies a request whose context

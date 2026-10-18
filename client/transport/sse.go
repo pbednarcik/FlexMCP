@@ -778,8 +778,15 @@ func (c *SSE) SendRequest(
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	// Drain any outstanding io
-	body, err := io.ReadAll(resp.Body)
+	// Drain the body: its answer comes on the stream, so a 200 or 202 body is
+	// read to its end and dropped, and only an error status keeps it, for
+	// the error's text.
+	var body []byte
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted {
+		_, err = io.Copy(io.Discard, resp.Body)
+	} else {
+		body, err = io.ReadAll(resp.Body)
+	}
 	resp.Body.Close()
 
 	if err != nil {
