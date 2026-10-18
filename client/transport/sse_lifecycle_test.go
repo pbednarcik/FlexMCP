@@ -54,7 +54,7 @@ func TestSSE_HandleSSEEvent_PerAttemptEndpointIsolation(t *testing.T) {
 
 	first := make(chan struct{})
 	firstOnce := &sync.Once{}
-	sse.handleSSEEvent("endpoint", endpointData, first, firstOnce)
+	sse.handleSSEEvent("endpoint", endpointData, first, firstOnce, 0)
 	select {
 	case <-first:
 	default:
@@ -63,7 +63,7 @@ func TestSSE_HandleSSEEvent_PerAttemptEndpointIsolation(t *testing.T) {
 
 	second := make(chan struct{})
 	secondOnce := &sync.Once{}
-	sse.handleSSEEvent("endpoint", endpointData, second, secondOnce)
+	sse.handleSSEEvent("endpoint", endpointData, second, secondOnce, 0)
 	select {
 	case <-second:
 	default:
@@ -80,7 +80,7 @@ func TestSSE_HandleSSEEvent_PerAttemptEndpointIsolation(t *testing.T) {
 
 	// A proxy re-sending the endpoint for the same attempt must not panic.
 	require.NotPanics(t, func() {
-		sse.handleSSEEvent("endpoint", endpointData, first, firstOnce)
+		sse.handleSSEEvent("endpoint", endpointData, first, firstOnce, 0)
 	})
 }
 

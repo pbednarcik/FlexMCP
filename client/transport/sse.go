@@ -367,7 +367,7 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 					if event == "" {
 						event = "message"
 					}
-					c.handleSSEEvent(event, data, endpointChan, endpointOnce)
+					c.handleSSEEvent(event, data, endpointChan, endpointOnce, attempt)
 				}
 			}
 			// A stream an earlier attempt opened ends nothing a later one
@@ -409,7 +409,7 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 				if event == "" {
 					event = "message"
 				}
-				c.handleSSEEvent(event, data, endpointChan, endpointOnce)
+				c.handleSSEEvent(event, data, endpointChan, endpointOnce, attempt)
 				event = ""
 				data = ""
 			}
@@ -475,7 +475,13 @@ func appendSSEData(existing, line string) string {
 
 // handleSSEEvent processes SSE events based on their type.
 // Handles 'endpoint' events for connection setup and 'message' events for JSON-RPC communication.
-func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, endpointOnce *sync.Once) {
+// attempt is the Start attempt whose stream carried the event: once a later
+// attempt has begun, the event is dropped, so a superseded reader neither
+// replaces the endpoint nor dispatches what it had already read.
+func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, endpointOnce *sync.Once, attempt uint64) {
+	if c.attempt.Load() != attempt {
+		return
+	}
 	switch event {
 	case "endpoint":
 		endpoint, err := c.baseURL.Parse(data)
@@ -491,7 +497,14 @@ func (c *SSE) handleSSEEvent(event, data string, endpointChan chan struct{}, end
 			c.logger.Error("Endpoint origin does not match connection origin")
 			return
 		}
+		// Checked again under mu: a later attempt is begun before its reader
+		// runs, so a reader of an earlier one that gets here after the later
+		// reader published its endpoint sees that it is superseded.
 		c.mu.Lock()
+		if c.attempt.Load() != attempt {
+			c.mu.Unlock()
+			return
+		}
 		c.endpoint = endpoint
 		c.mu.Unlock()
 		// The SSE spec sends a single endpoint event, but a proxy or a

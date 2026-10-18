@@ -1840,7 +1840,7 @@ func TestSSE_CloseConcurrentWithMessageDoesNotPanic(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		close(entering)
-		trans.handleSSEEvent("message", msg, make(chan struct{}), &sync.Once{})
+		trans.handleSSEEvent("message", msg, make(chan struct{}), &sync.Once{}, 0)
 	}()
 
 	// Wait until the sender owns trans.mu: TryLock fails exactly while the

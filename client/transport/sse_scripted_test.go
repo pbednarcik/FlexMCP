@@ -305,3 +305,50 @@ func TestSSE_HeaderFuncWinsOverOAuthOnEveryRequest(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, []string{"GET Bearer from-header-func", "POST Bearer from-header-func", "POST Bearer from-header-func"}, sent)
 }
+
+// A Start attempt that timed out leaves its reader behind, holding what it
+// had already read. Nothing that reader dispatches after a later attempt
+// has started reaches the transport: not its endpoint, which would send
+// every later request to the dead stream's, and not its messages.
+func TestSSE_ASupersededReaderDispatchesNothing(t *testing.T) {
+	var gets atomic.Int32
+	entered, release := make(chan struct{}), make(chan struct{})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if gets.Add(1) == 1 {
+			_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"test/block\"}\n\n"+
+				"event: endpoint\ndata: /old/message\n\n"+
+				"event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"test/stale\"}\n\n")
+		} else {
+			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /new/message\n\n")
+		}
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(httpServer.Close)
+	c, err := NewSSE(httpServer.URL, WithEndpointTimeout(100*time.Millisecond))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	var stale atomic.Bool
+	c.SetNotificationHandler(func(n mcp.JSONRPCNotification) {
+		switch n.Method {
+		case "test/block":
+			close(entered)
+			<-release
+		case "test/stale":
+			stale.Store(true)
+		}
+	})
+
+	first := make(chan error, 1)
+	go func() { first <- c.Start(t.Context()) }()
+	<-entered
+	require.Error(t, <-first, "the first attempt should time out waiting for its endpoint")
+	require.NoError(t, c.Start(t.Context()))
+	require.Equal(t, "/new/message", c.GetEndpoint().Path)
+
+	close(release)
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, "/new/message", c.GetEndpoint().Path, "the superseded reader replaced the endpoint")
+	assert.False(t, stale.Load(), "the superseded reader dispatched a message")
+}
