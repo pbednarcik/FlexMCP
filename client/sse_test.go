@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,18 +20,28 @@ import (
 // legacySSEServer is the smallest HTTP+SSE (2024-11-05) server: GET /sse opens
 // the stream and names /message as the endpoint, and every POSTed request is
 // answered on the stream. It answers initialize and nothing else, and records
-// the headers of every POST and the Host of every request.
+// the headers of every POST and the Host of every request. A request for a
+// silent method is never answered. Every POSTed message is recorded.
 type legacySSEServer struct {
 	*httptest.Server
-	stream  chan string
-	mu      sync.Mutex
-	headers []http.Header
-	hosts   []string
+	stream   chan string
+	silent   []string
+	mu       sync.Mutex
+	headers  []http.Header
+	hosts    []string
+	messages []postedMessage
 }
 
-func newLegacySSEServer(t *testing.T) *legacySSEServer {
+// postedMessage is a message a client POSTed.
+type postedMessage struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+func newLegacySSEServer(t *testing.T, silent ...string) *legacySSEServer {
 	t.Helper()
-	s := &legacySSEServer{stream: make(chan string, 16)}
+	s := &legacySSEServer{stream: make(chan string, 16), silent: silent}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /sse", func(w http.ResponseWriter, r *http.Request) {
 		s.recordHost(r)
@@ -53,16 +64,16 @@ func newLegacySSEServer(t *testing.T) *legacySSEServer {
 		s.mu.Lock()
 		s.headers = append(s.headers, r.Header.Clone())
 		s.mu.Unlock()
-		var request struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-		}
+		var request postedMessage
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		s.mu.Lock()
+		s.messages = append(s.messages, request)
+		s.mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
-		if len(request.ID) == 0 {
+		if len(request.ID) == 0 || slices.Contains(s.silent, request.Method) {
 			return
 		}
 		if request.Method == string(mcp.MethodInitialize) {
@@ -86,6 +97,12 @@ func (s *legacySSEServer) postHeaders() []http.Header {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]http.Header(nil), s.headers...)
+}
+
+func (s *legacySSEServer) postedMessages() []postedMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]postedMessage(nil), s.messages...)
 }
 
 func (s *legacySSEServer) requestHosts() []string {

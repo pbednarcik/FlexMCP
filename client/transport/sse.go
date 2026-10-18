@@ -783,7 +783,7 @@ func (c *SSE) SendRequest(
 	case <-timer.C:
 		// Timeout handling
 		deleteResponseChan()
-		return nil, fmt.Errorf("timeout waiting for SSE response after %v", responseTimeout)
+		return nil, fmt.Errorf("timeout waiting for SSE response after %v: %w", responseTimeout, context.DeadlineExceeded)
 	case response, ok := <-responseChan:
 		if ok {
 			return response, nil

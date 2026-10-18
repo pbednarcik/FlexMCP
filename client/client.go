@@ -296,8 +296,14 @@ func (c *Client) sendRequestIn(
 
 	response, err := c.transport.SendRequest(ctx, request)
 	if err != nil {
-		if ctx.Err() != nil {
-			c.cancelRequest(ctx, request)
+		// A transport's own timeout ends the wait as the context's deadline
+		// would, and is cancelled the same way.
+		reason := ctx.Err()
+		if reason == nil && errors.Is(err, context.DeadlineExceeded) {
+			reason = context.DeadlineExceeded
+		}
+		if reason != nil {
+			c.cancelRequest(ctx, request, reason)
 		}
 		err = transport.NewError(err)
 		endSendSpan(span, err)
@@ -315,8 +321,8 @@ func (c *Client) sendRequestIn(
 }
 
 // cancelRequest tells the server to stop working on a request whose context
-// ended before the response arrived, with a notifications/cancelled that
-// references it. Over stdio that is the only way to cancel a request, and
+// ended, or that timed out, before the response arrived, with a
+// notifications/cancelled that references it and gives reason. Over stdio that is the only way to cancel a request, and
 // protocol version 2026-07-28 requires it there.
 //
 // Over HTTP on protocol version 2026-07-28 nothing is sent: the transport
@@ -325,7 +331,7 @@ func (c *Client) sendRequestIn(
 // handshake is left alone, since initialize must not be cancelled and
 // nothing else is sent before it completes, and so are task-augmented
 // requests, which are cancelled with tasks/cancel instead.
-func (c *Client) cancelRequest(ctx context.Context, request transport.JSONRPCRequest) {
+func (c *Client) cancelRequest(ctx context.Context, request transport.JSONRPCRequest, reason error) {
 	if !c.initialized.Load() ||
 		request.Method == string(mcp.MethodInitialize) ||
 		request.Method == string(mcp.MethodServerDiscover) ||
@@ -339,10 +345,10 @@ func (c *Client) cancelRequest(ctx context.Context, request transport.JSONRPCReq
 		JSONRPC: mcp.JSONRPC_VERSION,
 		Method:  string(mcp.MethodNotificationCancelled),
 		Params: mcp.NotificationParams{
-			AdditionalFields: map[string]any{"requestId": request.ID, "reason": ctx.Err().Error()},
+			AdditionalFields: map[string]any{"requestId": request.ID, "reason": reason.Error()},
 		},
 	}
-	// The request's context has ended, so send with one of our own, and off
+	// The request's context may have ended, so send with one of our own, and off
 	// the caller's path: the caller already has its error, and a peer that
 	// doesn't read must not hold it up. The notification is best effort.
 	ctx = context.WithoutCancel(ctx)

@@ -352,3 +352,40 @@ func TestClient_CancellationNotificationOverLegacyHTTP(t *testing.T) {
 		t.Fatalf("no notifications/cancelled reached the server; it saw %v", methods)
 	}
 }
+
+// A request the SSE transport's response timeout ends, while the caller's
+// context is still live, is cancelled on the server as one whose context
+// ended is: the server would otherwise keep working on it for no one.
+func TestClient_CancelsARequestTheSSEResponseTimeoutEnds(t *testing.T) {
+	srv := newLegacySSEServer(t, string(mcp.MethodToolsCall))
+	c, err := NewSSEMCPClient(srv.URL+"/sse", transport.WithResponseTimeout(200*time.Millisecond))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	require.NoError(t, c.Start(t.Context()))
+	_, err = c.Initialize(t.Context(), mcp.InitializeRequest{})
+	require.NoError(t, err)
+
+	_, err = c.CallTool(t.Context(), mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "slow"}})
+	require.Error(t, err)
+	require.NoError(t, t.Context().Err())
+
+	var call, cancelled *postedMessage
+	require.Eventually(t, func() bool {
+		for _, m := range srv.postedMessages() {
+			switch m.Method {
+			case string(mcp.MethodToolsCall):
+				call = &m
+			case string(mcp.MethodNotificationCancelled):
+				cancelled = &m
+			}
+		}
+		return call != nil && cancelled != nil
+	}, 2*time.Second, 10*time.Millisecond, "no notifications/cancelled reached the server")
+	var params struct {
+		RequestID json.RawMessage `json:"requestId"`
+		Reason    string          `json:"reason"`
+	}
+	require.NoError(t, json.Unmarshal(cancelled.Params, &params))
+	assert.JSONEq(t, string(call.ID), string(params.RequestID))
+	assert.Equal(t, context.DeadlineExceeded.Error(), params.Reason)
+}
