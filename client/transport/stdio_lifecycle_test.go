@@ -171,3 +171,17 @@ func TestStdio_ANotificationHandlerMaySetTheHandler(t *testing.T) {
 		t.Fatal("the read loop deadlocked in a handler that set the handler")
 	}
 }
+
+// A command that fails to start leaves the transport as it was before Start:
+// a send is refused as not started, and Close has nothing to close. Before,
+// the pipes the failed start had already closed were kept, so a send failed
+// writing to one and Close failed closing it.
+func TestStdio_AFailedStartLeavesNothingBehind(t *testing.T) {
+	stdio := NewStdio("flexmcp-no-such-command", nil)
+	require.Error(t, stdio.Start(t.Context()))
+
+	_, err := stdio.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "ping"})
+	require.ErrorIs(t, err, ErrTransportNotStarted)
+	require.ErrorIs(t, stdio.SendNotification(t.Context(), mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/initialized"}), ErrTransportNotStarted)
+	require.NoError(t, stdio.Close())
+}

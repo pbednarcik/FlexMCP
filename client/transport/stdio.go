@@ -339,14 +339,16 @@ func (c *Stdio) spawnCommand(ctx context.Context) error {
 		}
 	}
 
+	// A failed start closes the pipes itself, so the transport keeps them,
+	// and the child, only once it runs.
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start command: %w", err)
+	}
+
 	c.cmd = cmd
 	c.stdin = stdin
 	c.stderr = stderr
 	c.stdout = bufio.NewReader(stdout)
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start command: %w", err)
-	}
 
 	// Drain stderr continuously so the subprocess can never deadlock on a
 	// full pipe (see startStderrDrain).
