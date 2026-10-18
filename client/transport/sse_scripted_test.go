@@ -510,3 +510,36 @@ func TestSSE_AResponseReachesItsRequestAsSent(t *testing.T) {
 		})
 	}
 }
+
+// A later endpoint event on the stream, as a proxy that re-sends it may
+// emit, moves the POSTs that follow it: each goes to the endpoint last named.
+func TestSSE_POSTsFollowTheEndpointLastNamed(t *testing.T) {
+	server := newScriptedSSEServer()
+	var mu sync.Mutex
+	var paths []string
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			mu.Lock()
+			paths = append(paths, r.URL.Path)
+			mu.Unlock()
+		}
+		server.ServeHTTP(w, r)
+	}))
+	t.Cleanup(httpServer.Close)
+	c, err := NewSSE(httpServer.URL)
+	require.NoError(t, err)
+	require.NoError(t, c.Start(t.Context()))
+	t.Cleanup(func() { _ = c.Close() })
+	notify := func() {
+		require.NoError(t, c.SendNotification(t.Context(), mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/initialized"}))
+	}
+
+	notify()
+	server.events <- "event: endpoint\ndata: /moved\n\n"
+	require.Eventually(t, func() bool { return c.GetEndpoint().Path == "/moved" }, 2*time.Second, 5*time.Millisecond)
+	notify()
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"/message", "/moved"}, paths)
+}

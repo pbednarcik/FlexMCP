@@ -26,8 +26,10 @@ import (
 // while sending requests over regular HTTP POST calls. The client handles
 // automatic reconnection and message routing between requests and responses.
 type SSE struct {
-	baseURL        *url.URL
-	endpoint       *url.URL
+	baseURL  *url.URL
+	endpoint *url.URL
+	// endpointURL is endpoint's String, made once when it is set.
+	endpointURL    string
 	httpClient     *http.Client
 	responses      map[responseKey]chan *JSONRPCResponse
 	mu             sync.RWMutex
@@ -550,7 +552,7 @@ func (c *SSE) handleSSEEvent(event string, data []byte, endpointChan chan struct
 			c.mu.Unlock()
 			return
 		}
-		c.endpoint = endpoint
+		c.endpoint, c.endpointURL = endpoint, endpoint.String()
 		c.mu.Unlock()
 		// The SSE spec sends a single endpoint event, but a proxy or a
 		// re-broadcasting server can emit it more than once. Closing the
@@ -694,7 +696,7 @@ func (c *SSE) SendRequest(
 	}
 
 	c.mu.RLock()
-	endpoint, stream := c.endpoint, c.stream
+	endpoint, target, stream := c.endpoint, c.endpointURL, c.stream
 	c.mu.RUnlock()
 
 	if endpoint == nil {
@@ -717,7 +719,7 @@ func (c *SSE) SendRequest(
 	}
 
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, endpoint.String(), bytes.NewReader(requestBytes))
+	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, endpointTarget(endpoint, target), bytes.NewReader(requestBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -918,7 +920,7 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 	}
 
 	c.mu.RLock()
-	endpoint, stream := c.endpoint, c.stream
+	endpoint, target, stream := c.endpoint, c.endpointURL, c.stream
 	c.mu.RUnlock()
 
 	if endpoint == nil {
@@ -936,7 +938,7 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 	req, err := http.NewRequestWithContext(
 		postCtx,
 		"POST",
-		endpoint.String(),
+		endpointTarget(endpoint, target),
 		bytes.NewReader(body),
 	)
 	if err != nil {
@@ -1018,6 +1020,16 @@ func (c *SSE) setHeaders(ctx context.Context, req *http.Request) error {
 		}
 	}
 	return nil
+}
+
+// endpointTarget is the URL a POST to endpoint goes to: target, the string
+// made when the endpoint was set, or, for an endpoint set without it, its
+// String.
+func endpointTarget(endpoint *url.URL, target string) string {
+	if target == "" {
+		return endpoint.String()
+	}
+	return target
 }
 
 // GetEndpoint returns the current endpoint URL for the SSE connection.
