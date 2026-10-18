@@ -1,16 +1,20 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -247,4 +251,17 @@ func TestSSE_ANotificationAfterTheEndIsRefused(t *testing.T) {
 		assert.ErrorIs(t, c.SendNotification(t.Context(), notification), ErrTransportClosed)
 		assert.Zero(t, server.posts.Load(), "the notification was posted on an ended stream")
 	})
+}
+
+// A stream that fails with a read error other than EOF, on a transport with
+// no lost-connection handler, is logged as an ended one is: nothing else
+// tells the caller why the stream stopped.
+func TestSSE_AReadErrorIsLoggedWithoutAHandler(t *testing.T) {
+	var logged bytes.Buffer
+	c, err := NewSSE("http://127.0.0.1:1/sse", WithSSELogger(slog.New(slog.NewTextHandler(&logged, nil))))
+	require.NoError(t, err)
+	c.started.Store(true)
+
+	c.readSSE(io.NopCloser(iotest.ErrReader(errors.New("connection reset by peer"))), make(chan struct{}), &sync.Once{}, 0)
+	assert.Contains(t, logged.String(), "connection reset by peer")
 }

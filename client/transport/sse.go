@@ -418,7 +418,7 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			if handler != nil {
 				// Notify that the connection will be closed due to an error
 				handler(err)
-			} else if err == io.EOF {
+			} else {
 				c.logger.Error("SSE stream error", "err", err)
 			}
 			return
