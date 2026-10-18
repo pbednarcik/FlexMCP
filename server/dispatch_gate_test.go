@@ -162,3 +162,18 @@ func TestDispatchTaskMethodsBehindTheirSubCapabilities(t *testing.T) {
 	assert.True(t, listed, "tasks/list with tasks.list")
 	assert.NotEqual(t, mcp.METHOD_NOT_FOUND, dispatch(t, with, mcp.MethodTasksCancel, `{"taskId":"unknown"}`).Code, "tasks/cancel with tasks.cancel")
 }
+
+// The last WithTaskCapabilities wins for dispatch as it does for what is
+// advertised: one that turns tasks.list and tasks.cancel off after an
+// earlier one turned them on stops serving them.
+func TestDispatchTaskSubCapabilitiesFollowTheLastOption(t *testing.T) {
+	srv := NewMCPServer("tasks", "1.0.0", WithTaskCapabilities(true, true, true), WithTaskCapabilities(false, false, true))
+	for method, capability := range map[mcp.MCPMethod]string{
+		mcp.MethodTasksList:   "tasks.list",
+		mcp.MethodTasksCancel: "tasks.cancel",
+	} {
+		details := dispatch(t, srv, method, `{"taskId":"unknown"}`)
+		assert.Equal(t, mcp.METHOD_NOT_FOUND, details.Code, "%s", method)
+		assert.Equal(t, capability+" not supported", details.Message, "%s", method)
+	}
+}

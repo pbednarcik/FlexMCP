@@ -221,6 +221,16 @@ func (s *MCPServer) markServed(group capabilityGroup) {
 	s.served.Or(uint32(group))
 }
 
+// setServed records whether the server has the capability group, for a
+// group a later option can turn off again.
+func (s *MCPServer) setServed(group capabilityGroup, on bool) {
+	if on {
+		s.served.Or(uint32(group))
+	} else {
+		s.served.And(^uint32(group))
+	}
+}
+
 // resourceCapabilities defines the supported resource-related features
 type resourceCapabilities struct {
 	listChanged bool
