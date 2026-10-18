@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -184,4 +185,60 @@ func TestStdio_AFailedStartLeavesNothingBehind(t *testing.T) {
 	require.ErrorIs(t, err, ErrTransportNotStarted)
 	require.ErrorIs(t, stdio.SendNotification(t.Context(), mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/initialized"}), ErrTransportNotStarted)
 	require.NoError(t, stdio.Close())
+}
+
+// writeSignal is the child's stdin, signalling each line written to it.
+type writeSignal chan struct{}
+
+func (w writeSignal) Write(p []byte) (int, error) {
+	w <- struct{}{}
+	return len(p), nil
+}
+
+func (writeSignal) Close() error { return nil }
+
+// Each line read is its own message: nothing of one carries into the next.
+// A response after a notification is still a response, not a request with
+// the notification's method, and a result after an error response has no
+// error.
+func TestStdio_EachLineIsReadOnItsOwn(t *testing.T) {
+	serverOut, toClient := io.Pipe()
+	t.Cleanup(func() { _ = toClient.Close() })
+	written := make(writeSignal, 2)
+	stdio := NewIO(serverOut, written, nil)
+	notified := make(chan struct{}, 1)
+	stdio.SetNotificationHandler(func(mcp.JSONRPCNotification) { notified <- struct{}{} })
+	require.NoError(t, stdio.Start(t.Context()))
+	t.Cleanup(func() { _ = stdio.Close() })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	type answer struct {
+		response *JSONRPCResponse
+		err      error
+	}
+	answers := make([]chan answer, 2)
+	for i := range answers {
+		answers[i] = make(chan answer, 1)
+		go func() {
+			response, err := stdio.SendRequest(ctx, JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(i + 1)), Method: "ping"})
+			answers[i] <- answer{response, err}
+		}()
+		<-written
+	}
+	_, err := fmt.Fprint(toClient,
+		`{"jsonrpc":"2.0","method":"notifications/progress","params":{}}`+"\n"+
+			`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"nope"}}`+"\n"+
+			`{"jsonrpc":"2.0","id":2,"result":{}}`+"\n")
+	require.NoError(t, err)
+
+	<-notified
+	first := <-answers[0]
+	require.NoError(t, first.err)
+	require.NotNil(t, first.response.Error)
+	assert.Equal(t, "nope", first.response.Error.Message)
+	second := <-answers[1]
+	require.NoError(t, second.err)
+	assert.Nil(t, second.response.Error, "the result carried the error before it")
+	assert.JSONEq(t, `{}`, string(second.response.Result))
 }

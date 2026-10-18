@@ -564,8 +564,18 @@ func (c *Stdio) SetRequestHandler(handler RequestHandler) {
 // to Start() that the transport is actively processing responses.
 func (c *Stdio) readResponses(ready chan struct{}) {
 	// Each line is read into buf, reused from line to line: every decode
-	// below copies what it keeps.
+	// below copies what it keeps. The envelope each line is first decoded
+	// into is made once and emptied for every line, as json.Unmarshal would
+	// otherwise make it on the heap for each.
 	var buf []byte
+	type envelope struct {
+		JSONRPC jsonrpcVersion  `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id,omitempty"`
+		Method  jsonrpc.Method  `json:"method"`
+		Result  json.RawMessage `json:"result,omitempty"`
+		Error   json.RawMessage `json:"error,omitempty"`
+	}
+	baseMessage := new(envelope)
 	for {
 		// Signal readiness on the first iteration, inside the loop, so that
 		// Start() only unblocks after the reader is actively processing.
@@ -593,14 +603,8 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 			}
 
 			// First try to parse as a generic message to check for ID field
-			var baseMessage struct {
-				JSONRPC jsonrpcVersion  `json:"jsonrpc"`
-				ID      json.RawMessage `json:"id,omitempty"`
-				Method  jsonrpc.Method  `json:"method"`
-				Result  json.RawMessage `json:"result,omitempty"`
-				Error   json.RawMessage `json:"error,omitempty"`
-			}
-			if err := json.Unmarshal(encoded, &baseMessage); err != nil {
+			*baseMessage = envelope{}
+			if err := json.Unmarshal(encoded, baseMessage); err != nil {
 				continue
 			}
 			// The id is a value as the decoder gave it, so it is read by its
