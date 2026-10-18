@@ -58,9 +58,13 @@ type SSE struct {
 	attempt atomic.Uint64
 	ended   atomic.Bool
 	// answers bounds the answers to server requests; Close cancels it.
-	answers          context.Context
-	stopAnswers      context.CancelFunc
-	cancelSSEStream  context.CancelFunc
+	answers         context.Context
+	stopAnswers     context.CancelFunc
+	cancelSSEStream context.CancelFunc
+	// stream is the current attempt's stream context: it ends when the
+	// stream does, or Close runs, and every POST ends with it. Set under mu,
+	// beside endpoint.
+	stream           context.Context
 	protocolVersion  atomic.Value // string
 	onConnectionLost func(error)
 	connectionLostMu sync.RWMutex
@@ -250,6 +254,9 @@ func (c *SSE) start(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancelSSEStream = cancel
+	c.mu.Lock()
+	c.stream = ctx
+	c.mu.Unlock()
 	attempt := c.attempt.Add(1)
 	c.ended.Store(false)
 	c.lifecycleMu.Unlock()
@@ -376,13 +383,19 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			// by Start's error otherwise.
 			c.lifecycleMu.Lock()
 			current := c.attempt.Load() == attempt
+			var endStream context.CancelFunc
 			if current {
 				c.ended.Store(true)
+				endStream = c.cancelSSEStream
 			}
 			started := current && c.started.Load()
 			c.lifecycleMu.Unlock()
 			if !current {
 				return
+			}
+			// The POSTs sent on this stream end with it.
+			if endStream != nil {
+				endStream()
 			}
 			c.failPending()
 			if !started {
@@ -438,6 +451,18 @@ func (c *SSE) failPending() {
 
 // errStreamEnded is the error of a request sent after the stream ended.
 var errStreamEnded = fmt.Errorf("the SSE stream has ended: %w", ErrTransportClosed)
+
+// streamError is the error of a message sent, or cut short, once the
+// transport has closed or its stream has ended; nil while the stream lives.
+func (c *SSE) streamError() error {
+	if c.closed.Load() {
+		return errSSEClosed
+	}
+	if c.ended.Load() {
+		return errStreamEnded
+	}
+	return nil
+}
 
 // closedError is an error that reads as its own text and is
 // ErrTransportClosed to errors.Is.
@@ -632,7 +657,7 @@ func (c *SSE) SendRequest(
 	}
 
 	c.mu.RLock()
-	endpoint := c.endpoint
+	endpoint, stream := c.endpoint, c.stream
 	c.mu.RUnlock()
 
 	if endpoint == nil {
@@ -645,8 +670,17 @@ func (c *SSE) SendRequest(
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// The POST ends with its stream: a server that ends the stream, or a
+	// Close, does not leave it waiting for the response headers.
+	postCtx, cancelPost := context.WithCancel(ctx)
+	defer cancelPost()
+	if stream != nil {
+		stop := context.AfterFunc(stream, cancelPost)
+		defer stop()
+	}
+
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(requestBytes))
+	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, endpoint.String(), bytes.NewReader(requestBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -702,6 +736,9 @@ func (c *SSE) SendRequest(
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		deleteResponseChan()
+		if streamErr := c.streamError(); streamErr != nil {
+			return nil, streamErr
+		}
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
@@ -711,6 +748,9 @@ func (c *SSE) SendRequest(
 
 	if err != nil {
 		deleteResponseChan()
+		if streamErr := c.streamError(); streamErr != nil {
+			return nil, streamErr
+		}
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
@@ -830,23 +870,28 @@ func (c *SSE) answer(response *JSONRPCResponse) {
 // post sends one message, a notification or a response, to the endpoint;
 // what names it in errors.
 func (c *SSE) post(ctx context.Context, body []byte, what string) error {
-	if c.closed.Load() {
-		return errSSEClosed
-	}
-	if c.ended.Load() {
-		return errStreamEnded
+	if err := c.streamError(); err != nil {
+		return err
 	}
 
 	c.mu.RLock()
-	endpoint := c.endpoint
+	endpoint, stream := c.endpoint, c.stream
 	c.mu.RUnlock()
 
 	if endpoint == nil {
 		return errors.New("endpoint not received")
 	}
 
+	// The POST ends with its stream, as a request's does.
+	postCtx, cancelPost := context.WithCancel(ctx)
+	defer cancelPost()
+	if stream != nil {
+		stop := context.AfterFunc(stream, cancelPost)
+		defer stop()
+	}
+
 	req, err := http.NewRequestWithContext(
-		ctx,
+		postCtx,
 		"POST",
 		endpoint.String(),
 		bytes.NewReader(body),
@@ -876,6 +921,9 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if streamErr := c.streamError(); streamErr != nil {
+			return streamErr
+		}
 		return fmt.Errorf("failed to send %s: %w", what, err)
 	}
 	defer resp.Body.Close()

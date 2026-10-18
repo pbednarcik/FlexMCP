@@ -352,3 +352,77 @@ func TestSSE_ASupersededReaderDispatchesNothing(t *testing.T) {
 	assert.Equal(t, "/new/message", c.GetEndpoint().Path, "the superseded reader replaced the endpoint")
 	assert.False(t, stale.Load(), "the superseded reader dispatched a message")
 }
+
+// A POST the server has not answered yet ends with the stream it was sent
+// on: when the server ends the stream, or Close runs, a request or a
+// notification still waiting for the POST's response headers fails at once
+// with the transport's error, rather than waiting on a server that may never
+// answer it.
+func TestSSE_APOSTEndsWithItsStream(t *testing.T) {
+	cases := []struct {
+		name   string
+		send   func(t *testing.T, c *SSE) error
+		end    func(c *SSE, endStream chan struct{})
+		closed bool
+	}{
+		{"request, stream ends", sendPing, func(_ *SSE, endStream chan struct{}) { close(endStream) }, false},
+		{"request, Close", sendPing, func(c *SSE, _ chan struct{}) { _ = c.Close() }, true},
+		{"notification, stream ends", sendInitialized, func(_ *SSE, endStream chan struct{}) { close(endStream) }, false},
+		{"notification, Close", sendInitialized, func(c *SSE, _ chan struct{}) { _ = c.Close() }, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			endStream, posted, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprint(w, "event: endpoint\ndata: /message\n\n")
+					w.(http.Flusher).Flush()
+					select {
+					case <-endStream:
+					case <-r.Context().Done():
+					}
+					return
+				}
+				_, _ = io.Copy(io.Discard, r.Body)
+				close(posted)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			t.Cleanup(httpServer.Close)
+			t.Cleanup(func() { close(release) })
+			c, err := NewSSE(httpServer.URL)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+			require.NoError(t, c.Start(t.Context()))
+
+			done := make(chan error, 1)
+			go func() { done <- tc.send(t, c) }()
+			<-posted
+			tc.end(c, endStream)
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, ErrTransportClosed)
+				if tc.closed {
+					assert.EqualError(t, err, "transport has been closed")
+				} else {
+					assert.ErrorIs(t, err, errStreamEnded)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("the send outlived its stream, waiting on the POST")
+			}
+		})
+	}
+}
+
+func sendPing(t *testing.T, c *SSE) error {
+	_, err := c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "ping"})
+	return err
+}
+
+func sendInitialized(t *testing.T, c *SSE) error {
+	return c.SendNotification(t.Context(), mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/initialized"})
+}
