@@ -463,8 +463,21 @@ func (c *SSE) failPending() {
 // errStreamEnded is the error of a request sent after the stream ended.
 var errStreamEnded = fmt.Errorf("the SSE stream has ended: %w", ErrTransportClosed)
 
-// errSSEClosed is the error of a message sent after Close.
-var errSSEClosed = fmt.Errorf("transport has been closed: %w", ErrTransportClosed)
+// closedError is an error that reads as its own text and is
+// ErrTransportClosed to errors.Is.
+type closedError string
+
+func (e closedError) Error() string { return string(e) }
+
+func (closedError) Unwrap() error { return ErrTransportClosed }
+
+const (
+	// errSSEClosed is the error of a message sent after Close.
+	errSSEClosed closedError = "transport has been closed"
+	// errConnectionClosed is the error of a request whose answer can no
+	// longer arrive: Close ran, or the stream ended, while it waited.
+	errConnectionClosed closedError = "connection has been closed"
+)
 
 // appendSSEData joins the value of an SSE "data:" field onto any data already
 // accumulated for the current event. Per the Server-Sent Events specification,
@@ -623,7 +636,7 @@ func (c *SSE) SendRequest(
 		return nil, errors.New("transport not started yet")
 	}
 	if c.closed.Load() {
-		return nil, errors.New("transport has been closed")
+		return nil, errSSEClosed
 	}
 	if c.ended.Load() {
 		return nil, errStreamEnded
@@ -706,7 +719,7 @@ func (c *SSE) SendRequest(
 	c.mu.Lock()
 	if c.closed.Load() {
 		c.mu.Unlock()
-		return nil, errors.New("transport has been closed")
+		return nil, errSSEClosed
 	}
 	if c.ended.Load() {
 		c.mu.Unlock()
@@ -775,7 +788,7 @@ func (c *SSE) SendRequest(
 		if ok {
 			return response, nil
 		}
-		return nil, errors.New("connection has been closed")
+		return nil, errConnectionClosed
 	}
 }
 

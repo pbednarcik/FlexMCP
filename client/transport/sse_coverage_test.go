@@ -160,6 +160,7 @@ func TestSSE_SendRequest_Closed(t *testing.T) {
 		JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)),
 	})
 	require.EqualError(t, err, "transport has been closed")
+	require.ErrorIs(t, err, ErrTransportClosed)
 }
 
 // TestSSE_SendRequest_EndpointNotReceived verifies SendRequest fails with
@@ -357,6 +358,7 @@ func TestSSE_SendRequest_ResponseChanClosed(t *testing.T) {
 		JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)),
 	})
 	require.EqualError(t, err, "connection has been closed")
+	require.ErrorIs(t, err, ErrTransportClosed)
 }
 
 // TestSSE_SendNotification_MarshalError verifies SendNotification wraps JSON

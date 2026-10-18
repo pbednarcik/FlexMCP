@@ -171,7 +171,8 @@ func TestSSE_ACloseDuringSendRequestEndsIt(t *testing.T) {
 
 	begin := time.Now()
 	_, err := c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
-	require.Error(t, err)
+	require.EqualError(t, err, "transport has been closed")
+	assert.ErrorIs(t, err, ErrTransportClosed)
 	assert.Less(t, time.Since(begin), time.Second, "the request outlived the Close")
 	assert.Zero(t, server.posts.Load(), "the request was sent after Close")
 }
@@ -231,7 +232,9 @@ func TestSSE_ANotificationAfterTheEndIsRefused(t *testing.T) {
 		c := startedSSE(t, server)
 		require.NoError(t, c.Close())
 
-		assert.ErrorIs(t, c.SendNotification(t.Context(), notification), ErrTransportClosed)
+		err := c.SendNotification(t.Context(), notification)
+		assert.EqualError(t, err, "transport has been closed")
+		assert.ErrorIs(t, err, ErrTransportClosed)
 		assert.Zero(t, server.posts.Load(), "the notification was posted after Close")
 	})
 
