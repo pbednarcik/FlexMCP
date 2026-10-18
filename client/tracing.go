@@ -83,9 +83,20 @@ func (c *Client) startSendSpan(
 		propagator = tracing.NoopPropagator()
 	}
 
-	ctx, span := tracer.Start(ctx, "mcp."+method, tracing.SpanKindClient,
-		tracing.String(attrMethod, method),
-	)
+	// The no-op tracer names no span and the no-op propagator injects
+	// nothing: neither the name and attribute nor a header of the request's
+	// own is made for them.
+	var span tracing.Span
+	if tracer == tracing.NoopTracer() {
+		ctx, span = tracer.Start(ctx, method, tracing.SpanKindClient)
+	} else {
+		ctx, span = tracer.Start(ctx, "mcp."+method, tracing.SpanKindClient,
+			tracing.String(attrMethod, method),
+		)
+	}
+	if propagator == tracing.NoopPropagator() {
+		return ctx, header, span
+	}
 
 	if header == nil {
 		header = make(http.Header)
