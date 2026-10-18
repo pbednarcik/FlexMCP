@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
+	"go/format"
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -23,17 +24,10 @@ var requestHandlerTemplate string
 //go:embed dispatch_gates_test.go.tmpl
 var dispatchGatesTemplate string
 
+// RenderTemplateToFile renders the template with data and writes it, gofmt'd,
+// to fileName in destPath, or to stdout when destPath is "-". Each template
+// lists the imports its output uses, so formatting is all it needs.
 func RenderTemplateToFile(templateContent, destPath, fileName string, data any) error {
-	// Create temp file for initial output
-	tempFile, err := os.CreateTemp("", "hooks-*.go")
-	if err != nil {
-		return err
-	}
-	tempFilePath := tempFile.Name()
-	defer os.Remove(tempFilePath) // Clean up temp file when done
-	defer tempFile.Close()
-
-	// Parse and execute template to temp file
 	tmpl, err := template.New(fileName).Funcs(template.FuncMap{
 		"toLower": strings.ToLower,
 		"title":   func(s string) string { return strings.ToUpper(s[:1]) + s[1:] },
@@ -42,20 +36,13 @@ func RenderTemplateToFile(templateContent, destPath, fileName string, data any) 
 		return err
 	}
 
-	if err := tmpl.Execute(tempFile, data); err != nil {
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, data); err != nil {
 		return err
 	}
-
-	// Run goimports on the temp file
-	cmd := exec.Command("go", "run", "golang.org/x/tools/cmd/goimports@latest", "-w", tempFilePath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("goimports failed: %v\n%s", err, output)
-	}
-
-	// Read the processed content
-	processedContent, err := os.ReadFile(tempFilePath)
+	processedContent, err := format.Source(rendered.Bytes())
 	if err != nil {
-		return err
+		return fmt.Errorf("formatting %s: %w", fileName, err)
 	}
 
 	// Write the processed content to the destination
