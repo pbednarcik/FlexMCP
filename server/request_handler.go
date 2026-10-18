@@ -109,13 +109,18 @@ func (s *MCPServer) handleMessageRead(
 	}
 
 	// The request may be cancelled by notifications/cancelled: it is filed
-	// under its id for the life of the call. An id still in flight in the
-	// session is refused before any hook runs for it, and the request in
-	// flight is left alone (BaseProtocol.md row 4); the error hooks see the
-	// refusal.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// under its id for the life of the call, with a context of its own that
+	// the cancellation ends. An id still in flight in the session is refused
+	// before any hook runs for it, and the request in flight is left alone
+	// (BaseProtocol.md row 4); the error hooks see the refusal. A request
+	// with no session scope to file it under, a modern HTTP request, keeps
+	// the context it came with: closing its stream is its cancel, and its
+	// handler's context ends when the HTTP request's does, not when the
+	// handler returns.
 	if key, ok := inflightKey(ctx, baseMessage.ID); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
 		inflight := &inflightRequest{cancel: cancel}
 		if _, taken := s.inflightCancels.LoadOrStore(key, inflight); taken {
 			if ClientSessionFromContext(ctx) != nil {
