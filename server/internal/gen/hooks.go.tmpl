@@ -35,36 +35,36 @@ type OnSuccessHookFunc func(ctx context.Context, id any, method mcp.MCPMethod, m
 // See the Hooks type-level documentation for the pairing contract between
 // OnBeforeAny, OnSuccess, and OnError, including the cases in which OnError
 // may fire without a prior OnBeforeAny.
-// 
+//
 // Example usage:
-// ```
-// hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
-//   // Check for specific error types using errors.Is
-//   if errors.Is(err, ErrUnsupported) {
-//     // Handle capability not supported errors
-//     log.Printf("Capability not supported: %v", err)
-//   }
 //
-//   // Use errors.As to get specific error types
-//   var parseErr = &UnparsableMessageError{}
-//   if errors.As(err, &parseErr) {
-//     // Access specific methods/fields of the error type
-//     log.Printf("Failed to parse message for method %s: %v", 
-//                parseErr.GetMethod(), parseErr.Unwrap())
-//     // Access the raw message that failed to parse
-//     rawMsg := parseErr.GetMessage()
-//   }
+//	hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
+//		// Check for specific error types using errors.Is
+//		if errors.Is(err, ErrUnsupported) {
+//			// Handle capability not supported errors
+//			log.Printf("Capability not supported: %v", err)
+//		}
 //
-//   // Check for specific resource/prompt/tool errors
-//   switch {
-//   case errors.Is(err, ErrResourceNotFound):
-//     log.Printf("Resource not found: %v", err)
-//   case errors.Is(err, ErrPromptNotFound):
-//     log.Printf("Prompt not found: %v", err)
-//   case errors.Is(err, ErrToolNotFound):
-//     log.Printf("Tool not found: %v", err)
-//   }
-// })
+//		// Use errors.As to get specific error types
+//		var parseErr = &UnparsableMessageError{}
+//		if errors.As(err, &parseErr) {
+//			// Access specific methods/fields of the error type
+//			log.Printf("Failed to parse message for method %s: %v",
+//				parseErr.GetMethod(), parseErr.Unwrap())
+//			// Access the raw message that failed to parse
+//			rawMsg := parseErr.GetMessage()
+//		}
+//
+//		// Check for specific resource/prompt/tool errors
+//		switch {
+//		case errors.Is(err, ErrResourceNotFound):
+//			log.Printf("Resource not found: %v", err)
+//		case errors.Is(err, ErrPromptNotFound):
+//			log.Printf("Prompt not found: %v", err)
+//		case errors.Is(err, ErrToolNotFound):
+//			log.Printf("Tool not found: %v", err)
+//		}
+//	})
 type OnErrorHookFunc func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error)
 
 // OnRequestInitializationFunc is called before a request is dispatched to
@@ -75,7 +75,12 @@ type OnRequestInitializationFunc func(ctx context.Context, id any, message any) 
 
 
 {{range .}}
+// OnBefore{{.HookName}}Func is a hook called with each decoded mcp.{{.MethodName}}
+// request before its handler runs, after the OnBeforeAny hooks.
 type OnBefore{{.HookName}}Func func(ctx context.Context, id any, message *mcp.{{.ParamType}})
+
+// OnAfter{{.HookName}}Func is a hook called with each mcp.{{.MethodName}} request
+// and its result once its handler succeeds, after the OnSuccess hooks.
 {{ if .ResultIsAny }}type OnAfter{{.HookName}}Func func(ctx context.Context, id any, message *mcp.{{.ParamType}}, result any){{ else }}type OnAfter{{.HookName}}Func func(ctx context.Context, id any, message *mcp.{{.ParamType}}, result *mcp.{{.ResultType}}){{ end }}
 {{end}}
 
@@ -132,10 +137,13 @@ type Hooks struct {
 {{- end}}
 }
 
+// AddBeforeAny registers a hook called before every request's handler.
 func (c *Hooks) AddBeforeAny(hook BeforeAnyHookFunc) {
 	c.OnBeforeAny = append(c.OnBeforeAny, hook)
 }
 
+// AddOnSuccess registers a hook called after every request whose handler
+// succeeds.
 func (c *Hooks) AddOnSuccess(hook OnSuccessHookFunc) {
 	c.OnSuccess = append(c.OnSuccess, hook)
 }
@@ -145,45 +153,44 @@ func (c *Hooks) AddOnSuccess(hook OnSuccessHookFunc) {
 // using Go's error handling patterns like errors.Is and errors.As.
 //
 // Example:
-// ```
-// // Create a channel to receive errors for testing
-// errChan := make(chan error, 1)
-// 
-// // Register hook to capture and inspect errors
-// hooks := &Hooks{}
-// hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
-//     // For capability-related errors
-//     if errors.Is(err, ErrUnsupported) {
-//         // Handle capability not supported
-//         errChan <- err
-//         return
-//     }
 //
-//     // For parsing errors
-//     var parseErr = &UnparsableMessageError{}
-//     if errors.As(err, &parseErr) {
-//         // Handle unparsable message errors
-//         fmt.Printf("Failed to parse %s request: %v\n", 
-//                    parseErr.GetMethod(), parseErr.Unwrap())
-//         errChan <- parseErr
-//         return
-//     }
+//	// Create a channel to receive errors for testing
+//	errChan := make(chan error, 1)
 //
-//     // For resource/prompt/tool not found errors
-//     if errors.Is(err, ErrResourceNotFound) ||
-//        errors.Is(err, ErrPromptNotFound) ||
-//        errors.Is(err, ErrToolNotFound) {
-//         // Handle not found errors
-//         errChan <- err
-//         return
-//     }
+//	// Register hook to capture and inspect errors
+//	hooks := &Hooks{}
+//	hooks.AddOnError(func(ctx context.Context, id any, method mcp.MCPMethod, message any, err error) {
+//		// For capability-related errors
+//		if errors.Is(err, ErrUnsupported) {
+//			// Handle capability not supported
+//			errChan <- err
+//			return
+//		}
 //
-//     // For other errors
-//     errChan <- err
-// })
+//		// For parsing errors
+//		var parseErr = &UnparsableMessageError{}
+//		if errors.As(err, &parseErr) {
+//			// Handle unparsable message errors
+//			fmt.Printf("Failed to parse %s request: %v\n",
+//				parseErr.GetMethod(), parseErr.Unwrap())
+//			errChan <- parseErr
+//			return
+//		}
 //
-// server := NewMCPServer("test-server", "1.0.0", WithHooks(hooks))
-// ```
+//		// For resource/prompt/tool not found errors
+//		if errors.Is(err, ErrResourceNotFound) ||
+//			errors.Is(err, ErrPromptNotFound) ||
+//			errors.Is(err, ErrToolNotFound) {
+//			// Handle not found errors
+//			errChan <- err
+//			return
+//		}
+//
+//		// For other errors
+//		errChan <- err
+//	})
+//
+//	server := NewMCPServer("test-server", "1.0.0", WithHooks(hooks))
 func (c *Hooks) AddOnError(hook OnErrorHookFunc) {
 	c.OnError = append(c.OnError, hook)
 }
@@ -229,10 +236,14 @@ func (c *Hooks) onError(ctx context.Context, id any, method mcp.MCPMethod, messa
 	}
 }
 
+// AddOnRegisterSession registers a hook called when a session is
+// registered.
 func (c *Hooks) AddOnRegisterSession(hook OnRegisterSessionHookFunc) {
     c.OnRegisterSession = append(c.OnRegisterSession, hook)
 }
 
+// RegisterSession calls the OnRegisterSession hooks in the order they were
+// added; a nil Hooks calls none.
 func (c *Hooks) RegisterSession(ctx context.Context, session ClientSession) {
     if c == nil {
         return
@@ -242,10 +253,14 @@ func (c *Hooks) RegisterSession(ctx context.Context, session ClientSession) {
     }
 }
 
+// AddOnUnregisterSession registers a hook called when a session is being
+// unregistered.
 func (c *Hooks) AddOnUnregisterSession(hook OnUnregisterSessionHookFunc) {
     c.OnUnregisterSession = append(c.OnUnregisterSession, hook)
 }
 
+// UnregisterSession calls the OnUnregisterSession hooks in the order they
+// were added; a nil Hooks calls none.
 func (c *Hooks) UnregisterSession(ctx context.Context, session ClientSession) {
     if c == nil {
         return
@@ -255,6 +270,8 @@ func (c *Hooks) UnregisterSession(ctx context.Context, session ClientSession) {
     }
 }
 
+// AddOnRequestInitialization registers a hook called before each request is
+// dispatched to its handler; see OnRequestInitializationFunc.
 func (c *Hooks) AddOnRequestInitialization(hook OnRequestInitializationFunc) {
 	c.OnRequestInitialization = append(c.OnRequestInitialization, hook)
 }
@@ -275,10 +292,14 @@ func (c *Hooks) onRequestInitialization(ctx context.Context, id any, message jso
 }
 
 {{- range .}}
+// AddBefore{{.HookName}} registers a hook called before each mcp.{{.MethodName}}
+// request's handler runs; see OnBefore{{.HookName}}Func.
 func (c *Hooks) AddBefore{{.HookName}}(hook OnBefore{{.HookName}}Func) {
 	c.OnBefore{{.HookName}} = append(c.OnBefore{{.HookName}}, hook)
 }
 
+// AddAfter{{.HookName}} registers a hook called after each mcp.{{.MethodName}}
+// request's handler succeeds; see OnAfter{{.HookName}}Func.
 func (c *Hooks) AddAfter{{.HookName}}(hook OnAfter{{.HookName}}Func) {
 	c.OnAfter{{.HookName}} = append(c.OnAfter{{.HookName}}, hook)
 }
