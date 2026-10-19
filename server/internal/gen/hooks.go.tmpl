@@ -109,15 +109,15 @@ type OnBefore{{.HookName}}Func func(ctx context.Context, id any, message *mcp.{{
 //     keyed by id must not take it for that request's end:
 //     errors.Is(err, ErrRequestIDInFlight) tells the two apart.
 //
-//  2. If a handler panics and neither WithRecovery nor WithResourceRecovery
-//     is installed at server construction, the panic unwinds past the
-//     dispatcher and skips both OnSuccess and OnError. OnBeforeAny will
-//     already have fired. The process is typically terminating in that case,
-//     so the leak is moot in practice; bookkeeping consumers that need to
-//     survive unrecovered panics should either install the recovery
-//     middleware or run a periodic sweeper. With recovery middleware
-//     installed, panics are converted to errors and the contract above
-//     holds.
+//  2. A panic that unwinds past the dispatcher skips both OnSuccess and
+//     OnError, after OnBeforeAny has fired. WithRecovery turns a panic in a
+//     tool handler into an error, and WithResourceRecovery one in a resource
+//     handler, so the contract above holds for those; nothing turns a panic
+//     in another handler, or in a hook itself, into an error. A transport
+//     may still recover it (the stdio server answers with an internal error),
+//     but only after the hooks were skipped. Bookkeeping consumers that must
+//     survive such panics should install the recovery middleware and run a
+//     periodic sweeper.
 //
 // Hooks fire synchronously in the request goroutine, in the order they were
 // registered with the corresponding Add* method. A long-running hook will
