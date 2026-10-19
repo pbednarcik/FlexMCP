@@ -49,9 +49,12 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			// end is reported to the handler if Start succeeded first, and
 			// by Start's error otherwise. The pending requests are failed
 			// under it too: a retry's Start waits for it, so none of the
-			// retry's requests is among them.
+			// retry's requests is among them. Close sets closed under it as
+			// well, so a Close since the check above is seen here: the end of
+			// a stream the caller shut down is not reported, and Close fails
+			// the pending requests itself.
 			c.lifecycleMu.Lock()
-			current := c.attempt.Load() == attempt
+			current := !c.closed.Load() && c.attempt.Load() == attempt
 			var endStream context.CancelFunc
 			if current {
 				c.ended.Store(true)

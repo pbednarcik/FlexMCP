@@ -727,3 +727,28 @@ func TestSSE_AnEndedStreamFailsItsRequestsUnderTheLifecycleLock(t *testing.T) {
 	require.True(t, ended, "the stream's end was seen")
 	assert.True(t, held, "the reader let lifecycleMu go before failing the pending requests")
 }
+
+// TestSSE_AStreamEndingAsItClosesReportsNoLostConnection ends the stream
+// while the reader waits for lifecycleMu, past its first check of closed, and
+// closes the transport before the reader gets the lock, as Close does under
+// it: the reader must not report a lost connection for a transport the caller
+// shut down, which reconnects it.
+func TestSSE_AStreamEndingAsItClosesReportsNoLostConnection(t *testing.T) {
+	server := newScriptedSSEServer()
+	c := startedSSE(t, server)
+	lost := make(chan error, 1)
+	c.SetConnectionLostHandler(func(err error) { lost <- err })
+
+	c.lifecycleMu.Lock()
+	server.end()
+	// Time for the reader to read the end and wait for lifecycleMu.
+	time.Sleep(50 * time.Millisecond)
+	c.closed.Store(true)
+	c.lifecycleMu.Unlock()
+
+	select {
+	case err := <-lost:
+		t.Fatalf("a lost connection was reported after Close: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
