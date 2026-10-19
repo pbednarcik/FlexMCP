@@ -108,8 +108,10 @@ func (c *Client) initializeLegacy(
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	// Validate protocol version
-	if !mcp.IsValidProtocolVersion(result.ProtocolVersion) {
+	// The handshake negotiates a version of its own era: 2026-07-28 and later
+	// removed it, so an answer naming one is a version this client cannot
+	// speak over the handshake, and is refused like an unknown one.
+	if !mcp.IsValidProtocolVersion(result.ProtocolVersion) || mcp.IsModernProtocol(result.ProtocolVersion) {
 		return nil, mcp.UnsupportedProtocolVersionError{Version: result.ProtocolVersion}
 	}
 

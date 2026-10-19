@@ -214,3 +214,21 @@ func TestClient_ARepeatedInitializeThatFallsBackDeclaresHandshakeCapabilities(t 
 	require.NotNil(t, params.Capabilities.Roots, "roots is declared")
 	assert.True(t, params.Capabilities.Roots.ListChanged, "the handshake declares roots with listChanged")
 }
+
+// TestClient_AHandshakeAnsweredWithAModernVersionIsRefused answers the
+// initialize handshake with protocol version 2026-07-28, which the handshake
+// cannot negotiate: that version removed it. A client that cannot speak the
+// answer does not take it (Lifecycle.md row 18): Initialize fails with the
+// version, and the client is neither initialized nor on the modern era.
+func TestClient_AHandshakeAnsweredWithAModernVersionIsRefused(t *testing.T) {
+	server := &handshakeServer{version: mcp.ProtocolVersion20260728}
+	c := NewClient(server)
+
+	_, err := c.Initialize(t.Context(), mcp.InitializeRequest{})
+
+	var unsupported mcp.UnsupportedProtocolVersionError
+	require.ErrorAs(t, err, &unsupported)
+	assert.Equal(t, mcp.ProtocolVersion20260728, unsupported.Version)
+	assert.False(t, c.IsInitialized(), "the client is not initialized")
+	assert.False(t, c.isModern(), "the client is not on the modern era")
+}

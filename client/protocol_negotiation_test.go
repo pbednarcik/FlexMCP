@@ -58,9 +58,16 @@ func TestProtocolVersionNegotiation(t *testing.T) {
 		errorContains string
 	}{
 		{
-			name:          "supported latest version",
-			serverVersion: mcp.LATEST_PROTOCOL_VERSION,
+			name:          "supported latest handshake version",
+			serverVersion: mcp.LATEST_LEGACY_PROTOCOL_VERSION,
 			expectError:   false,
+		},
+		{
+			// 2026-07-28 removed the handshake, so it cannot negotiate it.
+			name:          "a modern version over the handshake",
+			serverVersion: mcp.LATEST_PROTOCOL_VERSION,
+			expectError:   true,
+			errorContains: "unsupported protocol version",
 		},
 		{
 			name:          "supported older version 2025-03-26",
@@ -174,7 +181,7 @@ func TestProtocolVersionHeaderSetting(t *testing.T) {
 					"protocolVersion": "%s",
 					"capabilities": {},
 					"serverInfo": {"name": "test", "version": "1.0"}
-				}`, mcp.LATEST_PROTOCOL_VERSION),
+				}`, mcp.LATEST_LEGACY_PROTOCOL_VERSION),
 		},
 	}
 
@@ -193,9 +200,9 @@ func TestProtocolVersionHeaderSetting(t *testing.T) {
 	}
 
 	// Verify SetProtocolVersion was called on HTTP transport
-	if mockTransport.protocolVersion != mcp.LATEST_PROTOCOL_VERSION {
+	if mockTransport.protocolVersion != mcp.LATEST_LEGACY_PROTOCOL_VERSION {
 		t.Errorf("expected SetProtocolVersion to be called with %q, got %q",
-			mcp.LATEST_PROTOCOL_VERSION, mockTransport.protocolVersion)
+			mcp.LATEST_LEGACY_PROTOCOL_VERSION, mockTransport.protocolVersion)
 	}
 }
 
