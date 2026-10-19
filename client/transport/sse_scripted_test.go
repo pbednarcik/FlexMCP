@@ -430,9 +430,9 @@ func sendInitialized(t *testing.T, c *SSE) error {
 // readSSE reads the stream as SSE frames it: CRLF line ends, data lines
 // joined with a newline and one leading space dropped, a comment ignored, an
 // event with no name a message, one with a name it does not know dropped,
-// and the data still pending at EOF handled. A message larger than the line
-// buffer readSSE keeps is read whole, and the one after it is not mixed
-// with it.
+// and an event the stream ends before its blank line discarded, as SSE
+// specifies. A message larger than the line buffer readSSE keeps is read
+// whole, and the one after it is not mixed with it.
 func TestSSE_TheStreamIsReadAsItIsFramed(t *testing.T) {
 	big := strings.Repeat("y", maxRetainedLine+10)
 	stream := "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"a\",\r\ndata:  \"params\":{\"v\":\"one\"}}\r\n\r\n" +
@@ -453,7 +453,7 @@ func TestSSE_TheStreamIsReadAsItIsFramed(t *testing.T) {
 	})
 
 	c.readSSE(io.NopCloser(strings.NewReader(stream)), make(chan struct{}), &sync.Once{}, 0)
-	assert.Equal(t, []string{"a=one", "b=big", "c=three", "e=at EOF"}, got)
+	assert.Equal(t, []string{"a=one", "b=big", "c=three"}, got)
 }
 
 // A response on the stream reaches its request as it was sent: the result's

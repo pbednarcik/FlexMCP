@@ -248,15 +248,9 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 				return false
 			}
 			if err == io.EOF {
-				// Process any pending event before exit. Its id isn't
-				// recorded, as the event was never finished: resuming from
-				// the one before at worst repeats it.
-				if data != "" {
-					if event == "" {
-						event = "message"
-					}
-					handler(event, data)
-				}
+				// An event the stream ended before its blank line is
+				// unfinished, and SSE discards it, id and all: a resume from
+				// the event before delivers it whole.
 				return true
 			}
 			c.logger.Error("SSE stream error", "err", err)

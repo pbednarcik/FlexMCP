@@ -1540,6 +1540,19 @@ func TestReadSSEContextCancellation(t *testing.T) {
 	}
 }
 
+// An event the stream ends before its blank line is discarded, as SSE
+// specifies: it is unfinished, and a resume would deliver it again.
+func TestReadSSEDiscardsAnEventTheStreamEndsBeforeItsBlankLine(t *testing.T) {
+	c := &StreamableHTTP{}
+	var got []string
+	stream := "data: {\"jsonrpc\":\"2.0\",\"method\":\"whole\"}\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"method\":\"unfinished\"}\n"
+	c.readSSE(t.Context(), io.NopCloser(strings.NewReader(stream)), func(_, data string) {
+		got = append(got, data)
+	})
+	assert.Equal(t, []string{`{"jsonrpc":"2.0","method":"whole"}`}, got)
+}
+
 // TestSendRequestSSEStreamStaysOpen verifies that SendRequest returns the response
 // promptly even when the server sends an SSE response and keeps the HTTP stream open.
 // This reproduces the exact hang seen with stateless MCP servers (e.g. Python FastMCP) that

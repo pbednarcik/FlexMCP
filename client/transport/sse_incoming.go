@@ -38,12 +38,8 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			if c.closed.Load() {
 				return
 			}
-			if err == io.EOF {
-				// Process any pending event before exit
-				if len(data) > 0 {
-					c.handleSSEEvent(sseEventName(event), data, endpointChan, endpointOnce, attempt)
-				}
-			}
+			// An event the stream ended before its blank line is unfinished,
+			// and SSE discards it.
 			// A stream an earlier attempt opened ends nothing a later one
 			// serves. Under lifecycleMu, as Start publishes its success: the
 			// end is reported to the handler if Start succeeded first, and

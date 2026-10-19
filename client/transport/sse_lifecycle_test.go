@@ -119,20 +119,23 @@ func TestSSE_Start_ConcurrentSingleStream(t *testing.T) {
 	require.Equal(t, int32(1), requests.Load(), "overlapping Start opened multiple streams")
 }
 
-// TestSSE_ReadSSE_PendingEndpointAtEOF verifies an endpoint event buffered
-// before EOF is processed as a pending event before the reader exits.
+// TestSSE_ReadSSE_PendingEndpointAtEOF verifies an endpoint event the stream
+// ends before its blank line is discarded, as SSE specifies, not taken.
 func TestSSE_ReadSSE_PendingEndpointAtEOF(t *testing.T) {
 	sse := newBareSSE()
 	ch := make(chan struct{})
 	once := &sync.Once{}
-	// No trailing blank line: the endpoint event is still buffered when the
-	// reader hits EOF and must be processed as a pending event.
+	// No trailing blank line: the endpoint event is still unfinished when the
+	// reader hits EOF.
 	body := "event: endpoint\ndata: http://127.0.0.1:1/messages\n"
 	sse.readSSE(io.NopCloser(strings.NewReader(body)), ch, once, 0)
 	select {
 	case <-ch:
+		t.Fatal("an endpoint event without its blank line was taken at EOF")
 	default:
-		t.Fatal("pending endpoint event was not processed on EOF")
+	}
+	if endpoint := sse.GetEndpoint(); endpoint != nil {
+		t.Fatalf("endpoint %v was recorded from an unfinished event", endpoint)
 	}
 }
 
