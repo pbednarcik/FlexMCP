@@ -551,6 +551,7 @@ func TestSSE_POSTsFollowTheEndpointLastNamed(t *testing.T) {
 func TestSSE_AnOldStreamsEndFailsNoRequestOfARetry(t *testing.T) {
 	var gets atomic.Int32
 	firstGET := make(chan struct{})
+	endFirst := make(chan struct{})
 	posted := make(chan struct{})
 	ending := make(chan struct{})
 	release := make(chan struct{})
@@ -563,24 +564,30 @@ func TestSSE_AnOldStreamsEndFailsNoRequestOfARetry(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		if gets.Add(1) == 1 {
-			// The first attempt gets no endpoint, so its Start times out.
+			// The first attempt gets no endpoint, and its stream ends when
+			// the test says so.
 			w.WriteHeader(http.StatusOK)
 			w.(http.Flusher).Flush()
 			close(firstGET)
-		} else {
-			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
-			w.(http.Flusher).Flush()
+			select {
+			case <-endFirst:
+			case <-r.Context().Done():
+			}
+			return
 		}
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
+		w.(http.Flusher).Flush()
 		<-r.Context().Done()
 	}))
 	t.Cleanup(srv.Close)
 
-	c, err := NewSSE(srv.URL, WithEndpointTimeout(60*time.Millisecond))
+	c, err := NewSSE(srv.URL, WithEndpointTimeout(time.Minute))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
 
+	firstCtx, cancelFirstStart := context.WithCancel(t.Context())
 	firstStart := make(chan error, 1)
-	go func() { firstStart <- c.Start(t.Context()) }()
+	go func() { firstStart <- c.Start(firstCtx) }()
 	<-firstGET
 	// The first attempt's reader stops in its cleanup, in the cancel it
 	// takes for its stream, until released.
@@ -592,8 +599,10 @@ func TestSSE_AnOldStreamsEndFailsNoRequestOfARetry(t *testing.T) {
 		cancelFirst()
 	}
 	c.lifecycleMu.Unlock()
-	require.Error(t, <-firstStart, "the first Start times out")
+	close(endFirst)
 	<-ending
+	cancelFirstStart()
+	require.Error(t, <-firstStart, "the first Start is cancelled")
 
 	require.NoError(t, c.Start(t.Context()))
 	answer := make(chan error, 1)
@@ -663,4 +672,58 @@ func TestSSE_ANamedEventWithoutDataNamesNothingAfterIt(t *testing.T) {
 
 	_, err = c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "ping"})
 	require.NoError(t, err, "the response after a named event without data is delivered")
+}
+
+// TestSSE_AnEndedStreamFailsItsRequestsUnderTheLifecycleLock holds mu, so
+// the reader of an ended stream stops where it fails the pending requests,
+// and checks that it still holds lifecycleMu there: a retry's Start, which
+// takes lifecycleMu to begin, cannot register a request it would fail.
+func TestSSE_AnEndedStreamFailsItsRequestsUnderTheLifecycleLock(t *testing.T) {
+	firstGET := make(chan struct{})
+	end := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(firstGET)
+		select {
+		case <-end:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewSSE(srv.URL, WithEndpointTimeout(time.Minute))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	startCtx, cancelStart := context.WithCancel(t.Context())
+	started := make(chan error, 1)
+	go func() { started <- c.Start(startCtx) }()
+	<-firstGET
+
+	// mu is held only inside this block, so a failure cannot leave it held
+	// for the cleanup's Close.
+	ended, held := func() (bool, bool) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		close(end)
+		for deadline := time.Now().Add(5 * time.Second); !c.ended.Load(); {
+			if time.Now().After(deadline) {
+				return false, false
+			}
+			time.Sleep(time.Millisecond)
+		}
+		// Time for a reader that let lifecycleMu go to have done so.
+		time.Sleep(50 * time.Millisecond)
+		if c.lifecycleMu.TryLock() {
+			c.lifecycleMu.Unlock()
+			return true, false
+		}
+		return true, true
+	}()
+	cancelStart()
+	require.Error(t, <-started)
+	require.True(t, ended, "the stream's end was seen")
+	assert.True(t, held, "the reader let lifecycleMu go before failing the pending requests")
 }
