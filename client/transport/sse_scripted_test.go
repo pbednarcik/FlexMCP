@@ -543,3 +543,70 @@ func TestSSE_POSTsFollowTheEndpointLastNamed(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, []string{"/message", "/moved"}, paths)
 }
+
+// TestSSE_AnOldStreamsEndFailsNoRequestOfARetry holds an ended attempt's
+// reader between deciding it is current and its cleanup, while a retry
+// starts and sends a request: the old stream's end must not fail the
+// retry's request (CorePass2).
+func TestSSE_AnOldStreamsEndFailsNoRequestOfARetry(t *testing.T) {
+	var gets atomic.Int32
+	firstGET := make(chan struct{})
+	posted := make(chan struct{})
+	ending := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = io.Copy(io.Discard, r.Body)
+			close(posted)
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if gets.Add(1) == 1 {
+			// The first attempt gets no endpoint, so its Start times out.
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			close(firstGET)
+		} else {
+			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
+			w.(http.Flusher).Flush()
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewSSE(srv.URL, WithEndpointTimeout(60*time.Millisecond))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	firstStart := make(chan error, 1)
+	go func() { firstStart <- c.Start(t.Context()) }()
+	<-firstGET
+	// The first attempt's reader stops in its cleanup, in the cancel it
+	// takes for its stream, until released.
+	c.lifecycleMu.Lock()
+	cancelFirst := c.cancelSSEStream
+	c.cancelSSEStream = func() {
+		close(ending)
+		<-release
+		cancelFirst()
+	}
+	c.lifecycleMu.Unlock()
+	require.Error(t, <-firstStart, "the first Start times out")
+	<-ending
+
+	require.NoError(t, c.Start(t.Context()))
+	answer := make(chan error, 1)
+	go func() {
+		_, err := c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "ping"})
+		answer <- err
+	}()
+	<-posted
+	close(release)
+
+	select {
+	case err := <-answer:
+		t.Fatalf("the old stream's end failed the retry's request: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+}

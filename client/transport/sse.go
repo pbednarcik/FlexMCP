@@ -382,13 +382,16 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			// A stream an earlier attempt opened ends nothing a later one
 			// serves. Under lifecycleMu, as Start publishes its success: the
 			// end is reported to the handler if Start succeeded first, and
-			// by Start's error otherwise.
+			// by Start's error otherwise. The pending requests are failed
+			// under it too: a retry's Start waits for it, so none of the
+			// retry's requests is among them.
 			c.lifecycleMu.Lock()
 			current := c.attempt.Load() == attempt
 			var endStream context.CancelFunc
 			if current {
 				c.ended.Store(true)
 				endStream = c.cancelSSEStream
+				c.failPending()
 			}
 			started := current && c.started.Load()
 			c.lifecycleMu.Unlock()
@@ -399,7 +402,6 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			if endStream != nil {
 				endStream()
 			}
-			c.failPending()
 			if !started {
 				return
 			}
