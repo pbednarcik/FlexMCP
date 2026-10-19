@@ -80,40 +80,6 @@ func WithClientCapabilities(capabilities mcp.ClientCapabilities) ClientOption {
 	}
 }
 
-// WithSamplingHandler sets the sampling handler for the client.
-// When set, the client declares the sampling capability, unless the
-// capabilities it was given declare it already: in the initialize handshake
-// on a legacy connection, and in every request's _meta on protocol version
-// 2026-07-28.
-func WithSamplingHandler(handler SamplingHandler) ClientOption {
-	return func(c *Client) {
-		c.samplingHandler = handler
-	}
-}
-
-// WithRootsHandler sets the roots handler for the client.
-// When set, the client declares the roots capability, unless the
-// capabilities it was given declare it already: in the initialize handshake
-// on a legacy connection, with listChanged, and in every request's _meta on
-// protocol version 2026-07-28, without it, since that version removed the
-// roots list_changed notification.
-func WithRootsHandler(handler RootsHandler) ClientOption {
-	return func(c *Client) {
-		c.rootsHandler = handler
-	}
-}
-
-// WithElicitationHandler sets the elicitation handler for the client.
-// When set, the client declares the elicitation capability, unless the
-// capabilities it was given declare it already: in the initialize handshake
-// on a legacy connection, and in every request's _meta on protocol version
-// 2026-07-28.
-func WithElicitationHandler(handler ElicitationHandler) ClientOption {
-	return func(c *Client) {
-		c.elicitationHandler = handler
-	}
-}
-
 // WithSession assumes a MCP Session has already been initialized
 func WithSession() ClientOption {
 	return func(c *Client) {
@@ -144,17 +110,6 @@ func WithProtocolVersion(version string) ClientOption {
 func WithLegacyProtocolOnly() ClientOption {
 	return func(c *Client) {
 		c.legacyOnly = true
-	}
-}
-
-// WithMaxInputRoundTrips bounds how many requests one call sends, the first
-// included, while the server keeps asking for input; past it the call fails
-// with ErrMaxInputRoundTripsExceeded.
-//
-// The default is 10. See the multi round-trip request pattern (SEP-2322).
-func WithMaxInputRoundTrips(limit int) ClientOption {
-	return func(c *Client) {
-		c.maxInputRoundTrips = limit
 	}
 }
 

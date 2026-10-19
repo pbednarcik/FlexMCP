@@ -49,6 +49,17 @@ func (c *Client) maxRoundTrips() int {
 	return defaultMaxInputRoundTrips
 }
 
+// WithMaxInputRoundTrips bounds how many requests one call sends, the first
+// included, while the server keeps asking for input; past it the call fails
+// with ErrMaxInputRoundTripsExceeded.
+//
+// The default is 10. See the multi round-trip request pattern (SEP-2322).
+func WithMaxInputRoundTrips(limit int) ClientOption {
+	return func(c *Client) {
+		c.maxInputRoundTrips = limit
+	}
+}
+
 // multiRoundTrip drives the SEP-2322 retry loop for a single request.
 //
 // initial carries the multi round-trip params the caller supplied, so a

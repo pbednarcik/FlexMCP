@@ -19,3 +19,15 @@ type RootsHandler interface {
 	// 2. Return the appropriate response
 	ListRoots(ctx context.Context, request mcp.ListRootsRequest) (*mcp.ListRootsResult, error)
 }
+
+// WithRootsHandler sets the roots handler for the client.
+// When set, the client declares the roots capability, unless the
+// capabilities it was given declare it already: in the initialize handshake
+// on a legacy connection, with listChanged, and in every request's _meta on
+// protocol version 2026-07-28, without it, since that version removed the
+// roots list_changed notification.
+func WithRootsHandler(handler RootsHandler) ClientOption {
+	return func(c *Client) {
+		c.rootsHandler = handler
+	}
+}

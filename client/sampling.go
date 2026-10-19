@@ -22,3 +22,14 @@ type SamplingHandler interface {
 	// 5. Return the result with model information and stop reason
 	CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error)
 }
+
+// WithSamplingHandler sets the sampling handler for the client.
+// When set, the client declares the sampling capability, unless the
+// capabilities it was given declare it already: in the initialize handshake
+// on a legacy connection, and in every request's _meta on protocol version
+// 2026-07-28.
+func WithSamplingHandler(handler SamplingHandler) ClientOption {
+	return func(c *Client) {
+		c.samplingHandler = handler
+	}
+}

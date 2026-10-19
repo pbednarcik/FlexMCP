@@ -21,3 +21,14 @@ type ElicitationHandler interface {
 	// 5. Return the appropriate response
 	Elicit(ctx context.Context, request mcp.ElicitationRequest) (*mcp.ElicitationResult, error)
 }
+
+// WithElicitationHandler sets the elicitation handler for the client.
+// When set, the client declares the elicitation capability, unless the
+// capabilities it was given declare it already: in the initialize handshake
+// on a legacy connection, and in every request's _meta on protocol version
+// 2026-07-28.
+func WithElicitationHandler(handler ElicitationHandler) ClientOption {
+	return func(c *Client) {
+		c.elicitationHandler = handler
+	}
+}
