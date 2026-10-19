@@ -723,21 +723,15 @@ func (s *StdioServer) writeResponse(
 	response mcp.JSONRPCMessage,
 	writer io.Writer,
 ) error {
-	responseBytes, err := json.Marshal(response)
-	if err != nil {
-		return err
-	}
-
 	// Protect concurrent writes
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	// One write: lines from concurrent requests must not interleave.
-	if _, err := writer.Write(append(responseBytes, '\n')); err != nil {
-		return err
-	}
-
-	return nil
+	// One write: lines from concurrent requests must not interleave. Encode
+	// marshals the whole message, newline included, into a pooled buffer
+	// before it writes, so nothing is written for a message that cannot be
+	// encoded, and a large result is not copied into a buffer of its own.
+	return json.NewEncoder(writer).Encode(response)
 }
 
 // ServeStdio is a convenience function that creates and starts a StdioServer with os.Stdin and os.Stdout.

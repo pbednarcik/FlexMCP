@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -141,14 +142,31 @@ func TestStdioWriteResponseIsOneLineInOneWrite(t *testing.T) {
 	assert.Equal(t, 1, out.writes)
 }
 
+// A response is encoded straight into the write: a large result is not
+// copied into a buffer of its own, nor again to add the newline.
 func TestStdioWriteResponseAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
 	s := NewStdioServer(NewMCPServer("t", "1"))
-	response := createResponse(int64(1), mcp.NewToolResultText("ok"))
-	allocs := testing.AllocsPerRun(1000, func() { _ = s.writeResponse(response, io.Discard) })
-	assert.LessOrEqual(t, allocs, 8.0, "allocations per response written")
+	for _, size := range []int{2, 256 << 10} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			response := createResponse(int64(1), mcp.NewToolResultText(strings.Repeat("z", size)))
+			write := func() { _ = s.writeResponse(response, io.Discard) }
+			allocs := testing.AllocsPerRun(100, write)
+			assert.LessOrEqual(t, allocs, 4.0, "allocations per response written")
+
+			const runs = 50
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			for range runs {
+				write()
+			}
+			runtime.ReadMemStats(&after)
+			perWrite := (after.TotalAlloc - before.TotalAlloc) / runs
+			assert.Less(t, perWrite, uint64(4<<10), "bytes allocated per response written")
+		})
+	}
 }
 
 // An event is written as it always was; one that cannot be encoded writes
