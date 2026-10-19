@@ -421,10 +421,7 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			// Empty line means end of event
 			if len(data) > 0 {
 				c.handleSSEEvent(sseEventName(event), data, endpointChan, endpointOnce, attempt)
-				event, data = event[:0], data[:0]
-				if cap(data) > maxRetainedLine {
-					data = nil
-				}
+				event, data = resetEvent(event, data)
 			}
 			continue
 		}
@@ -438,6 +435,19 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			line = nil
 		}
 	}
+}
+
+// resetEvent empties an event's name and data for the next event, keeping
+// their storage unless a message grew it past maxRetainedLine.
+func resetEvent(event, data []byte) ([]byte, []byte) {
+	event, data = event[:0], data[:0]
+	if cap(event) > maxRetainedLine {
+		event = nil
+	}
+	if cap(data) > maxRetainedLine {
+		data = nil
+	}
+	return event, data
 }
 
 // sseEventName is the name an event is handled by: "message" for one the

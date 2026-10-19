@@ -610,3 +610,19 @@ func TestSSE_AnOldStreamsEndFailsNoRequestOfARetry(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+// TestSSE_AnOversizedEventIsNotKeptForTheNext pins the reader's buffer
+// policy between events: a name or data a message grew past
+// maxRetainedLine is let go, so one large event does not hold its size for
+// the life of the stream (CorePass2); smaller ones keep their storage.
+func TestSSE_AnOversizedEventIsNotKeptForTheNext(t *testing.T) {
+	event, data := resetEvent(make([]byte, maxRetainedLine+1), make([]byte, maxRetainedLine+1))
+	assert.Zero(t, cap(event), "an oversized event name is let go")
+	assert.Zero(t, cap(data), "oversized data is let go")
+
+	event, data = resetEvent(make([]byte, 7, 64), make([]byte, 10, 64))
+	assert.Equal(t, 0, len(event))
+	assert.Equal(t, 64, cap(event), "a small name's storage is kept")
+	assert.Equal(t, 0, len(data))
+	assert.Equal(t, 64, cap(data), "small data's storage is kept")
+}
