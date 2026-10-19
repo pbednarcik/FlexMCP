@@ -83,11 +83,12 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 		}
 
 		if len(line) == 0 {
-			// Empty line means end of event
+			// Empty line means end of event. An event without data is not
+			// dispatched, but its name ends with it too, as SSE specifies.
 			if len(data) > 0 {
 				c.handleSSEEvent(sseEventName(event), data, endpointChan, endpointOnce, attempt)
-				event, data = resetEvent(event, data)
 			}
+			event, data = resetEvent(event, data)
 			continue
 		}
 

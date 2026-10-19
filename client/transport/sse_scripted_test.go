@@ -626,3 +626,41 @@ func TestSSE_AnOversizedEventIsNotKeptForTheNext(t *testing.T) {
 	assert.Equal(t, 0, len(data))
 	assert.Equal(t, 64, cap(data), "small data's storage is kept")
 }
+
+// TestSSE_ANamedEventWithoutDataNamesNothingAfterIt pins the SSE rule that a
+// blank line ends an event's name even when the event carried no data: the
+// response after a named empty event is a message, not an event of that name
+// the client would drop.
+func TestSSE_ANamedEventWithoutDataNamesNothingAfterIt(t *testing.T) {
+	answers := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusAccepted)
+			answers <- "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n"
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
+		_, _ = fmt.Fprint(w, "event: ping\ndata:\n\n")
+		w.(http.Flusher).Flush()
+		for {
+			select {
+			case answer := <-answers:
+				_, _ = fmt.Fprint(w, answer)
+				w.(http.Flusher).Flush()
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewSSE(srv.URL, WithResponseTimeout(time.Second))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	require.NoError(t, c.Start(t.Context()))
+
+	_, err = c.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "ping"})
+	require.NoError(t, err, "the response after a named event without data is delivered")
+}
