@@ -67,6 +67,10 @@ type SSE struct {
 	protocolVersion  atomic.Value // string
 	onConnectionLost func(error)
 	connectionLostMu sync.RWMutex
+	// testHookStreamEnding, nil outside tests, runs when a reader whose
+	// stream ended has found the transport open and has not yet taken
+	// lifecycleMu to settle the end.
+	testHookStreamEnding func()
 
 	endpointTimeout time.Duration
 	responseTimeout time.Duration

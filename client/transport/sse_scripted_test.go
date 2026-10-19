@@ -728,23 +728,31 @@ func TestSSE_AnEndedStreamFailsItsRequestsUnderTheLifecycleLock(t *testing.T) {
 	assert.True(t, held, "the reader let lifecycleMu go before failing the pending requests")
 }
 
-// TestSSE_AStreamEndingAsItClosesReportsNoLostConnection ends the stream
-// while the reader waits for lifecycleMu, past its first check of closed, and
-// closes the transport before the reader gets the lock, as Close does under
-// it: the reader must not report a lost connection for a transport the caller
-// shut down, which reconnects it.
+// TestSSE_AStreamEndingAsItClosesReportsNoLostConnection ends the stream and
+// holds its reader past its first check of closed, before it takes
+// lifecycleMu, while the transport is closed: the reader must not report a
+// lost connection for a transport the caller shut down, which reconnects it.
 func TestSSE_AStreamEndingAsItClosesReportsNoLostConnection(t *testing.T) {
 	server := newScriptedSSEServer()
-	c := startedSSE(t, server)
+	httpServer := httptest.NewServer(server)
+	t.Cleanup(httpServer.Close)
+	c, err := NewSSE(httpServer.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	c.testHookStreamEnding = func() {
+		close(reached)
+		<-release
+	}
+	require.NoError(t, c.Start(t.Context()))
 	lost := make(chan error, 1)
 	c.SetConnectionLostHandler(func(err error) { lost <- err })
 
-	c.lifecycleMu.Lock()
 	server.end()
-	// Time for the reader to read the end and wait for lifecycleMu.
-	time.Sleep(50 * time.Millisecond)
-	c.closed.Store(true)
-	c.lifecycleMu.Unlock()
+	<-reached
+	require.NoError(t, c.Close())
+	close(release)
 
 	select {
 	case err := <-lost:

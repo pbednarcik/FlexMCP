@@ -40,6 +40,9 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 			}
 			// An event the stream ended before its blank line is unfinished,
 			// and SSE discards it.
+			if c.testHookStreamEnding != nil {
+				c.testHookStreamEnding()
+			}
 			// A stream an earlier attempt opened ends nothing a later one
 			// serves. Under lifecycleMu, as Start publishes its success: the
 			// end is reported to the handler if Start succeeded first, and
