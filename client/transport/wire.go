@@ -9,8 +9,9 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// maxRetainedLine is the largest line buffer readResponses keeps for the
-// next line; one a larger message grew is let go.
+// maxRetainedLine is the largest buffer a reader keeps from one message to
+// the next: the stdio reader's line, and the SSE reader's line, event name
+// and data. One a larger message grew is let go.
 const maxRetainedLine = 1 << 20
 
 // readLine reads the next line from r into buf, whose storage it reuses, and
