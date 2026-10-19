@@ -547,7 +547,7 @@ func TestSSE_POSTsFollowTheEndpointLastNamed(t *testing.T) {
 // TestSSE_AnOldStreamsEndFailsNoRequestOfARetry holds an ended attempt's
 // reader between deciding it is current and its cleanup, while a retry
 // starts and sends a request: the old stream's end must not fail the
-// retry's request (CorePass2).
+// retry's request.
 func TestSSE_AnOldStreamsEndFailsNoRequestOfARetry(t *testing.T) {
 	var gets atomic.Int32
 	firstGET := make(chan struct{})
@@ -614,7 +614,7 @@ func TestSSE_AnOldStreamsEndFailsNoRequestOfARetry(t *testing.T) {
 // TestSSE_AnOversizedEventIsNotKeptForTheNext pins the reader's buffer
 // policy between events: a name or data a message grew past
 // maxRetainedLine is let go, so one large event does not hold its size for
-// the life of the stream (CorePass2); smaller ones keep their storage.
+// the life of the stream; smaller ones keep their storage.
 func TestSSE_AnOversizedEventIsNotKeptForTheNext(t *testing.T) {
 	event, data := resetEvent(make([]byte, maxRetainedLine+1), make([]byte, maxRetainedLine+1))
 	assert.Zero(t, cap(event), "an oversized event name is let go")
