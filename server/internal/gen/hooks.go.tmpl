@@ -125,12 +125,12 @@ type OnBefore{{.HookName}}Func func(ctx context.Context, id any, message *mcp.{{
 // goroutine if needed. Register hooks before serving: the Add* methods and
 // the dispatch share the lists without a lock.
 type Hooks struct {
-    OnRegisterSession   []OnRegisterSessionHookFunc
-	OnUnregisterSession   []OnUnregisterSessionHookFunc
-	OnBeforeAny      []BeforeAnyHookFunc
-	OnSuccess        []OnSuccessHookFunc
-	OnError          []OnErrorHookFunc
-	OnRequestInitialization       []OnRequestInitializationFunc
+	OnRegisterSession       []OnRegisterSessionHookFunc
+	OnUnregisterSession     []OnUnregisterSessionHookFunc
+	OnBeforeAny             []BeforeAnyHookFunc
+	OnSuccess               []OnSuccessHookFunc
+	OnError                 []OnErrorHookFunc
+	OnRequestInitialization []OnRequestInitializationFunc
 {{- range .}}
 	OnBefore{{.HookName}} []OnBefore{{.HookName}}Func
 	OnAfter{{.HookName}}  []OnAfter{{.HookName}}Func
@@ -239,35 +239,35 @@ func (c *Hooks) onError(ctx context.Context, id any, method mcp.MCPMethod, messa
 // AddOnRegisterSession registers a hook called when a session is
 // registered.
 func (c *Hooks) AddOnRegisterSession(hook OnRegisterSessionHookFunc) {
-    c.OnRegisterSession = append(c.OnRegisterSession, hook)
+	c.OnRegisterSession = append(c.OnRegisterSession, hook)
 }
 
 // RegisterSession calls the OnRegisterSession hooks in the order they were
 // added; a nil Hooks calls none.
 func (c *Hooks) RegisterSession(ctx context.Context, session ClientSession) {
-    if c == nil {
-        return
-    }
-    for _, hook := range c.OnRegisterSession {
-        hook(ctx, session)
-    }
+	if c == nil {
+		return
+	}
+	for _, hook := range c.OnRegisterSession {
+		hook(ctx, session)
+	}
 }
 
 // AddOnUnregisterSession registers a hook called when a session is being
 // unregistered.
 func (c *Hooks) AddOnUnregisterSession(hook OnUnregisterSessionHookFunc) {
-    c.OnUnregisterSession = append(c.OnUnregisterSession, hook)
+	c.OnUnregisterSession = append(c.OnUnregisterSession, hook)
 }
 
 // UnregisterSession calls the OnUnregisterSession hooks in the order they
 // were added; a nil Hooks calls none.
 func (c *Hooks) UnregisterSession(ctx context.Context, session ClientSession) {
-    if c == nil {
-        return
-    }
-    for _, hook := range c.OnUnregisterSession {
-        hook(ctx, session)
-    }
+	if c == nil {
+		return
+	}
+	for _, hook := range c.OnUnregisterSession {
+		hook(ctx, session)
+	}
 }
 
 // AddOnRequestInitialization registers a hook called before each request is

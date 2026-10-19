@@ -52,7 +52,7 @@ func (s *MCPServer) dispatchRequest(
 				message: undecodableParamsMessage(baseMessage.Method),
 			}
 		} else {
-            request.Header = headers
+			request.Header = headers
 			s.hooks.before{{.HookName}}(ctx, baseMessage.ID, &request)
 			result, err = s.{{.HandlerFunc}}(ctx, baseMessage.ID, request)
 		}
