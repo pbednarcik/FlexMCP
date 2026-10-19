@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -159,4 +160,57 @@ func TestClient_LegacyFormElicitationNeedsFormDeclared(t *testing.T) {
 			})
 		}
 	}
+}
+
+// noRoots is a roots handler with no roots.
+type noRoots struct{}
+
+func (noRoots) ListRoots(context.Context, mcp.ListRootsRequest) (*mcp.ListRootsResult, error) {
+	return &mcp.ListRootsResult{}, nil
+}
+
+// TestClient_ARepeatedInitializeThatFallsBackDeclaresHandshakeCapabilities
+// initializes a client with a roots handler against a modern server, then
+// again against one that refuses server/discover: the handshake it falls back
+// to declares roots with listChanged, as every handshake does, not as the
+// modern era it starts from would.
+func TestClient_ARepeatedInitializeThatFallsBackDeclaresHandshakeCapabilities(t *testing.T) {
+	var legacy atomic.Bool
+	var initializeParams atomic.Value
+	tr := &scriptedTransport{respond: func(_ context.Context, _ int, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+		switch request.Method {
+		case string(mcp.MethodServerDiscover):
+			if legacy.Load() {
+				return transport.NewJSONRPCErrorResponse(request.ID, mcp.METHOD_NOT_FOUND, "method not found", nil), nil
+			}
+			return resultResponse(request, discoverResult), nil
+		case string(mcp.MethodInitialize):
+			encoded, err := json.Marshal(request.Params)
+			if err != nil {
+				return nil, err
+			}
+			initializeParams.Store(encoded)
+			return resultResponse(request, legacyInitializeResult), nil
+		}
+		return resultResponse(request, `{}`), nil
+	}}
+	c := connectScripted(t, tr, WithRootsHandler(noRoots{}))
+	require.True(t, c.isModern(), "the first Initialize settles on the modern era")
+
+	legacy.Store(true)
+	_, err := c.Initialize(t.Context(), mcp.InitializeRequest{})
+	require.NoError(t, err)
+
+	encoded, ok := initializeParams.Load().([]byte)
+	require.True(t, ok, "the second Initialize sent initialize")
+	var params struct {
+		Capabilities struct {
+			Roots *struct {
+				ListChanged bool `json:"listChanged"`
+			} `json:"roots"`
+		} `json:"capabilities"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &params))
+	require.NotNil(t, params.Capabilities.Roots, "roots is declared")
+	assert.True(t, params.Capabilities.Roots.ListChanged, "the handshake declares roots with listChanged")
 }

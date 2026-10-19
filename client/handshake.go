@@ -73,7 +73,13 @@ func (c *Client) initializeLegacy(
 	next *era,
 	header http.Header,
 ) (*mcp.InitializeResult, error) {
-	capabilities := c.effectiveCapabilities(next)
+	// The handshake is a legacy request, carrying no per-request metadata,
+	// and declares the capabilities of the handshake era, whatever version
+	// the era it starts from had: a client initialized again may start from
+	// a modern one.
+	handshake := *next
+	handshake.version = ""
+	capabilities := c.effectiveCapabilities(&handshake)
 
 	// Ensure we send a params object with all required fields
 	params := struct {
@@ -92,9 +98,6 @@ func (c *Client) initializeLegacy(
 		params.ProtocolVersion = mcp.LATEST_LEGACY_PROTOCOL_VERSION
 	}
 
-	// The handshake is a legacy request, carrying no per-request metadata.
-	handshake := *next
-	handshake.version = ""
 	response, err := c.sendRequestIn(ctx, &handshake, "initialize", params, header)
 	if err != nil {
 		return nil, err
