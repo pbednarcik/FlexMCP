@@ -3,6 +3,7 @@ package transport
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -21,7 +22,7 @@ func readLine(r *bufio.Reader, buf []byte) ([]byte, error) {
 	for {
 		chunk, err := r.ReadSlice('\n')
 		buf = append(buf, chunk...)
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		return bytes.TrimRight(buf, "\r\n"), err

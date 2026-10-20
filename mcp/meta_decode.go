@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json/jsontext"
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -127,7 +128,7 @@ func (d *metaDecoder) meta(m *Meta) bool {
 	if _, err := d.dec.ReadToken(); err != nil {
 		return false
 	}
-	if _, err := d.dec.ReadToken(); err != io.EOF {
+	if _, err := d.dec.ReadToken(); !errors.Is(err, io.EOF) {
 		return false
 	}
 	m.ProgressToken = token

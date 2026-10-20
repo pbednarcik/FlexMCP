@@ -87,7 +87,7 @@ func handleMakeAuthenticatedRequestTool(
 	}
 	token, err := tokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("missing token: %v", err)
+		return nil, fmt.Errorf("missing token: %w", err)
 	}
 	// Now our tool can make a request with the token, irrespective of where it came from.
 	resp, err := makeRequest(ctx, message, token)

@@ -38,7 +38,7 @@ func compileTestServer(outputPath string) error {
 	cmd.Env = append(os.Environ(), "GOCACHE="+tmpCache)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("compilation failed: %v\nOutput: %s", err, output)
+		return fmt.Errorf("compilation failed: %w\nOutput: %s", err, output)
 	}
 	// Verify the binary was actually created
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {

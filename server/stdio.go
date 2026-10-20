@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -359,14 +360,14 @@ const maxRetainedInputLine = 1 << 20
 // copied straight out of it; a longer one is gathered in buf first.
 func readInputLine(r *bufio.Reader, buf []byte) (line, next []byte, err error) {
 	chunk, err := r.ReadSlice('\n')
-	if err != bufio.ErrBufferFull {
+	if !errors.Is(err, bufio.ErrBufferFull) {
 		if len(chunk) > 0 {
 			line = bytes.Clone(chunk)
 		}
 		return line, buf, err
 	}
 	buf = append(buf[:0], chunk...)
-	for err == bufio.ErrBufferFull {
+	for errors.Is(err, bufio.ErrBufferFull) {
 		chunk, err = r.ReadSlice('\n')
 		buf = append(buf, chunk...)
 	}
@@ -411,7 +412,7 @@ func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Read
 			return ctx.Err()
 		case line := <-lines:
 			if line.err != nil {
-				if line.err == io.EOF {
+				if errors.Is(line.err, io.EOF) {
 					// A last line without a newline is served before the
 					// end of input ends the loop.
 					if len(line.text) > 0 {

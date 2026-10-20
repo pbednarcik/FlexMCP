@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -54,7 +55,7 @@ func TestStdioServer(t *testing.T) {
 		// Start server in goroutine
 		go func() {
 			err := stdioServer.Listen(ctx, stdinReader, stdoutWriter)
-			if err != nil && err != io.EOF && err != context.Canceled {
+			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 				serverErrCh <- err
 			}
 			stdoutWriter.Close()
@@ -166,7 +167,7 @@ func TestStdioServer(t *testing.T) {
 		// Start server in goroutine
 		go func() {
 			err := stdioServer.Listen(ctx, stdinReader, stdoutWriter)
-			if err != nil && err != io.EOF && err != context.Canceled {
+			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 				serverErrCh <- err
 			}
 			stdoutWriter.Close()
@@ -317,7 +318,7 @@ func TestStdioServer(t *testing.T) {
 		serverErrCh := make(chan error, 1)
 		go func() {
 			err := stdioServer.Listen(ctx, stdinReader, stdoutWriter)
-			if err != nil && err != io.EOF && err != context.Canceled {
+			if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 				serverErrCh <- err
 			}
 			stdoutWriter.Close()

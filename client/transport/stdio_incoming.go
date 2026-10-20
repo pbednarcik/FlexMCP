@@ -48,7 +48,7 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 				buf = nil
 			}
 			if err != nil {
-				if err != io.EOF && !errors.Is(err, context.Canceled) && !errors.Is(err, fs.ErrClosed) {
+				if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, fs.ErrClosed) {
 					c.logger.Error("Error reading from stdout", "err", err)
 				}
 				// Signal done so in-flight SendRequest calls unblock

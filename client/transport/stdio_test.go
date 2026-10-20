@@ -47,7 +47,7 @@ func compileTestServerFromSource(outputPath, sourcePath string) error {
 	cmd.Env = append(os.Environ(), "GOCACHE="+tmpCache)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("compilation failed: %v\nOutput: %s", err, output)
+		return fmt.Errorf("compilation failed: %w\nOutput: %s", err, output)
 	}
 	// Verify the binary was actually created
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
@@ -155,7 +155,7 @@ func TestStdio(t *testing.T) {
 		_, err := stdio.SendRequest(ctx, request)
 		if err == nil {
 			t.Errorf("Expected context canceled error, got nil")
-		} else if err != context.Canceled {
+		} else if !errors.Is(err, context.Canceled) {
 			t.Errorf("Expected context.Canceled error, got: %v", err)
 		}
 	})
