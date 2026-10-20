@@ -2,6 +2,9 @@ package mcp
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -175,17 +178,95 @@ func TestMetaUnmarshalResultIsOwned(t *testing.T) {
 
 // The captured Claude Code _meta is read in one pass: 60 allocations through
 // json.Unmarshal into a map and a second read for the numeric progress token,
-// 25 in one pass with the well-known strings interned.
+// 25 in one pass with the well-known strings interned, 12 with the strings a
+// client repeats kept by the decoder. A fresh toolUseId on each call, as
+// Claude Code sends, costs its string and its box: 14.
 func TestMetaUnmarshalClaudeCodeAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
-	data := []byte(metaClaudeCode)
-	allocs := testing.AllocsPerRun(1000, func() {
-		var m Meta
-		_ = m.UnmarshalJSON(data)
-	})
-	assert.LessOrEqual(t, allocs, 25.0, "allocations per Meta.UnmarshalJSON of the captured Claude Code _meta")
+	const id = "toolu_01ABCDEFGHJKMNPQRSTUVWXY"
+	// Sixteen times as many ids as a decoder keeps strings: each one is new
+	// to it.
+	rotating := make([][]byte, 16*maxCachedMetaStrings)
+	for i := range rotating {
+		rotating[i] = []byte(strings.Replace(metaClaudeCode, id, fmt.Sprintf("toolu_01ABCDEFGHJKMNPQRSTU%04d", i), 1))
+	}
+	for _, tc := range []struct {
+		name    string
+		bodies  [][]byte
+		ceiling float64
+	}{
+		{"the captured toolUseId", [][]byte{[]byte(metaClaudeCode)}, 12},
+		{"a fresh toolUseId each call", rotating, 14},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i := 0
+			allocs := testing.AllocsPerRun(max(1000, len(tc.bodies)), func() {
+				var m Meta
+				_ = m.UnmarshalJSON(tc.bodies[i%len(tc.bodies)])
+				i++
+			})
+			assert.LessOrEqual(t, allocs, tc.ceiling, "allocations per Meta.UnmarshalJSON of the captured Claude Code _meta")
+		})
+	}
+}
+
+// A decoder keeps at most maxCachedMetaStrings strings, none longer than
+// maxCachedMetaString bytes, however many it reads.
+func TestMetaStringCacheIsBounded(t *testing.T) {
+	d := metaDecoders.New().(*metaDecoder)
+	for i := range 4 * maxCachedMetaStrings {
+		want := "s" + strconv.Itoa(i)
+		got, _, ok := d.text(jsontext.Value(strconv.Quote(want)))
+		require.True(t, ok)
+		require.Equal(t, want, got)
+		require.LessOrEqual(t, len(d.strs), maxCachedMetaStrings, "strings kept after %d read", i+1)
+	}
+
+	longest := strings.Repeat("y", maxCachedMetaString)
+	_, _, _ = d.text(jsontext.Value(strconv.Quote(longest)))
+	assert.Contains(t, d.strs, longest)
+	tooLong := strings.Repeat("z", maxCachedMetaString+1)
+	_, boxed, _ := d.text(jsontext.Value(strconv.Quote(tooLong)))
+	assert.Nil(t, boxed)
+	assert.NotContains(t, d.strs, tooLong)
+}
+
+// A string a decoder kept is found by all its bytes: strings that share a
+// length, an end or a hash prefix still come back as read.
+func TestMetaStringCacheReturnsTheBytesRead(t *testing.T) {
+	values := []string{"xay", "xby", "xcy", "yay", "xéy", "xa", "xaa"}
+	var body strings.Builder
+	want := make(map[string]any)
+	body.WriteString(`{`)
+	// Twice each, so the second read of every string is a hit.
+	for round := range 2 {
+		for i, v := range values {
+			key := fmt.Sprintf("k%d.%d", round, i)
+			if body.Len() > 1 {
+				body.WriteString(`,`)
+			}
+			fmt.Fprintf(&body, `%q:%q`, key, v)
+			want[key] = v
+		}
+	}
+	body.WriteString(`}`)
+	data := []byte(body.String())
+	require.True(t, (&Meta{}).unmarshalFast(data))
+
+	var m Meta
+	require.NoError(t, m.UnmarshalJSON(data))
+	assert.Equal(t, want, m.AdditionalFields)
+
+	d := metaDecoders.New().(*metaDecoder)
+	for range 2 {
+		for _, v := range values {
+			got, _, ok := d.text(jsontext.Value(strconv.Quote(v)))
+			require.True(t, ok)
+			require.Equal(t, v, got)
+		}
+	}
 }
 
 // FuzzMetaFastMatchesSlow holds the differential for any input, from the

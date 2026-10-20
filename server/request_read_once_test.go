@@ -71,7 +71,7 @@ func TestHandleMessageReadsOnceWithTheSameAnswers(t *testing.T) {
 // only for a hook, 47 with the context layers made in one allocation, 48
 // once modern decoration stamps a private copy of the handler's result
 // rather than the result itself (decorateResult), 35 with _meta read in one
-// pass.
+// pass, 33 with the strings a client repeats kept by the decoder.
 func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -79,7 +79,7 @@ func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	srv, ctx := readOnceServer(t)
 	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},` + readOnceMeta + `}}`)
 	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
-	assert.LessOrEqual(t, allocs, 35.0, "allocations per modern tools/call through HandleMessage")
+	assert.LessOrEqual(t, allocs, 33.0, "allocations per modern tools/call through HandleMessage")
 }
 
 // Read once, a request's _meta gives the protocol info that reading each key
