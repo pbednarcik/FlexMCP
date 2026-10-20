@@ -17,45 +17,56 @@ import (
 
 // Request ids are per sender: a server request that happens to carry the id of
 // a request the client is waiting on is not that request's response.
-// A method named "" is a method all the same.
+// A method named "" is a method all the same, and an id is matched as a
+// number or as a string alike.
 func TestSSE_AServerRequestIsNotTakenForAResponse(t *testing.T) {
-	for _, method := range []string{"ping", ""} {
-		t.Run("method "+method, func(t *testing.T) {
-			posted := make(chan struct{}, 4)
-			var server *httptest.Server
-			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/sse":
-					w.Header().Set("Content-Type", "text/event-stream")
-					flusher := w.(http.Flusher)
-					_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s/message\n\n", server.URL)
-					flusher.Flush()
-					select {
-					case <-posted:
-					case <-r.Context().Done():
-						return
+	ids := []struct {
+		name    string
+		encoded string
+		id      mcp.RequestId
+	}{
+		{"numeric id", `1`, mcp.NewRequestId(int64(1))},
+		{"string id", `"req-1"`, mcp.NewRequestId("req-1")},
+	}
+	for _, tc := range ids {
+		for _, method := range []string{"ping", ""} {
+			t.Run(tc.name+", method "+method, func(t *testing.T) {
+				posted := make(chan struct{}, 4)
+				var server *httptest.Server
+				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch r.URL.Path {
+					case "/sse":
+						w.Header().Set("Content-Type", "text/event-stream")
+						flusher := w.(http.Flusher)
+						_, _ = fmt.Fprintf(w, "event: endpoint\ndata: %s/message\n\n", server.URL)
+						flusher.Flush()
+						select {
+						case <-posted:
+						case <-r.Context().Done():
+							return
+						}
+						_, _ = fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%s,\"method\":%q}\n\n", tc.encoded, method)
+						_, _ = fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"answer\":42}}\n\n", tc.encoded)
+						flusher.Flush()
+						<-r.Context().Done()
+					case "/message":
+						_, _ = io.Copy(io.Discard, r.Body)
+						w.WriteHeader(http.StatusAccepted)
+						posted <- struct{}{}
 					}
-					_, _ = fmt.Fprintf(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":%q}\n\n", method)
-					_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"answer\":42}}\n\n")
-					flusher.Flush()
-					<-r.Context().Done()
-				case "/message":
-					_, _ = io.Copy(io.Discard, r.Body)
-					w.WriteHeader(http.StatusAccepted)
-					posted <- struct{}{}
-				}
-			}))
-			t.Cleanup(server.Close)
+				}))
+				t.Cleanup(server.Close)
 
-			trans, err := NewSSE(server.URL + "/sse")
-			require.NoError(t, err)
-			require.NoError(t, trans.Start(t.Context()))
-			t.Cleanup(func() { _ = trans.Close() })
+				trans, err := NewSSE(server.URL + "/sse")
+				require.NoError(t, err)
+				require.NoError(t, trans.Start(t.Context()))
+				t.Cleanup(func() { _ = trans.Close() })
 
-			response, err := trans.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: mcp.JSONRPC_VERSION, ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
-			require.NoError(t, err)
-			assert.JSONEq(t, `{"answer":42}`, string(response.Result))
-		})
+				response, err := trans.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: mcp.JSONRPC_VERSION, ID: tc.id, Method: "tools/list"})
+				require.NoError(t, err)
+				assert.JSONEq(t, `{"answer":42}`, string(response.Result))
+			})
+		}
 	}
 }
 
