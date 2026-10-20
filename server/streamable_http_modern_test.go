@@ -329,6 +329,20 @@ func TestModernProtocol_HeaderValidation(t *testing.T) {
 		errDetails := decodeJSONRPC(t, resp)["error"].(map[string]any)
 		assert.Equal(t, float64(mcp.HEADER_MISMATCH), errDetails["code"])
 	})
+
+	// The header goes on the wire as the client spelled it; the server finds
+	// it all the same.
+	t.Run("Last-Event-ID in lower case is refused", func(t *testing.T) {
+		resp := newRequest(t, func(r *http.Request) { r.Header["last-event-id"] = []string{"42"} })
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		errDetails := decodeJSONRPC(t, resp)["error"].(map[string]any)
+		assert.Equal(t, float64(mcp.HEADER_MISMATCH), errDetails["code"])
+	})
+}
+
+// The Last-Event-ID key is canonical, so looking it up costs no allocation.
+func TestHeaderKeyLastEventIDIsCanonical(t *testing.T) {
+	assert.Equal(t, http.CanonicalHeaderKey(mcp.HeaderLastEventID), headerKeyLastEventID)
 }
 
 // A request missing a required _meta field is malformed, and over HTTP it is

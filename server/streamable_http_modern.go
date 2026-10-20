@@ -110,7 +110,7 @@ func (s *StreamableHTTPServer) validateModernRequest(
 ) bool {
 	// Streams are no longer resumable, so Last-Event-ID has no meaning on a
 	// POST and its presence signals a confused client.
-	if r.header().Get(mcp.HeaderLastEventID) != "" {
+	if r.header().Get(headerKeyLastEventID) != "" {
 		s.writeJSONRPCErrorStatus(w, id, mcp.HEADER_MISMATCH,
 			"Last-Event-ID is not supported in protocol version "+mcp.ProtocolVersion20260728+
 				": streams are not resumable, re-issue the request with a new ID",
