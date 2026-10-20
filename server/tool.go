@@ -9,6 +9,8 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -58,19 +60,50 @@ func validateToolName(name string) error {
 
 // checkToolDefinition runs every registration-time check on a tool: its name,
 // its x-mcp-header annotations, and, with validation on, that its schemas
-// compile. Called with toolsMu held; the caller panics on an error, as a
-// definition the server cannot serve is a programming error.
-func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) error {
+// compile. It returns the compiled input schema, nil with input validation
+// off or for a tool with none, for keepInputSchema. Called with toolsMu held;
+// the caller panics on an error, as a definition the server cannot serve is a
+// programming error.
+func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (*jsonschema.Schema, error) {
 	if err := validateToolName(tool.Name); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateToolHeaderAnnotations(tool); err != nil {
-		return err
+		return nil, err
 	}
-	if err := s.inputValidator.compileAtRegistration(*tool); err != nil {
-		return err
+	inputSchema, err := s.inputValidator.compileAtRegistration(*tool)
+	if err != nil {
+		return nil, err
 	}
-	return s.outputValidator.compileAtRegistration(*tool)
+	if err := s.outputValidator.compileAtRegistration(*tool); err != nil {
+		return nil, err
+	}
+	return inputSchema, nil
+}
+
+// keepInputSchema keeps the input schema registration compiled for the tool
+// called name, nil for a tool with none, so a call validates against it
+// without reading the tool's schema again. Nothing is kept with input
+// validation off. Called with toolsMu held.
+func (s *MCPServer) keepInputSchema(name string, compiled *jsonschema.Schema) {
+	if s.inputValidator == nil {
+		return
+	}
+	if s.toolInputSchemas == nil {
+		s.toolInputSchemas = make(map[string]*jsonschema.Schema)
+	}
+	s.toolInputSchemas[name] = compiled
+}
+
+// keptInputSchema returns the input schema registration kept for the tool
+// called name, and whether one was kept. Called with toolsMu held, so the
+// schema belongs to the tool definition read under the same lock.
+func (s *MCPServer) keptInputSchema(name string) (*jsonschema.Schema, bool) {
+	if s.inputValidator == nil {
+		return nil, false
+	}
+	compiled, ok := s.toolInputSchemas[name]
+	return compiled, ok
 }
 
 // AddTool registers a new tool and its handler
@@ -93,6 +126,7 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 	// Stage the whole batch before touching the registry so a rejected entry
 	// leaves earlier ones unregistered as well.
 	staged := make(map[string]ServerTool, len(tools))
+	inputSchemas := make(map[string]*jsonschema.Schema, len(tools))
 	for _, entry := range tools {
 		name := entry.Tool.Name
 		// Check for collision with task tools
@@ -101,15 +135,18 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		if err := s.checkToolDefinition(&entry.Tool); err != nil {
+		inputSchema, err := s.checkToolDefinition(&entry.Tool)
+		if err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		staged[name] = entry
+		inputSchemas[name] = inputSchema
 	}
 	maps.Copy(s.tools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
+		s.keepInputSchema(name, inputSchemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -126,6 +163,7 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 
 	s.toolsMu.Lock()
 	staged := make(map[string]ServerTaskTool, len(taskTools))
+	inputSchemas := make(map[string]*jsonschema.Schema, len(taskTools))
 	for _, entry := range taskTools {
 		name := entry.Tool.Name
 		// Check for collision with regular tools
@@ -134,15 +172,18 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 			panic(fmt.Sprintf("task tool name '%s' already registered as regular tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		if err := s.checkToolDefinition(&entry.Tool); err != nil {
+		inputSchema, err := s.checkToolDefinition(&entry.Tool)
+		if err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		staged[name] = entry
+		inputSchemas[name] = inputSchema
 	}
 	maps.Copy(s.taskTools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
+		s.keepInputSchema(name, inputSchemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -164,6 +205,7 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 
 	s.toolsMu.Lock()
 	newTools := make(map[string]ServerTool, len(tools))
+	inputSchemas := make(map[string]*jsonschema.Schema, len(tools))
 	for _, entry := range tools {
 		name := entry.Tool.Name
 		// Check for collision with task tools
@@ -172,18 +214,22 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		if err := s.checkToolDefinition(&entry.Tool); err != nil {
+		inputSchema, err := s.checkToolDefinition(&entry.Tool)
+		if err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		newTools[name] = entry
+		inputSchemas[name] = inputSchema
 	}
 	for name := range s.tools {
 		delete(s.toolHeaderBindings, name)
+		delete(s.toolInputSchemas, name)
 	}
 	s.tools = newTools
 	for name, entry := range newTools {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
+		s.keepInputSchema(name, inputSchemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -229,6 +275,7 @@ func (s *MCPServer) DeleteTools(names ...string) {
 		if _, ok := s.tools[name]; ok {
 			delete(s.tools, name)
 			delete(s.toolHeaderBindings, name)
+			delete(s.toolInputSchemas, name)
 			exists = true
 		}
 	}
@@ -363,6 +410,7 @@ func (s *MCPServer) handleToolCall(
 			taskToolOnly = true
 		}
 	}
+	inputSchema, inputSchemaKept := s.keptInputSchema(request.Params.Name)
 	s.toolsMu.RUnlock()
 
 	if !ok {
@@ -436,7 +484,7 @@ func (s *MCPServer) handleToolCall(
 	// validation failure is returned as a SEP-1303 tool execution error so the
 	// model receives feedback in its context window and can self-correct.
 	if s.inputValidator != nil {
-		if _, err := s.inputValidator.validate(tool.Tool, s.argumentsToValidate(request)); err != nil {
+		if _, err := s.inputValidator.validateRegistered(tool.Tool, inputSchema, inputSchemaKept, s.argumentsToValidate(request)); err != nil {
 			return validationToolResult(err), nil
 		}
 	}

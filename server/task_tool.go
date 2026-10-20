@@ -48,6 +48,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	s.toolsMu.RLock()
 	taskTool, isTaskTool := s.taskTools[request.Params.Name]
 	regularTool, isRegularTool := s.tools[request.Params.Name]
+	inputSchema, inputSchemaKept := s.keptInputSchema(request.Params.Name)
 	s.toolsMu.RUnlock()
 
 	// Determine which tool to use and validate task support
@@ -92,7 +93,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 		if hasTaskHandler {
 			toolDef = toolToUse.Tool
 		}
-		if _, err := s.inputValidator.validate(toolDef, s.argumentsToValidate(request)); err != nil {
+		if _, err := s.inputValidator.validateRegistered(toolDef, inputSchema, inputSchemaKept, s.argumentsToValidate(request)); err != nil {
 			invalid = err
 		}
 	}

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/tracing"
 )
@@ -158,7 +160,12 @@ type MCPServer struct {
 	// extracted once at registration so a tools/call never re-reads the input
 	// schema. Keyed like tools and taskTools and kept in step with them under
 	// toolsMu.
-	toolHeaderBindings       map[string][]mcp.ParamHeaderBinding
+	toolHeaderBindings map[string][]mcp.ParamHeaderBinding
+	// toolInputSchemas holds, with input validation on, each registered
+	// tool's input schema as registration compiled it, nil for a tool with
+	// none, so a validated tools/call neither marshals nor hashes the schema
+	// again. Keyed and kept like toolHeaderBindings.
+	toolInputSchemas         map[string]*jsonschema.Schema
 	paginationLimit          *int
 	toolResultSizeLimit      int
 	sessions                 sync.Map
@@ -266,6 +273,7 @@ func NewMCPServer(
 		tools:                      make(map[string]ServerTool),
 		taskTools:                  make(map[string]ServerTaskTool),
 		toolHeaderBindings:         make(map[string][]mcp.ParamHeaderBinding),
+		toolInputSchemas:           make(map[string]*jsonschema.Schema),
 		toolHandlerMiddlewares:     make([]ToolHandlerMiddleware, 0),
 		resourceHandlerMiddlewares: make([]ResourceHandlerMiddleware, 0),
 		promptHandlerMiddlewares:   make([]PromptHandlerMiddleware, 0),
