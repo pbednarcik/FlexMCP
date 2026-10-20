@@ -39,9 +39,11 @@ const (
 	maxCachedMetaStrings = 256
 )
 
-// maxPooledMetaInput bounds the input whose decoder goes back to the pool: its
-// buffers grow with the input, and a large one is not kept.
-const maxPooledMetaInput = 64 << 10
+// maxFastMetaInput bounds the input the single pass reads; a larger one goes
+// to the slow decoder. A decoder's buffers grow with its input, so none is
+// kept that a large input grew, and a large input that fails at its end is
+// not first built value by value.
+const maxFastMetaInput = 64 << 10
 
 // metaDecoders keeps the decoders between requests, so a decode makes none.
 var metaDecoders = sync.Pool{New: func() any {
@@ -75,16 +77,18 @@ var metaConstStrings = func() map[string]any {
 // would, and reports whether it could. It gives up, leaving m as it was, on
 // any input it cannot settle exactly as encoding/json does: not an object,
 // trailing data, a syntax error, invalid UTF-8 or an escape it cannot read, a
-// number out of range, or a key other than progressToken that folds to it.
+// number out of range, a key other than progressToken that folds to it, or
+// an input longer than maxFastMetaInput.
 func (m *Meta) unmarshalFast(data []byte) bool {
+	if len(data) > maxFastMetaInput {
+		return false
+	}
 	d := metaDecoders.Get().(*metaDecoder)
 	d.r.Reset(data)
 	d.dec.Reset(&d.r, metaJSONOptions)
 	ok := d.meta(m)
 	d.r.Reset(nil)
-	if len(data) <= maxPooledMetaInput {
-		metaDecoders.Put(d)
-	}
+	metaDecoders.Put(d)
 	return ok
 }
 

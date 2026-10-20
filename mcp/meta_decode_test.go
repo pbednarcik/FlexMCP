@@ -281,6 +281,25 @@ func TestMetaUnmarshalNewKeysAllocations(t *testing.T) {
 	assert.LessOrEqual(t, fast, slow, "allocations per Meta.UnmarshalJSON of 300 keys and new values, against the slow decoder")
 }
 
+// A _meta past maxFastMetaInput goes straight to the slow decoder: a large
+// one that fails at its end costs what json.Unmarshal's own check costs, not
+// a pass that builds every value before the error.
+func TestMetaUnmarshalLargeInvalidAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	data := []byte(`{"a":[` + strings.Repeat(`1,`, maxFastMetaInput) + `x]}`)
+	fast := testing.AllocsPerRun(20, func() {
+		var m Meta
+		_ = m.UnmarshalJSON(data)
+	})
+	slow := testing.AllocsPerRun(20, func() {
+		var m Meta
+		_ = m.unmarshalJSONSlow(data)
+	})
+	assert.LessOrEqual(t, fast, slow, "allocations per Meta.UnmarshalJSON of a large _meta that fails at its end, against the slow decoder")
+}
+
 // FuzzMetaFastMatchesSlow holds the differential for any input, from the
 // corpus up.
 func FuzzMetaFastMatchesSlow(f *testing.F) {
