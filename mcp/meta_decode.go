@@ -1,0 +1,258 @@
+package mcp
+
+import (
+	"bytes"
+	"encoding/json"
+	"encoding/json/jsontext"
+	"io"
+	"strconv"
+	"strings"
+	"sync"
+	"unicode/utf8"
+)
+
+// metaDecoder is the pooled state of one fast _meta decode: a reader over the
+// input, a decoder with encoding/json's own options on it, and a buffer for
+// strings that hold escapes.
+type metaDecoder struct {
+	r   bytes.Reader
+	dec *jsontext.Decoder
+	unq []byte
+}
+
+// metaDecodeOptions are encoding/json's own: duplicate names are allowed, the
+// last one winning, as json.Unmarshal allows them.
+var metaDecodeOptions = json.DefaultOptionsV1()
+
+// maxPooledMetaInput bounds the input whose decoder goes back to the pool: its
+// buffers grow with the input, and a large one is not kept.
+const maxPooledMetaInput = 64 << 10
+
+// metaDecoders keeps the decoders between requests, so a decode makes none.
+var metaDecoders = sync.Pool{New: func() any {
+	d := new(metaDecoder)
+	d.dec = jsontext.NewDecoder(&d.r, metaDecodeOptions)
+	return d
+}}
+
+// metaConstStrings are the keys and values clients send on every request,
+// boxed once: the well-known keys and the common keys inside them, the
+// protocol versions and the log levels. A string read as one of them costs
+// nothing.
+var metaConstStrings = func() map[string]any {
+	m := make(map[string]any)
+	for _, s := range []string{
+		MetaKeyProtocolVersion, MetaKeyClientInfo, MetaKeyClientCapabilities, MetaKeyServerInfo,
+		MetaKeyLogLevel, MetaKeySubscriptionID, "progressToken",
+		"name", "version", "title", "description", "websiteUrl", "icons", "src", "mimeType", "sizes", "theme",
+		"roots", "listChanged", "sampling", "context", "tools", "elicitation", "form", "url", "tasks",
+		"extensions", "experimental", "list", "cancel", "requests",
+		ProtocolVersion20260728, ProtocolVersion20251125, ProtocolVersion20250618, ProtocolVersion20250326, ProtocolVersion20241105,
+		string(LoggingLevelDebug), string(LoggingLevelInfo), string(LoggingLevelNotice), string(LoggingLevelWarning),
+		string(LoggingLevelError), string(LoggingLevelCritical), string(LoggingLevelAlert), string(LoggingLevelEmergency),
+	} {
+		m[s] = s
+	}
+	return m
+}()
+
+// unmarshalFast reads data into m in one pass, as [Meta.unmarshalJSONSlow]
+// would, and reports whether it could. It gives up, leaving m as it was, on
+// any input it cannot settle exactly as encoding/json does: not an object,
+// trailing data, a syntax error, invalid UTF-8 or an escape it cannot read, a
+// number out of range, or a key other than progressToken that folds to it.
+func (m *Meta) unmarshalFast(data []byte) bool {
+	d := metaDecoders.Get().(*metaDecoder)
+	d.r.Reset(data)
+	d.dec.Reset(&d.r, metaDecodeOptions)
+	ok := d.meta(m)
+	d.r.Reset(nil)
+	if len(data) <= maxPooledMetaInput {
+		metaDecoders.Put(d)
+	}
+	return ok
+}
+
+// meta reads the top-level object into m, or reports false with m unchanged.
+func (d *metaDecoder) meta(m *Meta) bool {
+	if d.dec.PeekKind() != '{' {
+		return false
+	}
+	if _, err := d.dec.ReadToken(); err != nil {
+		return false
+	}
+	fields := make(map[string]any)
+	var token ProgressToken
+	for d.dec.PeekKind() != '}' {
+		key, ok := d.name()
+		if !ok {
+			return false
+		}
+		if key == "progressToken" {
+			if token, ok = d.progressToken(); !ok {
+				return false
+			}
+			continue
+		}
+		// The slow path re-reads a numeric token by a case-insensitive
+		// match, which such a key would take part in.
+		if strings.EqualFold(key, "progressToken") {
+			return false
+		}
+		value, ok := d.value()
+		if !ok {
+			return false
+		}
+		fields[key] = value
+	}
+	if _, err := d.dec.ReadToken(); err != nil {
+		return false
+	}
+	if _, err := d.dec.ReadToken(); err != io.EOF {
+		return false
+	}
+	m.ProgressToken = token
+	m.AdditionalFields = fields
+	return true
+}
+
+// progressToken reads the progress token as the slow path keeps it: a number
+// as [decodeProgressToken] reads it, anything else as any other value.
+func (d *metaDecoder) progressToken() (ProgressToken, bool) {
+	if d.dec.PeekKind() != '0' {
+		return d.value()
+	}
+	v, err := d.dec.ReadValue()
+	if err != nil {
+		return nil, false
+	}
+	// A number out of a float64's range fails the slow path's decode.
+	if _, err := strconv.ParseFloat(string(v), 64); err != nil {
+		return nil, false
+	}
+	token, err := decodeProgressToken(v)
+	if err != nil {
+		return nil, false
+	}
+	return token, true
+}
+
+// value reads the next value as json.Unmarshal into an any reads it.
+func (d *metaDecoder) value() (any, bool) {
+	switch d.dec.PeekKind() {
+	case '"':
+		v, err := d.dec.ReadValue()
+		if err != nil {
+			return nil, false
+		}
+		s, boxed, ok := d.text(v)
+		if !ok {
+			return nil, false
+		}
+		if boxed != nil {
+			return boxed, true
+		}
+		return s, true
+	case '0':
+		v, err := d.dec.ReadValue()
+		if err != nil {
+			return nil, false
+		}
+		f, err := strconv.ParseFloat(string(v), 64)
+		if err != nil {
+			return nil, false
+		}
+		return f, true
+	case 't', 'f':
+		tok, err := d.dec.ReadToken()
+		if err != nil {
+			return nil, false
+		}
+		return tok.Bool(), true
+	case 'n':
+		if _, err := d.dec.ReadToken(); err != nil {
+			return nil, false
+		}
+		return nil, true
+	case '{':
+		return d.object()
+	case '[':
+		return d.array()
+	}
+	return nil, false
+}
+
+// object reads a nested object into a map of its own.
+func (d *metaDecoder) object() (any, bool) {
+	if _, err := d.dec.ReadToken(); err != nil {
+		return nil, false
+	}
+	m := make(map[string]any)
+	for d.dec.PeekKind() != '}' {
+		key, ok := d.name()
+		if !ok {
+			return nil, false
+		}
+		value, ok := d.value()
+		if !ok {
+			return nil, false
+		}
+		m[key] = value
+	}
+	if _, err := d.dec.ReadToken(); err != nil {
+		return nil, false
+	}
+	return m, true
+}
+
+// array reads an array into a slice of its own, an empty one not nil.
+func (d *metaDecoder) array() (any, bool) {
+	if _, err := d.dec.ReadToken(); err != nil {
+		return nil, false
+	}
+	a := []any{}
+	for d.dec.PeekKind() != ']' {
+		value, ok := d.value()
+		if !ok {
+			return nil, false
+		}
+		a = append(a, value)
+	}
+	if _, err := d.dec.ReadToken(); err != nil {
+		return nil, false
+	}
+	return a, true
+}
+
+// name reads an object's next key. Unlike a value, a key is never boxed.
+func (d *metaDecoder) name() (string, bool) {
+	v, err := d.dec.ReadValue()
+	if err != nil {
+		return "", false
+	}
+	s, _, ok := d.text(v)
+	return s, ok
+}
+
+// text returns the string the JSON string literal v holds and, when it is one
+// of [metaConstStrings], its boxed form; false where the slow path should
+// decide.
+func (d *metaDecoder) text(v jsontext.Value) (s string, boxed any, ok bool) {
+	if len(v) < 2 || v[0] != '"' {
+		return "", nil, false
+	}
+	body := []byte(v[1 : len(v)-1])
+	if bytes.IndexByte(body, '\\') >= 0 {
+		var err error
+		if d.unq, err = jsontext.AppendUnquote(d.unq[:0], v); err != nil {
+			return "", nil, false
+		}
+		body = d.unq
+	} else if !utf8.Valid(body) {
+		return "", nil, false
+	}
+	if c, ok := metaConstStrings[string(body)]; ok {
+		return c.(string), c, true
+	}
+	return string(body), nil, true
+}

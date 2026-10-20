@@ -96,7 +96,8 @@ func TestStreamableHTTPReadsOnceWithTheSameAnswers(t *testing.T) {
 // straight out, 63 with the core's context layers made in one allocation, 60
 // with the result written straight into the response, 61 once modern
 // decoration stamps a private copy of the handler's result rather than the
-// result itself (decorateResult).
+// result itself (decorateResult; 59 measured), 46 with _meta read in one
+// pass.
 func TestStreamableHTTPModernToolCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -111,5 +112,5 @@ func TestStreamableHTTPModernToolCallAllocations(t *testing.T) {
 	}
 	harness := testing.AllocsPerRun(1000, func() { _, _ = request(), httptest.NewRecorder() })
 	total := testing.AllocsPerRun(1000, func() { h.ServeHTTP(httptest.NewRecorder(), request()) })
-	assert.LessOrEqual(t, total-harness, 61.0, "allocations in the server per modern tools/call over HTTP")
+	assert.LessOrEqual(t, total-harness, 46.0, "allocations in the server per modern tools/call over HTTP")
 }

@@ -303,7 +303,22 @@ func plainMetaName(key string) bool {
 	return true
 }
 
+// UnmarshalJSON reads _meta into the map json.Unmarshal into map[string]any
+// builds, with the progress token taken out of it and an integer token kept
+// exact: an int64, or a json.Number past it. A single pass reads what it can
+// settle exactly as encoding/json does; any other input, an error included,
+// is read by json.Unmarshal itself, so the result and the error are the same
+// either way.
 func (m *Meta) UnmarshalJSON(data []byte) error {
+	if m.unmarshalFast(data) {
+		return nil
+	}
+	return m.unmarshalJSONSlow(data)
+}
+
+// unmarshalJSONSlow reads _meta with json.Unmarshal into a map, then reads a
+// numeric progress token again on its own to keep it exact.
+func (m *Meta) unmarshalJSONSlow(data []byte) error {
 	raw := make(map[string]any)
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
