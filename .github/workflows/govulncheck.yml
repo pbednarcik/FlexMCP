@@ -1,0 +1,25 @@
+name: govulncheck
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  schedule:
+    # Weekly, so a vulnerability published for a dependency shows up without a push.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: ['.', 'otel']
+    steps:
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          work-dir: ${{ matrix.module }}
