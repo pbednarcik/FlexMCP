@@ -61,6 +61,12 @@ var metaDiffCorpus = []string{
 	`{"progressToken":9223372036854775808}`, `{"progressToken":1.5}`, `{"progressToken":1e2}`, `{"progressToken":-0}`,
 	`{"progressToken":0}`, `{"progressToken":1e400}`, `{"progressToken":-7}`, `{"progressToken":100000000000000000000000}`,
 	`{"progressToken":300}`, `{"progressToken" : 42 }`,
+	// integers of 308 and 309 digits: an int64 cannot hold either, a float64
+	// holds the first and not the second, so the slow path fails on it
+	`{"progressToken":` + strings.Repeat("9", 308) + `}`,
+	`{"progressToken":2` + strings.Repeat("0", 308) + `}`,
+	`{"progressToken":-2` + strings.Repeat("0", 308) + `}`,
+	`{"a":2` + strings.Repeat("0", 308) + `}`,
 	// arrays of everything
 	`{"a":[null,true,false,0,"s",{},[],{"k":[1,"2",{"x":null}]}]}`,
 	// long strings and many keys
