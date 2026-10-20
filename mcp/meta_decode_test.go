@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,7 +61,10 @@ var metaDiffCorpus = []string{
 	`{"progressToken":12345678901234567890}`, `{"progressToken":9223372036854775807}`, `{"progressToken":-9223372036854775808}`,
 	`{"progressToken":9223372036854775808}`, `{"progressToken":1.5}`, `{"progressToken":1e2}`, `{"progressToken":-0}`,
 	`{"progressToken":0}`, `{"progressToken":1e400}`, `{"progressToken":-7}`, `{"progressToken":100000000000000000000000}`,
-	`{"progressToken":300}`, `{"progressToken" : 42 }`,
+	`{"progressToken":300}`, `{"progressToken" : 42 }`, `{"progressToken":-0.0}`, `{"progressToken":-0e0}`,
+	// negative zero, which reflect.DeepEqual takes for zero: nested and in
+	// arrays
+	`{"a":{"b":-0,"c":{"d":-0.0}},"e":[-0,0,-0e0,[-0]],"f":[{"g":-0}]}`,
 	// integers of 308 and 309 digits: an int64 cannot hold either, a float64
 	// holds the first and not the second, so the slow path fails on it
 	`{"progressToken":` + strings.Repeat("9", 308) + `}`,
@@ -93,6 +97,8 @@ func checkMetaDiff(t *testing.T, data []byte) bool {
 	} else {
 		require.NoError(t, gotErr, "%q", data)
 		require.Equal(t, want, got, "%q", data)
+		requireSameFloatBits(t, want.AdditionalFields, got.AdditionalFields, data)
+		requireSameFloatBits(t, want.ProgressToken, got.ProgressToken, data)
 	}
 
 	// The contract in its own terms: json.Unmarshal into map[string]any, the
@@ -104,6 +110,7 @@ func checkMetaDiff(t *testing.T, data []byte) bool {
 		token := generic["progressToken"]
 		delete(generic, "progressToken")
 		require.Equal(t, generic, got.AdditionalFields, "%q", data)
+		requireSameFloatBits(t, generic, got.AdditionalFields, data)
 		switch f, number := token.(float64); {
 		case foldsToProgressToken(generic):
 			// A numeric token is re-read by a case-insensitive match, so a
@@ -115,6 +122,32 @@ func checkMetaDiff(t *testing.T, data []byte) bool {
 		}
 	}
 	return (&Meta{}).unmarshalFast(data)
+}
+
+// requireSameFloatBits requires got, a decoded value of want's shape, to hold
+// every float64 want holds bit for bit: reflect.DeepEqual takes -0 for 0.
+func requireSameFloatBits(t *testing.T, want, got any, data []byte) {
+	t.Helper()
+	switch w := want.(type) {
+	case float64:
+		g, ok := got.(float64)
+		require.True(t, ok, "%q: %#v, want a float64", data, got)
+		require.Equal(t, math.Float64bits(w), math.Float64bits(g), "%q: %v, want %v", data, g, w)
+	case map[string]any:
+		g, ok := got.(map[string]any)
+		require.True(t, ok, "%q: %#v, want a map", data, got)
+		require.Len(t, g, len(w), "%q", data)
+		for key, value := range w {
+			requireSameFloatBits(t, value, g[key], data)
+		}
+	case []any:
+		g, ok := got.([]any)
+		require.True(t, ok, "%q: %#v, want a slice", data, got)
+		require.Len(t, g, len(w), "%q", data)
+		for i, value := range w {
+			requireSameFloatBits(t, value, g[i], data)
+		}
+	}
 }
 
 // foldsToProgressToken reports whether a key of m other than progressToken
