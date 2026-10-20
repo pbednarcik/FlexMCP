@@ -652,3 +652,129 @@ func TestTaskHooks_ACreatedHookMayCancelItsOwnTask(t *testing.T) {
 	defer mu.Unlock()
 	assert.Equal(t, []string{"created", "cancelled"}, events)
 }
+
+// Every task hook may read task state through the server, whichever event it
+// reports: none runs under the task lock (upstream #1065).
+func TestTaskHooks_CanReadTaskState(t *testing.T) {
+	for _, event := range []string{"created", "completed", "failed", "cancelled", "task handler cancellation", "regular handler cancellation"} {
+		t.Run(event, func(t *testing.T) {
+			var server *MCPServer
+			observed := make(chan struct{})
+			// getTask takes the task lock for reading: under the write lock
+			// it never returns.
+			observe := func(context.Context, TaskMetrics) {
+				_, _, err := server.getTask(t.Context(), "task")
+				assert.NoError(t, err)
+				close(observed)
+			}
+			hooks := &TaskHooks{}
+			switch event {
+			case "created":
+				hooks.AddOnTaskCreated(observe)
+			case "completed":
+				hooks.AddOnTaskCompleted(observe)
+			case "failed":
+				hooks.AddOnTaskFailed(observe)
+			default:
+				hooks.AddOnTaskCancelled(observe)
+			}
+			server = NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks))
+			// A handler whose task context has ended takes the
+			// handler-detected cancellation path, with no tasks/cancel.
+			ended, end := context.WithCancel(t.Context())
+			end()
+			done := make(chan error, 1)
+			go func() {
+				entry, err := server.createTask(t.Context(), "task", "tool", nil, nil)
+				if err != nil {
+					done <- err
+					return
+				}
+				switch event {
+				case "completed":
+					server.completeTask(entry, nil, nil)
+				case "failed":
+					server.completeTask(entry, nil, errors.New("failure"))
+				case "cancelled":
+					err = server.cancelTask(t.Context(), "task")
+				case "task handler cancellation":
+					server.executeTaskTool(ended, entry, ServerTaskTool{Handler: func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}}, mcp.CallToolRequest{})
+				case "regular handler cancellation":
+					server.executeRegularToolAsTask(ended, entry, ServerTool{Handler: func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}}, mcp.CallToolRequest{})
+				}
+				done <- err
+			}()
+			select {
+			case <-observed:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("the %s hook deadlocked reading task state", event)
+			}
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("the %s event never returned", event)
+			}
+		})
+	}
+}
+
+// A hook's metrics are a snapshot of the event it reports, even when a
+// completion and a cancellation race: the status hook sees the created event,
+// then the one terminal event that won, and the task keeps that status
+// (upstream #1065).
+func TestTaskHooks_MetricsRemainEventSnapshotsDuringConcurrentCompletion(t *testing.T) {
+	for i := range 100 {
+		var server *MCPServer
+		var mu sync.Mutex
+		var events []TaskMetrics
+		taskID := fmt.Sprintf("task-%d", i)
+		hooks := &TaskHooks{}
+		hooks.AddOnTaskStatusChanged(func(ctx context.Context, metrics TaskMetrics) {
+			_, _, _ = server.getTask(ctx, taskID)
+			mu.Lock()
+			events = append(events, metrics)
+			mu.Unlock()
+		})
+		server = NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks))
+		// The created hook runs on createTask's goroutine: it too goes
+		// under the deadline.
+		finished := make(chan error, 1)
+		go func() {
+			entry, err := server.createTask(t.Context(), taskID, "tool", nil, nil)
+			if err != nil {
+				finished <- err
+				return
+			}
+			var wg sync.WaitGroup
+			wg.Go(func() { server.completeTask(entry, nil, nil) })
+			wg.Go(func() { _ = server.cancelTask(t.Context(), taskID) })
+			wg.Wait()
+			finished <- nil
+		}()
+		select {
+		case err := <-finished:
+			require.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("a hook deadlocked reading task state while a completion and a cancellation raced")
+		}
+
+		mu.Lock()
+		got := events
+		mu.Unlock()
+		require.Len(t, got, 2)
+		assert.Equal(t, mcp.TaskStatusWorking, got[0].Status)
+		assert.Nil(t, got[0].CompletedAt)
+		assert.True(t, got[1].Status.IsTerminal())
+		assert.NotNil(t, got[1].CompletedAt)
+		task, _, err := server.getTask(t.Context(), taskID)
+		require.NoError(t, err)
+		assert.Equal(t, task.Status, got[1].Status)
+	}
+}
