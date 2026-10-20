@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"bytes"
-	"encoding/json"
 	"encoding/json/jsontext"
 	"io"
 	"strconv"
@@ -33,10 +32,6 @@ const (
 	maxCachedMetaStrings = 256
 )
 
-// metaDecodeOptions are encoding/json's own: duplicate names are allowed, the
-// last one winning, as json.Unmarshal allows them.
-var metaDecodeOptions = json.DefaultOptionsV1()
-
 // maxPooledMetaInput bounds the input whose decoder goes back to the pool: its
 // buffers grow with the input, and a large one is not kept.
 const maxPooledMetaInput = 64 << 10
@@ -44,7 +39,7 @@ const maxPooledMetaInput = 64 << 10
 // metaDecoders keeps the decoders between requests, so a decode makes none.
 var metaDecoders = sync.Pool{New: func() any {
 	d := &metaDecoder{strs: make(map[string]any, maxCachedMetaStrings)}
-	d.dec = jsontext.NewDecoder(&d.r, metaDecodeOptions)
+	d.dec = jsontext.NewDecoder(&d.r, metaJSONOptions)
 	return d
 }}
 
@@ -77,7 +72,7 @@ var metaConstStrings = func() map[string]any {
 func (m *Meta) unmarshalFast(data []byte) bool {
 	d := metaDecoders.Get().(*metaDecoder)
 	d.r.Reset(data)
-	d.dec.Reset(&d.r, metaDecodeOptions)
+	d.dec.Reset(&d.r, metaJSONOptions)
 	ok := d.meta(m)
 	d.r.Reset(nil)
 	if len(data) <= maxPooledMetaInput {
@@ -253,9 +248,6 @@ func (d *metaDecoder) name() (string, bool) {
 // the slow path should decide. A string kept is looked up by its bytes, so
 // it is always the string read.
 func (d *metaDecoder) text(v jsontext.Value) (s string, boxed any, ok bool) {
-	if len(v) < 2 || v[0] != '"' {
-		return "", nil, false
-	}
 	body := []byte(v[1 : len(v)-1])
 	if bytes.IndexByte(body, '\\') >= 0 {
 		var err error

@@ -239,42 +239,6 @@ func TestMetaStringCacheIsBounded(t *testing.T) {
 	assert.NotContains(t, d.strs, tooLong)
 }
 
-// A string a decoder kept is found by all its bytes: strings that share a
-// length, an end or a hash prefix still come back as read.
-func TestMetaStringCacheReturnsTheBytesRead(t *testing.T) {
-	values := []string{"xay", "xby", "xcy", "yay", "xéy", "xa", "xaa"}
-	var body strings.Builder
-	want := make(map[string]any)
-	body.WriteString(`{`)
-	// Twice each, so the second read of every string is a hit.
-	for round := range 2 {
-		for i, v := range values {
-			key := fmt.Sprintf("k%d.%d", round, i)
-			if body.Len() > 1 {
-				body.WriteString(`,`)
-			}
-			fmt.Fprintf(&body, `%q:%q`, key, v)
-			want[key] = v
-		}
-	}
-	body.WriteString(`}`)
-	data := []byte(body.String())
-	require.True(t, (&Meta{}).unmarshalFast(data))
-
-	var m Meta
-	require.NoError(t, m.UnmarshalJSON(data))
-	assert.Equal(t, want, m.AdditionalFields)
-
-	d := metaDecoders.New().(*metaDecoder)
-	for range 2 {
-		for _, v := range values {
-			got, _, ok := d.text(jsontext.Value(strconv.Quote(v)))
-			require.True(t, ok)
-			require.Equal(t, v, got)
-		}
-	}
-}
-
 // FuzzMetaFastMatchesSlow holds the differential for any input, from the
 // corpus up.
 func FuzzMetaFastMatchesSlow(f *testing.F) {

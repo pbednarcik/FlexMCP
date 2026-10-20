@@ -226,7 +226,8 @@ func (m *Meta) MarshalJSON() ([]byte, error) {
 }
 
 // metaJSONOptions are encoding/json's own, so [Meta.MarshalJSON] writes what
-// json.Marshal would.
+// json.Marshal would and [Meta.UnmarshalJSON]'s single pass reads as
+// json.Unmarshal does: duplicate names allowed, the last one winning.
 var metaJSONOptions = json.DefaultOptionsV1()
 
 // MarshalJSONTo writes the fields as one object into the encoder of the value
