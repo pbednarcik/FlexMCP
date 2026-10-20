@@ -17,11 +17,18 @@ type metaDecoder struct {
 	r   bytes.Reader
 	dec *jsontext.Decoder
 	unq []byte
-	// strs holds strings this decoder read before, boxed, by their bytes: a
-	// client sends the same ones on every request. It holds at most
+	// strs holds strings this decoder read before, by their bytes: a client
+	// sends the same ones on every request. It holds at most
 	// maxCachedMetaStrings, each at most maxCachedMetaString bytes long, and
 	// is cleared when full.
-	strs map[string]any
+	strs map[string]metaString
+}
+
+// metaString is a string a decoder kept, and its boxed form once it was read
+// as a value: a key is never boxed.
+type metaString struct {
+	s   string
+	box any
 }
 
 const (
@@ -38,7 +45,7 @@ const maxPooledMetaInput = 64 << 10
 
 // metaDecoders keeps the decoders between requests, so a decode makes none.
 var metaDecoders = sync.Pool{New: func() any {
-	d := &metaDecoder{strs: make(map[string]any, maxCachedMetaStrings)}
+	d := &metaDecoder{strs: make(map[string]metaString, maxCachedMetaStrings)}
 	d.dec = jsontext.NewDecoder(&d.r, metaJSONOptions)
 	return d
 }}
@@ -153,7 +160,7 @@ func (d *metaDecoder) value() (any, bool) {
 		if err != nil {
 			return nil, false
 		}
-		s, boxed, ok := d.text(v)
+		s, boxed, ok := d.text(v, true)
 		if !ok {
 			return nil, false
 		}
@@ -232,22 +239,24 @@ func (d *metaDecoder) array() (any, bool) {
 	return a, true
 }
 
-// name reads an object's next key. A key is kept as a value is: a client
-// repeats its keys too, and one kept costs nothing on the next request.
+// name reads an object's next key. A key is kept as a value is, unboxed: a
+// client repeats its keys too, and one kept costs nothing on the next
+// request.
 func (d *metaDecoder) name() (string, bool) {
 	v, err := d.dec.ReadValue()
 	if err != nil {
 		return "", false
 	}
-	s, _, ok := d.text(v)
+	s, _, ok := d.text(v, false)
 	return s, ok
 }
 
 // text returns the string the JSON string literal v holds and, when it is one
-// of [metaConstStrings] or short enough to keep, its boxed form; false where
-// the slow path should decide. A string kept is looked up by its bytes, so
-// it is always the string read.
-func (d *metaDecoder) text(v jsontext.Value) (s string, boxed any, ok bool) {
+// of [metaConstStrings] or a string kept and read as a value, its boxed form;
+// false where the slow path should decide. A string kept is looked up by its
+// bytes, so it is always the string read; it is boxed the first time it is
+// read as a value.
+func (d *metaDecoder) text(v jsontext.Value, value bool) (s string, boxed any, ok bool) {
 	body := []byte(v[1 : len(v)-1])
 	if bytes.IndexByte(body, '\\') >= 0 {
 		var err error
@@ -264,14 +273,19 @@ func (d *metaDecoder) text(v jsontext.Value) (s string, boxed any, ok bool) {
 	if len(body) > maxCachedMetaString {
 		return string(body), nil, true
 	}
-	if c, ok := d.strs[string(body)]; ok {
-		return c.(string), c, true
+	kept, ok := d.strs[string(body)]
+	if ok && (kept.box != nil || !value) {
+		return kept.s, kept.box, true
 	}
-	if len(d.strs) >= maxCachedMetaStrings {
-		clear(d.strs)
+	if !ok {
+		if len(d.strs) >= maxCachedMetaStrings {
+			clear(d.strs)
+		}
+		kept.s = string(body)
 	}
-	s = string(body)
-	boxed = s
-	d.strs[s] = boxed
-	return s, boxed, true
+	if value {
+		kept.box = kept.s
+	}
+	d.strs[kept.s] = kept
+	return kept.s, kept.box, true
 }

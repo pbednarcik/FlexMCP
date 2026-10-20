@@ -224,19 +224,61 @@ func TestMetaStringCacheIsBounded(t *testing.T) {
 	d := metaDecoders.New().(*metaDecoder)
 	for i := range 4 * maxCachedMetaStrings {
 		want := "s" + strconv.Itoa(i)
-		got, _, ok := d.text(jsontext.Value(strconv.Quote(want)))
+		got, _, ok := d.text(jsontext.Value(strconv.Quote(want)), true)
 		require.True(t, ok)
 		require.Equal(t, want, got)
 		require.LessOrEqual(t, len(d.strs), maxCachedMetaStrings, "strings kept after %d read", i+1)
 	}
 
 	longest := strings.Repeat("y", maxCachedMetaString)
-	_, _, _ = d.text(jsontext.Value(strconv.Quote(longest)))
+	_, _, _ = d.text(jsontext.Value(strconv.Quote(longest)), true)
 	assert.Contains(t, d.strs, longest)
 	tooLong := strings.Repeat("z", maxCachedMetaString+1)
-	_, boxed, _ := d.text(jsontext.Value(strconv.Quote(tooLong)))
+	_, boxed, _ := d.text(jsontext.Value(strconv.Quote(tooLong)), true)
 	assert.Nil(t, boxed)
 	assert.NotContains(t, d.strs, tooLong)
+}
+
+// metaThrashBodies are _meta objects of the same 300 keys with values new on
+// each call: more strings per call than a decoder keeps, so it forgets the
+// keys before it reads them again.
+func metaThrashBodies() [][]byte {
+	bodies := make([][]byte, 64)
+	for b := range bodies {
+		var body strings.Builder
+		body.WriteString(`{`)
+		for i := range 300 {
+			if i > 0 {
+				body.WriteString(`,`)
+			}
+			fmt.Fprintf(&body, `"k%d":"v%d_%d"`, i, b, i)
+		}
+		body.WriteString(`}`)
+		bodies[b] = []byte(body.String())
+	}
+	return bodies
+}
+
+// A call of keys a decoder no longer keeps costs no more than json.Unmarshal
+// into a map: a key is kept as a string, never boxed.
+func TestMetaUnmarshalNewKeysAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	bodies := metaThrashBodies()
+	require.True(t, (&Meta{}).unmarshalFast(bodies[0]))
+	i := 0
+	fast := testing.AllocsPerRun(1000, func() {
+		var m Meta
+		_ = m.UnmarshalJSON(bodies[i%len(bodies)])
+		i++
+	})
+	slow := testing.AllocsPerRun(1000, func() {
+		var m Meta
+		_ = m.unmarshalJSONSlow(bodies[i%len(bodies)])
+		i++
+	})
+	assert.LessOrEqual(t, fast, slow, "allocations per Meta.UnmarshalJSON of 300 keys and new values, against the slow decoder")
 }
 
 // FuzzMetaFastMatchesSlow holds the differential for any input, from the
