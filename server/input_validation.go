@@ -169,7 +169,7 @@ func (v *inputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*jsonschema
 // anyway, validation is skipped rather than failing the call. The boolean
 // return reports whether validation actually ran; the error is set only when
 // validation ran and the arguments did not satisfy the schema.
-func (v *inputSchemaValidator) validate(tool mcp.Tool, rawArgs any) (bool, error) {
+func (v *inputSchemaValidator) validate(tool mcp.Tool, args callArguments) (bool, error) {
 	schemaJSON, ok := schemaJSONFor(tool)
 	if !ok {
 		return false, nil
@@ -179,7 +179,7 @@ func (v *inputSchemaValidator) validate(tool mcp.Tool, rawArgs any) (bool, error
 	if err != nil {
 		return false, nil
 	}
-	return validateArguments(compiled, rawArgs)
+	return validateArguments(compiled, args)
 }
 
 // validateRegistered validates raw arguments against the schema registration
@@ -187,21 +187,21 @@ func (v *inputSchemaValidator) validate(tool mcp.Tool, rawArgs any) (bool, error
 // without a kept schema falls back to validate, which reads the schema from
 // the tool, so a registration path that forgets the cache degrades to the
 // per-call read rather than switching validation off.
-func (v *inputSchemaValidator) validateRegistered(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, rawArgs any) (bool, error) {
+func (v *inputSchemaValidator) validateRegistered(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, args callArguments) (bool, error) {
 	if !kept {
-		return v.validate(tool, rawArgs)
+		return v.validate(tool, args)
 	}
-	return validateArguments(compiled, rawArgs)
+	return validateArguments(compiled, args)
 }
 
 // validateArguments validates raw arguments against a compiled input schema;
 // a nil schema validates nothing. The results are validate's.
-func validateArguments(compiled *jsonschema.Schema, rawArgs any) (bool, error) {
+func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, error) {
 	if compiled == nil {
 		return false, nil
 	}
 
-	value, err := normalizeArgumentsForValidation(rawArgs)
+	value, err := args.normalize()
 	if err != nil {
 		return true, fmt.Errorf("invalid arguments: %w", err)
 	}
@@ -260,17 +260,35 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 	return compiled, nil
 }
 
+// callArguments is what input validation reads of a call: raw, the arguments
+// as the client sent them, or, when raw is nil, decoded, the arguments as the
+// request holds them. The raw bytes travel typed, so no call boxes them into
+// an interface to reach the validator.
+type callArguments struct {
+	raw     json.RawMessage
+	decoded any
+}
+
+// normalize returns the arguments in the form the JSON Schema validator
+// reads, as normalizeArgumentsForValidation does for either form.
+func (a callArguments) normalize() (any, error) {
+	if a.raw != nil {
+		return normalizeRawArguments(a.raw)
+	}
+	return normalizeArgumentsForValidation(a.decoded)
+}
+
 // argumentsToValidate is what input validation reads of a call: the arguments
 // as the client sent them, which need no encoding again to be read and keep
 // their numbers exact, unless a hook that runs before the call holds the
 // request and could have changed them, or they are null, which validates as
 // an empty object.
-func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest) any {
+func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest) callArguments {
 	raw := request.Params.RawArguments
 	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
-		return request.Params.Arguments
+		return callArguments{decoded: request.Params.Arguments}
 	}
-	return raw
+	return callArguments{raw: raw}
 }
 
 // hooksSeeCallArguments reports whether a hook runs before a tools/call with
@@ -289,16 +307,22 @@ func normalizeArgumentsForValidation(rawArgs any) (any, error) {
 		return map[string]any{}, nil
 	}
 	if raw, ok := rawArgs.(json.RawMessage); ok {
-		if len(bytes.TrimSpace(raw)) == 0 {
-			return map[string]any{}, nil
-		}
-		return jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		return normalizeRawArguments(raw)
 	}
 	encoded, err := json.Marshal(rawArgs)
 	if err != nil {
 		return nil, err
 	}
 	return jsonschema.UnmarshalJSON(bytes.NewReader(encoded))
+}
+
+// normalizeRawArguments decodes raw arguments for the validator, numbers kept
+// exact; blank arguments are an empty object.
+func normalizeRawArguments(raw json.RawMessage) (any, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return map[string]any{}, nil
+	}
+	return jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 }
 
 // A failing call's feedback is bounded: the first maxValidationMessages
