@@ -264,6 +264,33 @@ func TestArgumentsUnmarshalNewValuesAllocations(t *testing.T) {
 	assert.LessOrEqual(t, fast, slow, "allocations per tools/call params of 300 new values, against json.Unmarshal")
 }
 
+// Arguments have decoders, and so string caches, of their own: calls whose
+// arguments are all new do not push out the strings a client repeats in every
+// _meta, so the captured Claude Code _meta read between them costs what it
+// costs alone.
+func TestArgumentsChurnKeepsMetaStrings(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	bodies := argumentsThrashParams()
+	meta := []byte(metaClaudeCode)
+	i := 0
+	churn := func() {
+		var p CallToolParams
+		_ = p.UnmarshalJSON(bodies[i%len(bodies)])
+		i++
+	}
+	runs := 16 * len(bodies)
+	alone := testing.AllocsPerRun(runs, churn)
+	i = 0
+	withMeta := testing.AllocsPerRun(runs, func() {
+		churn()
+		var m Meta
+		_ = m.UnmarshalJSON(meta)
+	})
+	assert.LessOrEqual(t, withMeta-alone, 12.0, "allocations per Claude Code _meta read between tools/call params of new arguments")
+}
+
 // Arguments past maxFastInput go straight to json.Unmarshal: a large
 // input that fails at its end costs what json.Unmarshal's own decode costs,
 // not a pass that builds every value before the error.
