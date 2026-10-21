@@ -76,7 +76,11 @@ type CallToolParams struct {
 	RawArguments json.RawMessage `json:"-"`
 }
 
-// UnmarshalJSON preserves the original arguments JSON while also populating Arguments.
+// UnmarshalJSON preserves the original arguments JSON while also populating
+// Arguments with the value json.Unmarshal into an any builds. A single pass
+// reads the arguments it can settle exactly as encoding/json does; any other,
+// an error or one past 64 KiB included, is read by json.Unmarshal itself, so
+// Arguments and the error are the same either way.
 func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 	type params struct {
 		Name      string          `json:"name"`
@@ -106,6 +110,10 @@ func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 
 	// The decoder gave raw.Arguments its own copy of the bytes.
 	p.RawArguments = raw.Arguments
+	if arguments, ok := decodeArgumentsFast(raw.Arguments); ok {
+		p.Arguments = arguments
+		return nil
+	}
 	return json.Unmarshal(raw.Arguments, &p.Arguments)
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -71,7 +73,8 @@ func TestHandleMessageReadsOnceWithTheSameAnswers(t *testing.T) {
 // only for a hook, 47 with the context layers made in one allocation, 48
 // once modern decoration stamps a private copy of the handler's result
 // rather than the result itself (decorateResult), 35 with _meta read in one
-// pass, 33 with the strings a client repeats kept by the decoder.
+// pass, 33 with the strings a client repeats kept by the decoder, 30 with the
+// arguments read in one pass.
 func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -79,7 +82,35 @@ func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	srv, ctx := readOnceServer(t)
 	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},` + readOnceMeta + `}}`)
 	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
-	assert.LessOrEqual(t, allocs, 33.0, "allocations per modern tools/call through HandleMessage")
+	assert.LessOrEqual(t, allocs, 30.0, "allocations per modern tools/call through HandleMessage")
+}
+
+// A tools/call's arguments are read in one pass, the strings a client repeats
+// kept by the decoder: on bench/compare's payloads, 38 allocations through
+// json.Unmarshal into a map on the small one, 31 in one pass; 602 on the
+// complex one, 184 in one pass.
+func TestHandleMessageToolCallArgumentsAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	srv, ctx := readOnceServer(t)
+	for _, tc := range []struct {
+		payload string
+		ceiling float64
+	}{
+		{"modern-small.json", 31},
+		{"modern-complex.json", 184},
+	} {
+		t.Run(tc.payload, func(t *testing.T) {
+			msg, err := os.ReadFile(filepath.Join("..", "bench", "compare", "harness", "testdata", tc.payload))
+			require.NoError(t, err)
+			out, err := json.Marshal(srv.HandleMessage(ctx, json.RawMessage(msg)))
+			require.NoError(t, err)
+			require.Contains(t, string(out), `"text":"ok"`)
+			allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, json.RawMessage(msg)) })
+			assert.LessOrEqual(t, allocs, tc.ceiling, "allocations per tools/call of %s through HandleMessage", tc.payload)
+		})
+	}
 }
 
 // Read once, a request's _meta gives the protocol info that reading each key

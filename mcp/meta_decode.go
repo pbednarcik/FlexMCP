@@ -11,9 +11,10 @@ import (
 	"unicode/utf8"
 )
 
-// metaDecoder is the pooled state of one fast _meta decode: a reader over the
-// input, a decoder with encoding/json's own options on it, a buffer for
-// strings that hold escapes, and the strings decoded before.
+// metaDecoder is the pooled state of one fast decode of a _meta or of a tool
+// call's arguments: a reader over the input, a decoder with encoding/json's
+// own options on it, a buffer for strings that hold escapes, and the strings
+// decoded before.
 type metaDecoder struct {
 	r   bytes.Reader
 	dec *jsontext.Decoder
@@ -47,11 +48,14 @@ const (
 const maxFastMetaInput = 64 << 10
 
 // metaDecoders keeps the decoders between requests, so a decode makes none.
-var metaDecoders = sync.Pool{New: func() any {
+var metaDecoders = sync.Pool{New: newMetaDecoder}
+
+// newMetaDecoder makes a decoder for a pool, its string cache empty.
+func newMetaDecoder() any {
 	d := &metaDecoder{strs: make(map[string]metaString, maxCachedMetaStrings)}
 	d.dec = jsontext.NewDecoder(&d.r, metaJSONOptions)
 	return d
-}}
+}
 
 // metaConstStrings are the keys and values clients send on every request,
 // boxed once: the well-known keys and the common keys inside them, the
@@ -128,12 +132,18 @@ func (d *metaDecoder) meta(m *Meta) bool {
 	if _, err := d.dec.ReadToken(); err != nil {
 		return false
 	}
-	if _, err := d.dec.ReadToken(); !errors.Is(err, io.EOF) {
+	if !d.end() {
 		return false
 	}
 	m.ProgressToken = token
 	m.AdditionalFields = fields
 	return true
+}
+
+// end reports whether the input ends after the value read.
+func (d *metaDecoder) end() bool {
+	_, err := d.dec.ReadToken()
+	return errors.Is(err, io.EOF)
 }
 
 // progressToken reads the progress token as the slow path keeps it: a number

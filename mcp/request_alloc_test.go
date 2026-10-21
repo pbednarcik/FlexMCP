@@ -90,7 +90,8 @@ func TestCallToolParamsRawArgumentsAreTheirOwn(t *testing.T) {
 	assert.Equal(t, want, string(params.RawArguments))
 }
 
-// The arguments are copied out of the message once.
+// The arguments are copied out of the message once: 12 allocations with the
+// arguments read through json.Unmarshal into a map, 5 read in one pass.
 func TestCallToolParamsUnmarshalAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -100,7 +101,7 @@ func TestCallToolParamsUnmarshalAllocations(t *testing.T) {
 		var params CallToolParams
 		_ = json.Unmarshal(data, &params)
 	})
-	assert.LessOrEqual(t, allocs, 12.0, "allocations per tools/call params read")
+	assert.LessOrEqual(t, allocs, 5.0, "allocations per tools/call params read")
 }
 
 // The raw structured content of a result is the result's own: changing the
