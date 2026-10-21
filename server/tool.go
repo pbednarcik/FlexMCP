@@ -106,12 +106,20 @@ func (s *MCPServer) keptInputSchema(name string) (*jsonschema.Schema, bool) {
 	return compiled, ok
 }
 
-// AddTool registers a new tool and its handler
+// AddTool registers a new tool and its handler. With input validation on,
+// the input schema is compiled when the tool is registered: a schema changed
+// after that is not seen by validation until the tool is registered again.
+// Changing a registered tool's definition while calls run is a data race
+// anyway.
 func (s *MCPServer) AddTool(tool mcp.Tool, handler ToolHandlerFunc) {
 	s.AddTools(ServerTool{Tool: tool, Handler: handler})
 }
 
-// AddTaskTool registers a new task tool and its handler
+// AddTaskTool registers a new task tool and its handler. With input
+// validation on, the input schema is compiled when the tool is registered: a
+// schema changed after that is not seen by validation until the tool is
+// registered again. Changing a registered tool's definition while calls run
+// is a data race anyway.
 func (s *MCPServer) AddTaskTool(tool mcp.Tool, handler TaskToolHandlerFunc) {
 	s.AddTaskTools(ServerTaskTool{Tool: tool, Handler: handler})
 }
@@ -119,6 +127,11 @@ func (s *MCPServer) AddTaskTool(tool mcp.Tool, handler TaskToolHandlerFunc) {
 // AddTools registers multiple tools at once. The batch is checked, and its
 // schemas compiled, under the tools lock, so a rejected entry leaves the
 // registry untouched; the cost falls on registration alone.
+//
+// With input validation on, each input schema is compiled when its tool is
+// registered: a schema changed after that is not seen by validation until the
+// tool is registered again. Changing a registered tool's definition while
+// calls run is a data race anyway.
 func (s *MCPServer) AddTools(tools ...ServerTool) {
 	s.implicitlyRegisterToolCapabilities()
 
@@ -157,7 +170,11 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 	}
 }
 
-// AddTaskTools registers multiple task tools at once
+// AddTaskTools registers multiple task tools at once. With input validation
+// on, each input schema is compiled when its tool is registered: a schema
+// changed after that is not seen by validation until the tool is registered
+// again. Changing a registered tool's definition while calls run is a data
+// race anyway.
 func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 	s.implicitlyRegisterToolCapabilities()
 
@@ -194,7 +211,11 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 	}
 }
 
-// SetTools replaces all existing tools with the provided list
+// SetTools replaces all existing tools with the provided list. With input
+// validation on, each input schema is compiled when its tool is registered: a
+// schema changed after that is not seen by validation until the tool is
+// registered again. Changing a registered tool's definition while calls run
+// is a data race anyway.
 func (s *MCPServer) SetTools(tools ...ServerTool) {
 	s.implicitlyRegisterToolCapabilities()
 
