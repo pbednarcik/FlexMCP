@@ -104,10 +104,17 @@ func (m *Meta) unmarshalFast(data []byte) bool {
 		return false
 	}
 	d := metaDecoders.Get().(*valueDecoder)
+	ok := d.decodeMeta(m, data)
+	metaDecoders.Put(d)
+	return ok
+}
+
+// decodeMeta reads data into m as unmarshalFast does, with d, and lets go of
+// data whether or not it could.
+func (d *valueDecoder) decodeMeta(m *Meta, data []byte) bool {
 	d.start(data)
 	ok := d.meta(m)
 	d.finish()
-	metaDecoders.Put(d)
 	return ok
 }
 

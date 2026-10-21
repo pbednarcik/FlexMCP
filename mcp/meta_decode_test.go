@@ -250,26 +250,41 @@ func TestFastDecodeResultsDoNotAliasTheInput(t *testing.T) {
 	})
 }
 
-// A pooled decoder keeps none of its input alive once a decode is done.
+// A decoder keeps none of its input alive once a decode is done, whether it
+// read the input or gave it up to the slow path. The decoder is held through
+// the check, as a pooled one may be: a pool could drop it in the GC and its
+// input with it.
 func TestFastDecodeKeepsNoInput(t *testing.T) {
-	for name, decode := range map[string]func([]byte) bool{
-		"_meta": func(data []byte) bool {
+	// Past the tiny allocator's size, so the input is an object of its own.
+	value := `"` + strings.Repeat("v", 100) + `"`
+	for name, decode := range map[string]func(*valueDecoder, []byte) bool{
+		"_meta": func(d *valueDecoder, data []byte) bool {
 			var m Meta
-			return m.unmarshalFast(data)
+			return d.decodeMeta(&m, data)
 		},
-		"arguments": func(data []byte) bool {
-			_, ok := decodeArgumentsFast(data)
+		"arguments": func(d *valueDecoder, data []byte) bool {
+			_, ok := d.decodeArguments(data)
 			return ok
 		},
 	} {
-		t.Run(name, func(t *testing.T) {
-			// Past the tiny allocator's size, so the input is an object of its own.
-			data := []byte(`{"k":"` + strings.Repeat("v", 100) + `"}`)
-			input := weak.Make(&data[0])
-			require.True(t, decode(data))
-			runtime.GC()
-			assert.Nil(t, input.Value(), "the input outlived its decode")
-		})
+		for _, tc := range []struct {
+			name string
+			doc  string
+			read bool
+		}{
+			{"read", `{"k":` + value + `}`, true},
+			{"given up", `{"k":` + value + `,"n":1e400}`, false},
+		} {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				d := newValueDecoder().(*valueDecoder)
+				data := []byte(tc.doc)
+				input := weak.Make(&data[0])
+				require.Equal(t, tc.read, decode(d, data))
+				runtime.GC()
+				assert.Nil(t, input.Value(), "the input outlived its decode")
+				runtime.KeepAlive(d)
+			})
+		}
 	}
 }
 

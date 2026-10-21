@@ -19,11 +19,18 @@ func decodeArgumentsFast(data []byte) (any, bool) {
 		return nil, false
 	}
 	d := argumentDecoders.Get().(*valueDecoder)
+	value, ok := d.decodeArguments(data)
+	argumentDecoders.Put(d)
+	return value, ok
+}
+
+// decodeArguments reads data as decodeArgumentsFast does, with d, and lets go
+// of data whether or not it could.
+func (d *valueDecoder) decodeArguments(data []byte) (any, bool) {
 	d.start(data)
 	value, ok := d.value()
 	ok = ok && d.end()
 	d.finish()
-	argumentDecoders.Put(d)
 	if !ok {
 		return nil, false
 	}
