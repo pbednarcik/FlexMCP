@@ -11,48 +11,49 @@ import (
 	"unicode/utf8"
 )
 
-// metaDecoder is the pooled state of one fast decode of a _meta or of a tool
+// valueDecoder is the pooled state of one fast decode of a _meta or of a tool
 // call's arguments: a reader over the input, a decoder with encoding/json's
 // own options on it, a buffer for strings that hold escapes, and the strings
 // decoded before.
-type metaDecoder struct {
+type valueDecoder struct {
 	r   bytes.Reader
 	dec *jsontext.Decoder
 	unq []byte
 	// strs holds strings this decoder read before, by their bytes: a client
 	// sends the same ones on every request. It holds at most
-	// maxCachedMetaStrings, each at most maxCachedMetaString bytes long, and
+	// maxKeptStrings, each at most maxKeptString bytes long, and
 	// is cleared when full.
-	strs map[string]metaString
+	strs map[string]keptString
 }
 
-// metaString is a string a decoder kept, and its boxed form once it was read
+// keptString is a string a decoder kept, and its boxed form once it was read
 // as a value: a key is never boxed.
-type metaString struct {
+type keptString struct {
 	s   string
 	box any
 }
 
 const (
-	// maxCachedMetaString is the longest string, in bytes, a decoder keeps.
-	maxCachedMetaString = 64
-	// maxCachedMetaStrings is how many strings a decoder keeps before it
+	// maxKeptString is the longest string, in bytes, a decoder keeps.
+	maxKeptString = 64
+	// maxKeptStrings is how many strings a decoder keeps before it
 	// forgets them all.
-	maxCachedMetaStrings = 256
+	maxKeptStrings = 256
 )
 
-// maxFastMetaInput bounds the input the single pass reads; a larger one goes
-// to the slow decoder. A decoder's buffers grow with its input, so none is
-// kept that a large input grew, and a large input that fails at its end is
-// not first built value by value.
-const maxFastMetaInput = 64 << 10
+// maxFastInput bounds the input the single pass reads; a larger one goes
+// to the slow decoder. A decoder's buffers grow with its input and go back to
+// the pool as grown, so this also bounds what a pooled decoder keeps: none is
+// kept that an input past it grew. A large input that fails at its end is not
+// first built value by value.
+const maxFastInput = 64 << 10
 
 // metaDecoders keeps the decoders between requests, so a decode makes none.
-var metaDecoders = sync.Pool{New: newMetaDecoder}
+var metaDecoders = sync.Pool{New: newValueDecoder}
 
-// newMetaDecoder makes a decoder for a pool, its string cache empty.
-func newMetaDecoder() any {
-	d := &metaDecoder{strs: make(map[string]metaString, maxCachedMetaStrings)}
+// newValueDecoder makes a decoder for a pool, its string cache empty.
+func newValueDecoder() any {
+	d := &valueDecoder{strs: make(map[string]keptString, maxKeptStrings)}
 	d.dec = jsontext.NewDecoder(&d.r, metaJSONOptions)
 	return d
 }
@@ -83,12 +84,12 @@ var metaConstStrings = func() map[string]any {
 // any input it cannot settle exactly as encoding/json does: not an object,
 // trailing data, a syntax error, invalid UTF-8 or an escape it cannot read, a
 // number out of range, a key other than progressToken that folds to it, or
-// an input longer than maxFastMetaInput.
+// an input longer than maxFastInput.
 func (m *Meta) unmarshalFast(data []byte) bool {
-	if len(data) > maxFastMetaInput {
+	if len(data) > maxFastInput {
 		return false
 	}
-	d := metaDecoders.Get().(*metaDecoder)
+	d := metaDecoders.Get().(*valueDecoder)
 	d.r.Reset(data)
 	d.dec.Reset(&d.r, metaJSONOptions)
 	ok := d.meta(m)
@@ -98,7 +99,7 @@ func (m *Meta) unmarshalFast(data []byte) bool {
 }
 
 // meta reads the top-level object into m, or reports false with m unchanged.
-func (d *metaDecoder) meta(m *Meta) bool {
+func (d *valueDecoder) meta(m *Meta) bool {
 	if d.dec.PeekKind() != '{' {
 		return false
 	}
@@ -141,14 +142,14 @@ func (d *metaDecoder) meta(m *Meta) bool {
 }
 
 // end reports whether the input ends after the value read.
-func (d *metaDecoder) end() bool {
+func (d *valueDecoder) end() bool {
 	_, err := d.dec.ReadToken()
 	return errors.Is(err, io.EOF)
 }
 
 // progressToken reads the progress token as the slow path keeps it: a number
 // as [decodeProgressToken] reads it, anything else as any other value.
-func (d *metaDecoder) progressToken() (ProgressToken, bool) {
+func (d *valueDecoder) progressToken() (ProgressToken, bool) {
 	if d.dec.PeekKind() != '0' {
 		return d.value()
 	}
@@ -168,7 +169,7 @@ func (d *metaDecoder) progressToken() (ProgressToken, bool) {
 }
 
 // value reads the next value as json.Unmarshal into an any reads it.
-func (d *metaDecoder) value() (any, bool) {
+func (d *valueDecoder) value() (any, bool) {
 	switch d.dec.PeekKind() {
 	case '"':
 		v, err := d.dec.ReadValue()
@@ -213,7 +214,7 @@ func (d *metaDecoder) value() (any, bool) {
 }
 
 // object reads a nested object into a map of its own.
-func (d *metaDecoder) object() (any, bool) {
+func (d *valueDecoder) object() (any, bool) {
 	if _, err := d.dec.ReadToken(); err != nil {
 		return nil, false
 	}
@@ -236,7 +237,7 @@ func (d *metaDecoder) object() (any, bool) {
 }
 
 // array reads an array into a slice of its own, an empty one not nil.
-func (d *metaDecoder) array() (any, bool) {
+func (d *valueDecoder) array() (any, bool) {
 	if _, err := d.dec.ReadToken(); err != nil {
 		return nil, false
 	}
@@ -257,7 +258,7 @@ func (d *metaDecoder) array() (any, bool) {
 // name reads an object's next key. A key is kept as a value is, unboxed: a
 // client repeats its keys too, and one kept costs nothing on the next
 // request.
-func (d *metaDecoder) name() (string, bool) {
+func (d *valueDecoder) name() (string, bool) {
 	v, err := d.dec.ReadValue()
 	if err != nil {
 		return "", false
@@ -271,7 +272,7 @@ func (d *metaDecoder) name() (string, bool) {
 // false where the slow path should decide. A string kept is looked up by its
 // bytes, so it is always the string read; it is boxed the first time it is
 // read as a value.
-func (d *metaDecoder) text(v jsontext.Value, value bool) (s string, boxed any, ok bool) {
+func (d *valueDecoder) text(v jsontext.Value, value bool) (s string, boxed any, ok bool) {
 	body := []byte(v[1 : len(v)-1])
 	if bytes.IndexByte(body, '\\') >= 0 {
 		var err error
@@ -285,7 +286,7 @@ func (d *metaDecoder) text(v jsontext.Value, value bool) (s string, boxed any, o
 	if c, ok := metaConstStrings[string(body)]; ok {
 		return c.(string), c, true
 	}
-	if len(body) > maxCachedMetaString {
+	if len(body) > maxKeptString {
 		return string(body), nil, true
 	}
 	kept, ok := d.strs[string(body)]
@@ -293,7 +294,7 @@ func (d *metaDecoder) text(v jsontext.Value, value bool) (s string, boxed any, o
 		return kept.s, kept.box, true
 	}
 	if !ok {
-		if len(d.strs) >= maxCachedMetaStrings {
+		if len(d.strs) >= maxKeptStrings {
 			clear(d.strs)
 		}
 		kept.s = string(body)

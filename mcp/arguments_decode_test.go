@@ -83,7 +83,7 @@ func argumentsDiffCorpus(t testing.TB) []string {
 		`{"` + long(64) + `":"` + long(64) + `","` + long(65) + `":"` + long(65) + `","k":"` + long(64) + `"}`,
 		`["` + long(62) + `\n","` + long(62) + `\n","` + long(63) + `\n"]`,
 		// either side of the longest input the single pass reads
-		sizedArray(maxFastMetaInput - 1), sizedArray(maxFastMetaInput), sizedArray(maxFastMetaInput + 1),
+		sizedArray(maxFastInput - 1), sizedArray(maxFastInput), sizedArray(maxFastInput + 1),
 		// many keys
 		`{` + strings.Repeat(`"k":1,`, 50) + `"z":2}`,
 	}
@@ -193,13 +193,13 @@ func TestArgumentsFastMatchesSlow(t *testing.T) {
 	}
 }
 
-// The single pass reads an input of up to maxFastMetaInput bytes; a longer one
+// The single pass reads an input of up to maxFastInput bytes; a longer one
 // goes to json.Unmarshal.
 func TestArgumentsFastInputBound(t *testing.T) {
-	_, ok := decodeArgumentsFast([]byte(sizedArray(maxFastMetaInput)))
-	assert.True(t, ok, "an input of maxFastMetaInput bytes")
-	_, ok = decodeArgumentsFast([]byte(sizedArray(maxFastMetaInput + 1)))
-	assert.False(t, ok, "an input past maxFastMetaInput")
+	_, ok := decodeArgumentsFast([]byte(sizedArray(maxFastInput)))
+	assert.True(t, ok, "an input of maxFastInput bytes")
+	_, ok = decodeArgumentsFast([]byte(sizedArray(maxFastInput + 1)))
+	assert.False(t, ok, "an input past maxFastInput")
 }
 
 // Each decode gives maps and slices of its own: writing one does not reach a
@@ -264,14 +264,14 @@ func TestArgumentsUnmarshalNewValuesAllocations(t *testing.T) {
 	assert.LessOrEqual(t, fast, slow, "allocations per tools/call params of 300 new values, against json.Unmarshal")
 }
 
-// Arguments past maxFastMetaInput go straight to json.Unmarshal: a large
+// Arguments past maxFastInput go straight to json.Unmarshal: a large
 // input that fails at its end costs what json.Unmarshal's own decode costs,
 // not a pass that builds every value before the error.
 func TestArgumentsUnmarshalLargeInvalidAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
-	data := []byte(`{"name":"echo","arguments":[` + strings.Repeat(`1,`, maxFastMetaInput) + `1e400]}`)
+	data := []byte(`{"name":"echo","arguments":[` + strings.Repeat(`1,`, maxFastInput) + `1e400]}`)
 	fast := testing.AllocsPerRun(20, func() {
 		var p CallToolParams
 		_ = p.UnmarshalJSON(data)

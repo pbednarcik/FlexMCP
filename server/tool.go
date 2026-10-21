@@ -61,7 +61,7 @@ func validateToolName(name string) error {
 // checkToolDefinition runs every registration-time check on a tool: its name,
 // its x-mcp-header annotations, and, with validation on, that its schemas
 // compile. It returns the compiled input schema, nil with input validation
-// off or for a tool with none, for keepInputSchema. Called with toolsMu held;
+// off or for a tool with none, for retainInputSchema. Called with toolsMu held;
 // the caller panics on an error, as a definition the server cannot serve is a
 // programming error.
 func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (*jsonschema.Schema, error) {
@@ -81,24 +81,21 @@ func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (*jsonschema.Schema, err
 	return inputSchema, nil
 }
 
-// keepInputSchema keeps the input schema registration compiled for the tool
+// retainInputSchema keeps the input schema registration compiled for the tool
 // called name, nil for a tool with none, so a call validates against it
 // without reading the tool's schema again. Nothing is kept with input
 // validation off. Called with toolsMu held.
-func (s *MCPServer) keepInputSchema(name string, compiled *jsonschema.Schema) {
+func (s *MCPServer) retainInputSchema(name string, compiled *jsonschema.Schema) {
 	if s.inputValidator == nil {
 		return
-	}
-	if s.toolInputSchemas == nil {
-		s.toolInputSchemas = make(map[string]*jsonschema.Schema)
 	}
 	s.toolInputSchemas[name] = compiled
 }
 
-// keptInputSchema returns the input schema registration kept for the tool
+// inputSchemaOf returns the input schema registration kept for the tool
 // called name, and whether one was kept. Called with toolsMu held, so the
 // schema belongs to the tool definition read under the same lock.
-func (s *MCPServer) keptInputSchema(name string) (*jsonschema.Schema, bool) {
+func (s *MCPServer) inputSchemaOf(name string) (*jsonschema.Schema, bool) {
 	if s.inputValidator == nil {
 		return nil, false
 	}
@@ -159,7 +156,7 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 	maps.Copy(s.tools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
-		s.keepInputSchema(name, inputSchemas[name])
+		s.retainInputSchema(name, inputSchemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -200,7 +197,7 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 	maps.Copy(s.taskTools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
-		s.keepInputSchema(name, inputSchemas[name])
+		s.retainInputSchema(name, inputSchemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -250,7 +247,7 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 	s.tools = newTools
 	for name, entry := range newTools {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
-		s.keepInputSchema(name, inputSchemas[name])
+		s.retainInputSchema(name, inputSchemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -431,7 +428,7 @@ func (s *MCPServer) handleToolCall(
 			taskToolOnly = true
 		}
 	}
-	inputSchema, inputSchemaKept := s.keptInputSchema(request.Params.Name)
+	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
 	s.toolsMu.RUnlock()
 
 	if !ok {

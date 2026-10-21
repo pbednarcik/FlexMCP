@@ -227,7 +227,7 @@ func TestMetaUnmarshalClaudeCodeAllocations(t *testing.T) {
 	const id = "toolu_01ABCDEFGHJKMNPQRSTUVWXY"
 	// Sixteen times as many ids as a decoder keeps strings: each one is new
 	// to it.
-	rotating := make([][]byte, 16*maxCachedMetaStrings)
+	rotating := make([][]byte, 16*maxKeptStrings)
 	for i := range rotating {
 		rotating[i] = []byte(strings.Replace(metaClaudeCode, id, fmt.Sprintf("toolu_01ABCDEFGHJKMNPQRSTU%04d", i), 1))
 	}
@@ -251,22 +251,22 @@ func TestMetaUnmarshalClaudeCodeAllocations(t *testing.T) {
 	}
 }
 
-// A decoder keeps at most maxCachedMetaStrings strings, none longer than
-// maxCachedMetaString bytes, however many it reads.
+// A decoder keeps at most maxKeptStrings strings, none longer than
+// maxKeptString bytes, however many it reads.
 func TestMetaStringCacheIsBounded(t *testing.T) {
-	d := metaDecoders.New().(*metaDecoder)
-	for i := range 4 * maxCachedMetaStrings {
+	d := metaDecoders.New().(*valueDecoder)
+	for i := range 4 * maxKeptStrings {
 		want := "s" + strconv.Itoa(i)
 		got, _, ok := d.text(jsontext.Value(strconv.Quote(want)), true)
 		require.True(t, ok)
 		require.Equal(t, want, got)
-		require.LessOrEqual(t, len(d.strs), maxCachedMetaStrings, "strings kept after %d read", i+1)
+		require.LessOrEqual(t, len(d.strs), maxKeptStrings, "strings kept after %d read", i+1)
 	}
 
-	longest := strings.Repeat("y", maxCachedMetaString)
+	longest := strings.Repeat("y", maxKeptString)
 	_, _, _ = d.text(jsontext.Value(strconv.Quote(longest)), true)
 	assert.Contains(t, d.strs, longest)
-	tooLong := strings.Repeat("z", maxCachedMetaString+1)
+	tooLong := strings.Repeat("z", maxKeptString+1)
 	_, boxed, _ := d.text(jsontext.Value(strconv.Quote(tooLong)), true)
 	assert.Nil(t, boxed)
 	assert.NotContains(t, d.strs, tooLong)
@@ -314,14 +314,14 @@ func TestMetaUnmarshalNewKeysAllocations(t *testing.T) {
 	assert.LessOrEqual(t, fast, slow, "allocations per Meta.UnmarshalJSON of 300 keys and new values, against the slow decoder")
 }
 
-// A _meta past maxFastMetaInput goes straight to the slow decoder: a large
+// A _meta past maxFastInput goes straight to the slow decoder: a large
 // one that fails at its end costs what json.Unmarshal's own check costs, not
 // a pass that builds every value before the error.
 func TestMetaUnmarshalLargeInvalidAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
-	data := []byte(`{"a":[` + strings.Repeat(`1,`, maxFastMetaInput) + `x]}`)
+	data := []byte(`{"a":[` + strings.Repeat(`1,`, maxFastInput) + `x]}`)
 	fast := testing.AllocsPerRun(20, func() {
 		var m Meta
 		_ = m.UnmarshalJSON(data)

@@ -48,7 +48,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	s.toolsMu.RLock()
 	taskTool, isTaskTool := s.taskTools[request.Params.Name]
 	regularTool, isRegularTool := s.tools[request.Params.Name]
-	inputSchema, inputSchemaKept := s.keptInputSchema(request.Params.Name)
+	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
 	s.toolsMu.RUnlock()
 
 	// Determine which tool to use and validate task support

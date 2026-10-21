@@ -6,19 +6,19 @@ import "sync"
 // between requests. They are not [metaDecoders]: argument values are new on
 // each call more often than a _meta's, and in a decoder of their own they do
 // not push out the strings a client repeats in every _meta.
-var argumentDecoders = sync.Pool{New: newMetaDecoder}
+var argumentDecoders = sync.Pool{New: newValueDecoder}
 
 // decodeArgumentsFast reads data, a tool call's arguments, in one pass into
 // the value json.Unmarshal into an any builds, and reports whether it could.
 // It gives up on any input it cannot settle exactly as encoding/json does:
 // trailing data, a syntax error, nesting past the decoder's limit, invalid
 // UTF-8 or an escape it cannot read, a number out of range, or an input
-// longer than maxFastMetaInput.
+// longer than maxFastInput.
 func decodeArgumentsFast(data []byte) (any, bool) {
-	if len(data) > maxFastMetaInput {
+	if len(data) > maxFastInput {
 		return nil, false
 	}
-	d := argumentDecoders.Get().(*metaDecoder)
+	d := argumentDecoders.Get().(*valueDecoder)
 	d.r.Reset(data)
 	d.dec.Reset(&d.r, metaJSONOptions)
 	value, ok := d.value()
