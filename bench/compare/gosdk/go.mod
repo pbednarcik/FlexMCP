@@ -2,6 +2,8 @@ module github.com/mark3labs/mcp-go/bench/compare/gosdk
 
 go 1.27.2
 
+toolchain go1.27.3
+
 require (
 	github.com/mark3labs/mcp-go/bench/compare/harness v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0

@@ -2,6 +2,8 @@ module github.com/mark3labs/mcp-go
 
 go 1.27.2
 
+toolchain go1.27.3
+
 require (
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0

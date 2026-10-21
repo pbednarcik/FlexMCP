@@ -2,6 +2,8 @@ module github.com/mark3labs/mcp-go/otel
 
 go 1.27.2
 
+toolchain go1.27.3
+
 require (
 	github.com/mark3labs/mcp-go v1.0.0
 	github.com/stretchr/testify v1.11.1

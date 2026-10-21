@@ -2,6 +2,8 @@ module github.com/mark3labs/mcp-go/bench/compare/run
 
 go 1.27.2
 
+toolchain go1.27.3
+
 tool golang.org/x/perf/cmd/benchstat
 
 require (
