@@ -210,6 +210,138 @@ func TestOutputSchemaValidation_DeleteToolInvalidatesCache(t *testing.T) {
 	require.Len(t, srv.outputValidator.cached, 0, "cache should be empty after DeleteTools")
 }
 
+// A call in flight when its tool is deleted caches no output schema for the
+// deleted tool when it validates its result, on the synchronous path and the
+// task-augmented one.
+func TestOutputValidationInFlightCallCachesNoDeletedSchema(t *testing.T) {
+	for _, task := range []bool{false, true} {
+		name := "synchronous"
+		if task {
+			name = "task-augmented"
+		}
+		t.Run(name, func(t *testing.T) {
+			srv := NewMCPServer("test", "1.0.0", WithOutputSchemaValidation(), WithTaskCapabilities(true, true, true))
+			entered, proceed := make(chan struct{}), make(chan struct{})
+			srv.AddTool(mcp.Tool{
+				Name:            "x",
+				RawOutputSchema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+				Execution:       &mcp.ToolExecution{TaskSupport: mcp.TaskSupportOptional},
+			}, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				close(entered)
+				<-proceed
+				return mcp.NewToolResultStructuredOnly(map[string]any{"ok": true}), nil
+			})
+			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "x"}}
+			if task {
+				req.Params.Task = &mcp.TaskParams{}
+			}
+			done := make(chan any, 1)
+			go func() {
+				res, _ := srv.handleToolCall(t.Context(), 1, req)
+				done <- res
+			}()
+
+			<-entered
+			srv.DeleteTools("x")
+			require.NotContains(t, cachedDigests(srv.outputValidator.compiledSchemaCache), "x")
+			close(proceed)
+			if created, ok := (<-done).(*mcp.CreateTaskResult); ok {
+				waitForTaskTerminal(t, srv, t.Context(), created.Task.TaskId)
+			}
+			assert.NotContains(t, cachedDigests(srv.outputValidator.compiledSchemaCache), "x",
+				"a call in flight cached the deleted tool's output schema")
+		})
+	}
+}
+
+// outputRefused calls raw_output, task-augmented when task is set, and
+// reports whether output validation refused its result.
+func outputRefused(t *testing.T, srv *MCPServer, task bool) bool {
+	t.Helper()
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "raw_output"}}
+	if task {
+		req.Params.Task = &mcp.TaskParams{}
+	}
+	res, reqErr := srv.handleToolCall(t.Context(), 1, req)
+	require.Nil(t, reqErr)
+	var isError bool
+	var content []mcp.Content
+	if created, ok := res.(*mcp.CreateTaskResult); ok {
+		waitForTaskTerminal(t, srv, t.Context(), created.Task.TaskId)
+		taskResult, resErr := srv.handleTaskResult(t.Context(), 2, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: created.Task.TaskId}})
+		require.Nil(t, resErr)
+		isError, content = taskResult.IsError, taskResult.Content
+	} else {
+		result, ok := res.(*mcp.CallToolResult)
+		require.True(t, ok, "expected *mcp.CallToolResult, got %T", res)
+		isError, content = result.IsError, result.Content
+	}
+	if !isError {
+		return false
+	}
+	tc, ok := content[0].(mcp.TextContent)
+	require.True(t, ok, "expected TextContent, got %T", content[0])
+	require.Contains(t, tc.Text, "output schema validation failed")
+	return true
+}
+
+// A call validates its result against the output schema registration kept,
+// not the tool's own: with the kept schema blanked, a result the tool's
+// schema refuses gets through, on the synchronous path and both task paths.
+func TestOutputValidationCallsValidateAgainstTheKeptSchema(t *testing.T) {
+	bad := map[string]any{"value": 1}
+	for name, tc := range map[string]struct {
+		register func(*MCPServer)
+		task     bool
+	}{
+		"synchronous": {func(s *MCPServer) {
+			s.AddTool(withTasks(rawOutputSchemaTool()), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultStructuredOnly(bad), nil
+			})
+		}, false},
+		"task-augmented": {func(s *MCPServer) {
+			s.AddTool(withTasks(rawOutputSchemaTool()), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultStructuredOnly(bad), nil
+			})
+		}, true},
+		"task tool": {func(s *MCPServer) {
+			s.AddTaskTool(withTasks(rawOutputSchemaTool()), func(context.Context, mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+				return &mcp.CreateTaskResult{StructuredContent: bad}, nil
+			})
+		}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := NewMCPServer("test", "1.0.0", WithOutputSchemaValidation(), WithTaskCapabilities(true, true, true))
+			tc.register(srv)
+			require.True(t, outputRefused(t, srv, tc.task), "the tool's schema as registered")
+			srv.toolOutputSchemas["raw_output"] = nil
+			assert.False(t, outputRefused(t, srv, tc.task), "the call read the tool's schema instead of the kept one")
+		})
+	}
+}
+
+// A tools/call whose structured result is validated against the tool's
+// output schema validates against the schema registration kept, with no
+// per-call digest or cache lookup.
+func TestOutputValidationAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithOutputSchemaValidation())
+	srv.AddTool(rawOutputSchemaTool(), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultStructuredOnly(map[string]any{"value": "ok"}), nil
+	})
+	ctx := t.Context()
+	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"raw_output"}}`)
+	out, err := json.Marshal(srv.HandleMessage(ctx, msg))
+	require.NoError(t, err)
+	require.Contains(t, string(out), `"value":"ok"`)
+	require.NotContains(t, string(out), `"isError":true`)
+
+	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
+	assert.LessOrEqual(t, allocs, 51.0, "allocations per tools/call with a validated structured result")
+}
+
 // TestOutputSchemaValidation_TypedHandler exercises the canonical end-to-end
 // path from the issue: a tool declared with WithOutputSchema[T] whose
 // handler is wired up via NewStructuredToolHandler returning a Go struct.

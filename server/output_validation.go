@@ -66,8 +66,9 @@ func (v *outputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*cachedToo
 	return entry, nil
 }
 
-// validate checks the tool result against the tool's declared output schema.
-// The boolean return reports whether validation actually ran; the error is
+// validate checks the tool result against the tool's declared output schema:
+// compiled, the one registration kept for the tool, when kept says it kept
+// one, else the tool's own, compiled uncached. The boolean return reports whether validation actually ran; the error is
 // set only when validation ran and the structured content did not satisfy
 // the schema.
 //
@@ -78,13 +79,12 @@ func (v *outputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*cachedToo
 //   - the result has no StructuredContent (mcp-go does not synthesise
 //     structured output from text content; tools without structured output
 //     are passed through to preserve back-compat)
-//   - the schema fails to compile, which registration refuses, so the
-//     compile here only hits the cache
-func (v *outputSchemaValidator) validate(tool mcp.Tool, result *mcp.CallToolResult) (bool, error) {
+//   - the schema fails to compile, which registration refuses
+func (v *outputSchemaValidator) validate(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, result *mcp.CallToolResult) (bool, error) {
 	if v == nil || result == nil {
 		return false, nil
 	}
-	return v.validateStructured(tool, result.StructuredContent, result.IsError)
+	return v.validateStructured(tool, compiled, kept, result.StructuredContent, result.IsError)
 }
 
 // validateCreateTaskResult is the *mcp.CreateTaskResult counterpart to
@@ -93,18 +93,18 @@ func (v *outputSchemaValidator) validate(tool mcp.Tool, result *mcp.CallToolResu
 // surfaced to the client via tasks/result; validating it before the result
 // is persisted to the task entry keeps the task path consistent with the
 // synchronous path's WithOutputSchemaValidation contract.
-func (v *outputSchemaValidator) validateCreateTaskResult(tool mcp.Tool, result *mcp.CreateTaskResult) (bool, error) {
+func (v *outputSchemaValidator) validateCreateTaskResult(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, result *mcp.CreateTaskResult) (bool, error) {
 	if v == nil || result == nil {
 		return false, nil
 	}
-	return v.validateStructured(tool, result.StructuredContent, result.IsError)
+	return v.validateStructured(tool, compiled, kept, result.StructuredContent, result.IsError)
 }
 
 // validateStructured runs the actual schema check against the structured
 // content and IsError flag extracted from a tool result. Both *CallToolResult
 // and *CreateTaskResult delegate here so the skip rules and error formatting
 // stay in one place.
-func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, structured any, isError bool) (bool, error) {
+func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, structured any, isError bool) (bool, error) {
 	// Error results carry diagnostic content that need not match the
 	// declared output schema.
 	if isError {
@@ -113,13 +113,18 @@ func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, structured any
 	if structured == nil {
 		return false, nil
 	}
-	schemaJSON, ok := outputSchemaJSONFor(tool)
-	if !ok {
-		return false, nil
+	if !kept {
+		schemaJSON, ok := outputSchemaJSONFor(tool)
+		if !ok {
+			return false, nil
+		}
+		entry := v.compile(tool.Name, schemaJSON)
+		if entry.compileErr != nil {
+			return false, nil
+		}
+		compiled = entry.compiled
 	}
-
-	compiled, err := v.lookupOrCompile(tool.Name, schemaJSON)
-	if err != nil {
+	if compiled == nil {
 		return false, nil
 	}
 

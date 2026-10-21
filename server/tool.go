@@ -89,11 +89,34 @@ type toolSchemas struct {
 
 // commitSchemas caches the schemas registration compiled for the tool called
 // name, now registered, dropping what was cached for a schema it no longer
-// has, and keeps its input schema with it. Called with toolsMu held.
+// has, and keeps its schemas with it. Called with toolsMu held.
 func (s *MCPServer) commitSchemas(name string, schemas toolSchemas) {
 	s.inputValidator.keep(name, schemas.input)
 	s.outputValidator.keep(name, schemas.output)
 	s.retainInputSchema(name, schemas.input.schema())
+	s.retainOutputSchema(name, schemas.output.schema())
+}
+
+// retainOutputSchema keeps the output schema registration compiled for the
+// tool called name, nil for a tool with none, so a call validates its result
+// against it without reading the tool's schema again. Nothing is kept with
+// output validation off. Called with toolsMu held.
+func (s *MCPServer) retainOutputSchema(name string, compiled *jsonschema.Schema) {
+	if s.outputValidator == nil {
+		return
+	}
+	s.toolOutputSchemas[name] = compiled
+}
+
+// outputSchemaOf returns the output schema registration kept for the tool
+// called name, and whether one was kept. Called with toolsMu held, so the
+// schema belongs to the tool definition read under the same lock.
+func (s *MCPServer) outputSchemaOf(name string) (*jsonschema.Schema, bool) {
+	if s.outputValidator == nil {
+		return nil, false
+	}
+	compiled, ok := s.toolOutputSchemas[name]
+	return compiled, ok
 }
 
 // retainInputSchema keeps the input schema registration compiled for the tool
@@ -255,6 +278,7 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 	for name := range s.tools {
 		delete(s.toolHeaderBindings, name)
 		delete(s.toolInputSchemas, name)
+		delete(s.toolOutputSchemas, name)
 		s.inputValidator.invalidate(name)
 		s.outputValidator.invalidate(name)
 	}
@@ -308,6 +332,7 @@ func (s *MCPServer) DeleteTools(names ...string) {
 			delete(s.tools, name)
 			delete(s.toolHeaderBindings, name)
 			delete(s.toolInputSchemas, name)
+			delete(s.toolOutputSchemas, name)
 			exists = true
 		}
 	}
@@ -443,6 +468,7 @@ func (s *MCPServer) handleToolCall(
 		}
 	}
 	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
+	outputSchema, outputSchemaKept := s.outputSchemaOf(request.Params.Name)
 	s.toolsMu.RUnlock()
 
 	if !ok {
@@ -563,7 +589,7 @@ func (s *MCPServer) handleToolCall(
 	// tool execution error so the client cannot silently receive a result
 	// that violates the declared contract.
 	if s.outputValidator != nil {
-		if _, vErr := s.outputValidator.validate(tool.Tool, result); vErr != nil {
+		if _, vErr := s.outputValidator.validate(tool.Tool, outputSchema, outputSchemaKept, result); vErr != nil {
 			return validationToolResult(vErr), nil
 		}
 	}

@@ -165,7 +165,12 @@ type MCPServer struct {
 	// tool's input schema as registration compiled it, nil for a tool with
 	// none, so a validated tools/call neither marshals nor hashes the schema
 	// again. Keyed and kept like toolHeaderBindings.
-	toolInputSchemas         map[string]*jsonschema.Schema
+	toolInputSchemas map[string]*jsonschema.Schema
+	// toolOutputSchemas holds, with output validation on, each registered
+	// tool's output schema as registration compiled it, nil for a tool with
+	// none, so a call validates its result without a cache lookup that could
+	// outlive the tool. Keyed and kept like toolHeaderBindings.
+	toolOutputSchemas        map[string]*jsonschema.Schema
 	paginationLimit          *int
 	toolResultSizeLimit      int
 	sessions                 sync.Map
@@ -274,6 +279,7 @@ func NewMCPServer(
 		taskTools:                  make(map[string]ServerTaskTool),
 		toolHeaderBindings:         make(map[string][]mcp.ParamHeaderBinding),
 		toolInputSchemas:           make(map[string]*jsonschema.Schema),
+		toolOutputSchemas:          make(map[string]*jsonschema.Schema),
 		toolHandlerMiddlewares:     make([]ToolHandlerMiddleware, 0),
 		resourceHandlerMiddlewares: make([]ResourceHandlerMiddleware, 0),
 		promptHandlerMiddlewares:   make([]PromptHandlerMiddleware, 0),

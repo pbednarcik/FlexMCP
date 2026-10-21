@@ -36,8 +36,8 @@ type compiledSchemaCache struct {
 }
 
 // cachedToolSchema records the result of compiling the schema whose digest
-// it carries. compileErr is stored alongside the compiled schema so that a
-// schema that fails to compile is not recompiled on every call.
+// it carries. compileErr carries a failed compilation to its caller; only a
+// registered tool's schema, which compiled, is cached.
 type cachedToolSchema struct {
 	digest     string
 	compiled   *jsonschema.Schema
@@ -64,40 +64,11 @@ func (c *compiledSchemaCache) invalidate(names ...string) {
 	}
 }
 
-// lookupOrCompile returns the compiled schema for the given (toolName,
-// schemaJSON) pair, compiling it when the name's entry holds another schema
-// or none, and keeping it as the name's entry. Compilation errors are cached
-// too so that a malformed schema is not recompiled on every call.
-func (c *compiledSchemaCache) lookupOrCompile(toolName string, schemaJSON []byte) (*jsonschema.Schema, error) {
-	digest := schemaDigest(schemaJSON)
-
-	c.mu.RLock()
-	if entry, ok := c.cached[toolName]; ok && entry.digest == digest {
-		c.mu.RUnlock()
-		return entry.compiled, entry.compileErr
-	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// Re-check under the write lock in case another goroutine compiled it.
-	if entry, ok := c.cached[toolName]; ok && entry.digest == digest {
-		return entry.compiled, entry.compileErr
-	}
-
-	compiled, compileErr := compileSchema(toolName, schemaJSON)
-	c.cached[toolName] = &cachedToolSchema{
-		digest:     digest,
-		compiled:   compiled,
-		compileErr: compileErr,
-	}
-	return compiled, compileErr
-}
-
 // compile returns the compilation of schemaJSON for the tool called toolName
 // without caching it: the cached entry when it holds the same schema, else a
 // fresh one. Registration compiles with it and caches what it compiled with
-// keep once the tool is registered.
+// keep once the tool is registered; a call that finds no schema kept compiles
+// with it too, and so caches nothing.
 func (c *compiledSchemaCache) compile(toolName string, schemaJSON []byte) *cachedToolSchema {
 	digest := schemaDigest(schemaJSON)
 	c.mu.RLock()
@@ -184,9 +155,9 @@ func (v *inputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*cachedTool
 }
 
 // validate validates raw arguments against the tool's input schema, read
-// from the tool. A schema that cannot be compiled was refused at
-// registration, so the compile here only hits the cache; should it fail
-// anyway, validation is skipped rather than failing the call. The boolean
+// from the tool and compiled uncached. A schema that cannot be compiled was
+// refused at registration; should it fail anyway, validation is skipped
+// rather than failing the call. The boolean
 // return reports whether validation actually ran; the error is set only when
 // validation ran and the arguments did not satisfy the schema.
 func (v *inputSchemaValidator) validate(tool mcp.Tool, args callArguments) (bool, error) {
@@ -195,11 +166,11 @@ func (v *inputSchemaValidator) validate(tool mcp.Tool, args callArguments) (bool
 		return false, nil
 	}
 
-	compiled, err := v.lookupOrCompile(tool.Name, schemaJSON)
-	if err != nil {
+	entry := v.compile(tool.Name, schemaJSON)
+	if entry.compileErr != nil {
 		return false, nil
 	}
-	return validateArguments(compiled, args)
+	return validateArguments(entry.compiled, args)
 }
 
 // validateRegistered validates raw arguments against the schema registration

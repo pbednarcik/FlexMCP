@@ -49,6 +49,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	taskTool, isTaskTool := s.taskTools[request.Params.Name]
 	regularTool, isRegularTool := s.tools[request.Params.Name]
 	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
+	outputSchema, outputSchemaKept := s.outputSchemaOf(request.Params.Name)
 	s.toolsMu.RUnlock()
 
 	// Determine which tool to use and validate task support
@@ -140,6 +141,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	// that keeps the request's values (session, protocol info) but ends only
 	// through tasks/cancel or the TTL.
 	taskCtx := context.WithoutCancel(ctx)
+	entry.outputSchema, entry.outputSchemaKept = outputSchema, outputSchemaKept
 	if hasTaskHandler {
 		go s.executeTaskTool(taskCtx, entry, toolToUse, request)
 	} else {
@@ -277,7 +279,7 @@ func (s *MCPServer) executeTaskTool(
 	// tasks/result. handleTaskResult accepts both *CallToolResult and
 	// *CreateTaskResult, so storing a *CallToolResult here is safe.
 	if s.outputValidator != nil {
-		if _, vErr := s.outputValidator.validateCreateTaskResult(taskTool.Tool, result); vErr != nil {
+		if _, vErr := s.outputValidator.validateCreateTaskResult(taskTool.Tool, entry.outputSchema, entry.outputSchemaKept, result); vErr != nil {
 			s.completeTask(entry, validationToolResult(vErr), nil)
 			return
 		}
@@ -430,7 +432,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 	// the result with a tool execution error so the bad payload never
 	// reaches the client via tasks/result.
 	if s.outputValidator != nil {
-		if _, vErr := s.outputValidator.validate(regularTool.Tool, result); vErr != nil {
+		if _, vErr := s.outputValidator.validate(regularTool.Tool, entry.outputSchema, entry.outputSchemaKept, result); vErr != nil {
 			s.completeTask(entry, validationToolResult(vErr), nil)
 			return
 		}

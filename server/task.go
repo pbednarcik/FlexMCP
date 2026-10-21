@@ -9,6 +9,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -33,6 +35,11 @@ type taskEntry struct {
 	// slotReleased, under tasksMu, says the concurrency slot createTask took
 	// has been given back: once, when the handler has returned.
 	slotReleased bool
+	// outputSchema is the output schema registration kept for the task's
+	// tool, read with the tool's definition when the call came in, and
+	// outputSchemaKept whether one was kept. Set before the handler starts.
+	outputSchema     *jsonschema.Schema
+	outputSchemaKept bool
 }
 
 //
