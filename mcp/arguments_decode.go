@@ -19,11 +19,10 @@ func decodeArgumentsFast(data []byte) (any, bool) {
 		return nil, false
 	}
 	d := argumentDecoders.Get().(*valueDecoder)
-	d.r.Reset(data)
-	d.dec.Reset(&d.r, metaJSONOptions)
+	d.start(data)
 	value, ok := d.value()
 	ok = ok && d.end()
-	d.r.Reset(nil)
+	d.finish()
 	argumentDecoders.Put(d)
 	if !ok {
 		return nil, false

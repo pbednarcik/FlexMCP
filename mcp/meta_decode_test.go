@@ -5,9 +5,11 @@ import (
 	"encoding/json/jsontext"
 	"fmt"
 	"math"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"weak"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,6 +215,62 @@ func TestMetaUnmarshalResultIsOwned(t *testing.T) {
 		"l": []any{"x", map[string]any{"y": "z"}},
 		"s": "t",
 	}, second.AdditionalFields)
+}
+
+// A fast decode reads its input in place, but nothing it returns shares the
+// input's bytes: overwriting the input afterwards changes no result, for a
+// _meta or for a tool call's arguments.
+func TestFastDecodeResultsDoNotAliasTheInput(t *testing.T) {
+	long := strings.Repeat("L", 2*maxKeptString)
+	doc := `{"progressToken":123456789012345678901234567890,"k":"v","long":"` + long +
+		`","esc":"a\nb","n":1.5,"o":{"in":["x","` + long + `"]}}`
+	overwrite := func(b []byte) {
+		for i := range b {
+			b[i] = 'X'
+		}
+	}
+
+	t.Run("_meta", func(t *testing.T) {
+		data := []byte(doc)
+		var got Meta
+		require.True(t, got.unmarshalFast(data))
+		want, err := slowMeta([]byte(doc))
+		require.NoError(t, err)
+		overwrite(data)
+		assert.Equal(t, *want, got)
+	})
+	t.Run("arguments", func(t *testing.T) {
+		data := []byte(doc)
+		got, ok := decodeArgumentsFast(data)
+		require.True(t, ok)
+		var want any
+		require.NoError(t, json.Unmarshal([]byte(doc), &want))
+		overwrite(data)
+		assert.Equal(t, want, got)
+	})
+}
+
+// A pooled decoder keeps none of its input alive once a decode is done.
+func TestFastDecodeKeepsNoInput(t *testing.T) {
+	for name, decode := range map[string]func([]byte) bool{
+		"_meta": func(data []byte) bool {
+			var m Meta
+			return m.unmarshalFast(data)
+		},
+		"arguments": func(data []byte) bool {
+			_, ok := decodeArgumentsFast(data)
+			return ok
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Past the tiny allocator's size, so the input is an object of its own.
+			data := []byte(`{"k":"` + strings.Repeat("v", 100) + `"}`)
+			input := weak.Make(&data[0])
+			require.True(t, decode(data))
+			runtime.GC()
+			assert.Nil(t, input.Value(), "the input outlived its decode")
+		})
+	}
 }
 
 // The captured Claude Code _meta is read in one pass: 60 allocations through

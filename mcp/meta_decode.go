@@ -12,11 +12,12 @@ import (
 )
 
 // valueDecoder is the pooled state of one fast decode of a _meta or of a tool
-// call's arguments: a reader over the input, a decoder with encoding/json's
-// own options on it, a buffer for strings that hold escapes, and the strings
-// decoded before.
+// call's arguments: the input, a decoder with encoding/json's own options on
+// it, a buffer for strings that hold escapes, and the strings decoded before.
 type valueDecoder struct {
-	r   bytes.Reader
+	// in holds the input as a bytes.Buffer, which jsontext parses in place
+	// rather than copying it into a buffer of its own.
+	in  bytes.Buffer
 	dec *jsontext.Decoder
 	unq []byte
 	// strs holds strings this decoder read before, by their bytes: a client
@@ -42,10 +43,10 @@ const (
 )
 
 // maxFastInput bounds the input the single pass reads; a larger one goes
-// to the slow decoder. A decoder's buffers grow with its input and go back to
-// the pool as grown, so this also bounds what a pooled decoder keeps: none is
-// kept that an input past it grew. A large input that fails at its end is not
-// first built value by value.
+// to the slow decoder. A decoder's escape buffer grows with its input and goes
+// back to the pool as grown, so this also bounds what a pooled decoder keeps:
+// none is kept that an input past it grew. A large input that fails at its
+// end is not first built value by value.
 const maxFastInput = 64 << 10
 
 // metaDecoders keeps the decoders between requests, so a decode makes none.
@@ -54,8 +55,21 @@ var metaDecoders = sync.Pool{New: newValueDecoder}
 // newValueDecoder makes a decoder for a pool, its string cache empty.
 func newValueDecoder() any {
 	d := &valueDecoder{strs: make(map[string]keptString, maxKeptStrings)}
-	d.dec = jsontext.NewDecoder(&d.r, metaJSONOptions)
+	d.dec = jsontext.NewDecoder(&d.in, metaJSONOptions)
 	return d
+}
+
+// start points the decoder at data, which it reads in place.
+func (d *valueDecoder) start(data []byte) {
+	d.in = *bytes.NewBuffer(data)
+	d.dec.Reset(&d.in, metaJSONOptions)
+}
+
+// finish lets go of the input, so a pooled decoder keeps none of a caller's
+// bytes alive.
+func (d *valueDecoder) finish() {
+	d.in = bytes.Buffer{}
+	d.dec.Reset(&d.in, metaJSONOptions)
 }
 
 // metaConstStrings are the keys and values clients send on every request,
@@ -90,10 +104,9 @@ func (m *Meta) unmarshalFast(data []byte) bool {
 		return false
 	}
 	d := metaDecoders.Get().(*valueDecoder)
-	d.r.Reset(data)
-	d.dec.Reset(&d.r, metaJSONOptions)
+	d.start(data)
 	ok := d.meta(m)
-	d.r.Reset(nil)
+	d.finish()
 	metaDecoders.Put(d)
 	return ok
 }
