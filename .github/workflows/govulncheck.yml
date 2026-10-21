@@ -18,8 +18,13 @@ jobs:
     strategy:
       matrix:
         module: ['.', 'otel']
+    # Plain steps rather than golang/govulncheck-action: its go-version-input
+    # defaults to "stable" and wins over go-version-file, so the scan would use
+    # the newest Go instead of the toolchain the module names.
     steps:
-      - uses: golang/govulncheck-action@v1
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: ${{ matrix.module }}/go.mod
-          work-dir: ${{ matrix.module }}
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        working-directory: ${{ matrix.module }}
