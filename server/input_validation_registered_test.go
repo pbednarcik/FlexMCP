@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -40,34 +41,130 @@ func callWithCursor(t *testing.T, srv *MCPServer) (refused bool) {
 	return true
 }
 
+func okTaskHandler(context.Context, mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+	return &mcp.CreateTaskResult{}, nil
+}
+
+// withTasks returns tool with task augmentation allowed.
+func withTasks(tool mcp.Tool) mcp.Tool {
+	tool.Execution = &mcp.ToolExecution{TaskSupport: mcp.TaskSupportOptional}
+	return tool
+}
+
+// callWithCursorAsTask makes callWithCursor's call task-augmented and reports
+// whether validation refused it: a refused call's task is completed at once
+// with the validation error, an accepted one's is still working.
+func callWithCursorAsTask(t *testing.T, srv *MCPServer) (refused bool) {
+	t.Helper()
+	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"kubernetes_list","arguments":{"resourceType":"pods","cursor":"abc"},"task":{}}}`)
+	resp := srv.HandleMessage(t.Context(), msg)
+	jr, ok := resp.(mcp.JSONRPCResponse)
+	require.True(t, ok, "expected JSON-RPC response, got %T", resp)
+	created, ok := jr.Result.(*mcp.CreateTaskResult)
+	require.True(t, ok, "expected *mcp.CreateTaskResult, got %T", jr.Result)
+	if created.Task.Status == mcp.TaskStatusWorking {
+		return false
+	}
+	result, reqErr := srv.handleTaskResult(t.Context(), 2, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: created.Task.TaskId}})
+	require.Nil(t, reqErr)
+	require.True(t, result.IsError, "the task ended at once without a validation error")
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok, "expected TextContent, got %T", result.Content[0])
+	require.Contains(t, tc.Text, "cursor")
+	return true
+}
+
+// keptSchemaPaths are the ways a tool is registered, each with the call that
+// reaches its kept schema.
+func keptSchemaPaths() map[string]struct {
+	register func(*MCPServer, mcp.Tool)
+	refused  func(*testing.T, *MCPServer) bool
+} {
+	type path = struct {
+		register func(*MCPServer, mcp.Tool)
+		refused  func(*testing.T, *MCPServer) bool
+	}
+	return map[string]path{
+		"AddTool": {func(s *MCPServer, tool mcp.Tool) { s.AddTool(tool, okHandler) }, callWithCursor},
+		"AddTools": {func(s *MCPServer, tool mcp.Tool) {
+			s.AddTools(ServerTool{Tool: tool, Handler: okHandler})
+		}, callWithCursor},
+		"SetTools": {func(s *MCPServer, tool mcp.Tool) {
+			s.SetTools(ServerTool{Tool: tool, Handler: okHandler})
+		}, callWithCursor},
+		"DeleteTools then AddTool": {func(s *MCPServer, tool mcp.Tool) {
+			s.DeleteTools(tool.Name)
+			s.AddTool(tool, okHandler)
+		}, callWithCursor},
+		"AddTool, task-augmented call": {func(s *MCPServer, tool mcp.Tool) {
+			s.AddTool(withTasks(tool), okHandler)
+		}, callWithCursorAsTask},
+		"AddTaskTool": {func(s *MCPServer, tool mcp.Tool) {
+			s.AddTaskTool(withTasks(tool), okTaskHandler)
+		}, callWithCursorAsTask},
+		"AddTaskTools": {func(s *MCPServer, tool mcp.Tool) {
+			s.AddTaskTools(ServerTaskTool{Tool: withTasks(tool), Handler: okTaskHandler})
+		}, callWithCursorAsTask},
+	}
+}
+
 // The schema a call is validated against is the one the tool was last
 // registered with, on every registration path, in both directions: a stricter
 // schema refuses what the old one let through, and a relaxed one lets it
 // through again.
 func TestInputValidationReregistrationUsesTheNewSchema(t *testing.T) {
-	for name, register := range map[string]func(*MCPServer, mcp.Tool){
-		"AddTool": func(s *MCPServer, tool mcp.Tool) { s.AddTool(tool, okHandler) },
-		"AddTools": func(s *MCPServer, tool mcp.Tool) {
-			s.AddTools(ServerTool{Tool: tool, Handler: okHandler})
-		},
-		"SetTools": func(s *MCPServer, tool mcp.Tool) {
-			s.SetTools(ServerTool{Tool: tool, Handler: okHandler})
-		},
-		"DeleteTools then AddTool": func(s *MCPServer, tool mcp.Tool) {
-			s.DeleteTools(tool.Name)
-			s.AddTool(tool, okHandler)
-		},
-	} {
+	for name, path := range keptSchemaPaths() {
 		t.Run(name, func(t *testing.T) {
-			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
-			register(srv, relaxedListTool())
-			assert.False(t, callWithCursor(t, srv), "relaxed schema, first registration")
-			register(srv, fakeListTool())
-			assert.True(t, callWithCursor(t, srv), "strict schema registered over the relaxed one")
-			register(srv, relaxedListTool())
-			assert.False(t, callWithCursor(t, srv), "relaxed schema registered over the strict one")
+			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithTaskCapabilities(true, true, true))
+			path.register(srv, relaxedListTool())
+			assert.False(t, path.refused(t, srv), "relaxed schema, first registration")
+			path.register(srv, fakeListTool())
+			assert.True(t, path.refused(t, srv), "strict schema registered over the relaxed one")
+			path.register(srv, relaxedListTool())
+			assert.False(t, path.refused(t, srv), "relaxed schema registered over the strict one")
 		})
 	}
+}
+
+// A call is validated against the schema registration kept, not the tool's
+// own: with the kept schema blanked, arguments the tool's schema refuses get
+// through, on every registration path and on both call paths.
+func TestInputValidationCallsValidateAgainstTheKeptSchema(t *testing.T) {
+	for name, path := range keptSchemaPaths() {
+		t.Run(name, func(t *testing.T) {
+			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithTaskCapabilities(true, true, true))
+			path.register(srv, fakeListTool())
+			require.True(t, path.refused(t, srv), "the strict schema as registered")
+			srv.toolInputSchemas["kubernetes_list"] = nil
+			assert.False(t, path.refused(t, srv), "the call read the tool's schema instead of the kept one")
+		})
+	}
+}
+
+// Each way of registering a tool keeps its compiled input schema, and
+// deleting or replacing tools drops their entries.
+func TestInputValidationSchemaIsKeptOnEveryRegistrationPath(t *testing.T) {
+	for name, path := range keptSchemaPaths() {
+		t.Run(name, func(t *testing.T) {
+			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+			path.register(srv, fakeListTool())
+			require.Contains(t, srv.toolInputSchemas, "kubernetes_list")
+			assert.NotNil(t, srv.toolInputSchemas["kubernetes_list"])
+			assert.Len(t, srv.toolInputSchemas, len(srv.tools)+len(srv.taskTools))
+		})
+	}
+
+	t.Run("DeleteTools and SetTools drop the entry", func(t *testing.T) {
+		srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+		srv.AddTool(fakeListTool(), okHandler)
+		srv.DeleteTools("kubernetes_list")
+		assert.NotContains(t, srv.toolInputSchemas, "kubernetes_list")
+
+		srv.AddTool(fakeListTool(), okHandler)
+		srv.SetTools(ServerTool{Tool: mcp.NewTool("other"), Handler: okHandler})
+		assert.NotContains(t, srv.toolInputSchemas, "kubernetes_list")
+		assert.Contains(t, srv.toolInputSchemas, "other")
+	})
 }
 
 // A raw schema registered again is read again too.
@@ -86,13 +183,20 @@ func TestInputValidationReregistrationUsesTheNewRawSchema(t *testing.T) {
 	assert.True(t, callWithCursor(t, srv))
 }
 
-// Calls validate while the tool is registered again and again. Under -race
-// this shows the kept schema is read under the same lock it is written
-// under; every call is answered under one schema or the other.
+// Calls validate while the tool is registered again and again, synchronous
+// calls to a tool and task-augmented calls to a task tool. Under -race this
+// shows the kept schema is read under the same lock it is written under;
+// every call is answered under one schema or the other.
 func TestInputValidationCallsRaceReregistration(t *testing.T) {
-	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithTaskCapabilities(true, true, true))
+	taskTool := func(tool mcp.Tool) mcp.Tool {
+		tool.Name = "kubernetes_list_task"
+		return withTasks(tool)
+	}
 	srv.AddTool(relaxedListTool(), okHandler)
+	srv.AddTaskTool(taskTool(relaxedListTool()), okTaskHandler)
 	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"kubernetes_list","arguments":{"resourceType":"pods","cursor":"abc"}}}`)
+	taskMsg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"kubernetes_list_task","arguments":{"resourceType":"pods","cursor":"abc"},"task":{}}}`)
 
 	var registrar, callers sync.WaitGroup
 	stop := make(chan struct{})
@@ -103,22 +207,33 @@ func TestInputValidationCallsRaceReregistration(t *testing.T) {
 				return
 			default:
 			}
-			if i%2 == 0 {
+			switch i % 4 {
+			case 0:
 				srv.AddTool(fakeListTool(), okHandler)
-			} else {
+			case 1:
 				srv.SetTools(ServerTool{Tool: relaxedListTool(), Handler: okHandler})
+			case 2:
+				srv.AddTaskTool(taskTool(fakeListTool()), okTaskHandler)
+			default:
+				srv.AddTaskTools(ServerTaskTool{Tool: taskTool(relaxedListTool()), Handler: okTaskHandler})
 			}
 		}
 	})
-	for range 4 {
+	for i := range 6 {
+		// Two of the callers make task-augmented calls: the task is working
+		// under the relaxed schema, completed with the error under the strict.
+		m, accepted, refused := msg, `"text":"ok"`, `cursor`
+		if i >= 4 {
+			m, accepted, refused = taskMsg, `"status":"working"`, `"status":"completed"`
+		}
 		callers.Go(func() {
 			for range 200 {
-				out, err := json.Marshal(srv.HandleMessage(t.Context(), msg))
+				out, err := json.Marshal(srv.HandleMessage(t.Context(), m))
 				if err != nil {
 					t.Error(err)
 					return
 				}
-				if s := string(out); !strings.Contains(s, `"text":"ok"`) && !strings.Contains(s, `cursor`) {
+				if s := string(out); !strings.Contains(s, accepted) && !strings.Contains(s, refused) {
 					t.Errorf("answered under neither schema: %s", s)
 					return
 				}
