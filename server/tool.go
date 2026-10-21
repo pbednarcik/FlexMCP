@@ -193,7 +193,7 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 	}
 	maps.Copy(s.tools, staged)
 	for name, entry := range staged {
-		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
+		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
 		s.commitSchemas(name, schemas[name])
 	}
 	s.toolsMu.Unlock()
@@ -234,7 +234,7 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 	}
 	maps.Copy(s.taskTools, staged)
 	for name, entry := range staged {
-		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
+		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
 		s.commitSchemas(name, schemas[name])
 	}
 	s.toolsMu.Unlock()
@@ -284,7 +284,7 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 	}
 	s.tools = newTools
 	for name, entry := range newTools {
-		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
+		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
 		s.commitSchemas(name, schemas[name])
 	}
 	s.toolsMu.Unlock()

@@ -160,7 +160,7 @@ type MCPServer struct {
 	// extracted once at registration so a tools/call never re-reads the input
 	// schema. Keyed like tools and taskTools and kept in step with them under
 	// toolsMu.
-	toolHeaderBindings map[string][]mcp.ParamHeaderBinding
+	toolHeaderBindings map[string][]headerBinding
 	// toolInputSchemas holds, with input validation on, each registered
 	// tool's input schema as registration compiled it, nil for a tool with
 	// none, so a validated tools/call neither marshals nor hashes the schema
@@ -277,7 +277,7 @@ func NewMCPServer(
 		promptHandlers:             make(map[string]PromptHandlerFunc),
 		tools:                      make(map[string]ServerTool),
 		taskTools:                  make(map[string]ServerTaskTool),
-		toolHeaderBindings:         make(map[string][]mcp.ParamHeaderBinding),
+		toolHeaderBindings:         make(map[string][]headerBinding),
 		toolInputSchemas:           make(map[string]*jsonschema.Schema),
 		toolOutputSchemas:          make(map[string]*jsonschema.Schema),
 		toolHandlerMiddlewares:     make([]ToolHandlerMiddleware, 0),
