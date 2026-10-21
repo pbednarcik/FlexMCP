@@ -314,6 +314,88 @@ func TestSchemaCachesKeepOnlyTheCurrentSchema(t *testing.T) {
 	}
 }
 
+// cachedDigests returns the digest of every schema c holds, by tool name.
+func cachedDigests(c *compiledSchemaCache) map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	digests := make(map[string]string, len(c.cached))
+	for name, entry := range c.cached {
+		digests[name] = entry.digest
+	}
+	return digests
+}
+
+// numberSchema is an object schema with one number property called prop.
+func numberSchema(prop string) json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"` + prop + `":{"type":"number"}}}`)
+}
+
+// A refused registration leaves the schema caches as they were, on every
+// batch path: a batch refused for its last entry caches no schema of its
+// earlier ones, neither a new tool's nor a registered tool's replacement.
+func TestRejectedRegistrationLeavesTheSchemaCaches(t *testing.T) {
+	tool := func(name, prop string) mcp.Tool {
+		return mcp.Tool{
+			Name: name, RawInputSchema: numberSchema(prop), RawOutputSchema: numberSchema(prop),
+			Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportOptional},
+		}
+	}
+	bad := mcp.Tool{Name: "bad", RawInputSchema: json.RawMessage(`{"$ref":"missing-schema.json"}`)}
+	for name, register := range map[string]func(*MCPServer, ...mcp.Tool){
+		"AddTools": func(s *MCPServer, tools ...mcp.Tool) {
+			batch := make([]ServerTool, 0, len(tools))
+			for _, tool := range tools {
+				batch = append(batch, ServerTool{Tool: tool, Handler: okHandler})
+			}
+			s.AddTools(batch...)
+		},
+		"AddTaskTools": func(s *MCPServer, tools ...mcp.Tool) {
+			batch := make([]ServerTaskTool, 0, len(tools))
+			for _, tool := range tools {
+				batch = append(batch, ServerTaskTool{Tool: tool, Handler: okTaskHandler})
+			}
+			s.AddTaskTools(batch...)
+		},
+		"SetTools": func(s *MCPServer, tools ...mcp.Tool) {
+			batch := make([]ServerTool, 0, len(tools))
+			for _, tool := range tools {
+				batch = append(batch, ServerTool{Tool: tool, Handler: okHandler})
+			}
+			s.SetTools(batch...)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+			register(srv, tool("registered", "a"))
+			input, output := cachedDigests(srv.inputValidator.compiledSchemaCache), cachedDigests(srv.outputValidator.compiledSchemaCache)
+			require.Contains(t, input, "registered")
+			require.Contains(t, output, "registered")
+
+			assert.Panics(t, func() { register(srv, tool("registered", "b"), tool("new", "c"), bad) })
+			assert.Equal(t, input, cachedDigests(srv.inputValidator.compiledSchemaCache), "input schemas cached")
+			assert.Equal(t, output, cachedDigests(srv.outputValidator.compiledSchemaCache), "output schemas cached")
+		})
+	}
+}
+
+// A tool registered again without schemas leaves none of its old ones cached.
+func TestSchemaFreeReregistrationDropsTheCachedSchemas(t *testing.T) {
+	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+	srv.AddTool(mcp.Tool{Name: "t", RawInputSchema: numberSchema("a"), RawOutputSchema: numberSchema("a")}, okHandler)
+	caches := map[string]*compiledSchemaCache{
+		"input":  srv.inputValidator.compiledSchemaCache,
+		"output": srv.outputValidator.compiledSchemaCache,
+	}
+	for kind, c := range caches {
+		require.Equal(t, 1, compiledEntries(c, "t"), "%s schemas cached for the tool", kind)
+	}
+
+	srv.AddTool(mcp.Tool{Name: "t"}, okHandler)
+	for kind, c := range caches {
+		assert.Zero(t, compiledEntries(c, "t"), "%s schemas cached for a tool that has none", kind)
+	}
+}
+
 // TestInputSchemaValidation_NestedPathInError keeps a focused assertion that
 // the validator's error message reaches into nested objects. It deliberately
 // duplicates one of the table cases above with extra path-substring checks

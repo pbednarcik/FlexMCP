@@ -20,10 +20,12 @@ import (
 )
 
 // compiledSchemaCache compiles and caches JSON Schema validators keyed by
-// tool name, one per name: the compilation of the schema the name was last
-// looked up with. A tool registered again with a different schema replaces
-// its entry, so the cache holds no schema a tool no longer has; deleting the
-// tool drops it.
+// tool name, one per name: the compilation of the tool's current schema.
+// Registration caches a batch's schemas only once the batch is registered,
+// so a refused batch leaves the cache as it was. A tool registered again with
+// a different schema replaces its entry, and one registered without a schema
+// drops it, so the cache holds no schema a tool no longer has; deleting the
+// tool drops it too.
 //
 // The same cache type backs both input and output schema validation; each
 // validator owns its own cache instance so a tool's input and output schemas
@@ -62,16 +64,6 @@ func (c *compiledSchemaCache) invalidate(names ...string) {
 	}
 }
 
-// invalidateAll drops the entire cache.
-func (c *compiledSchemaCache) invalidateAll() {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cached = make(map[string]*cachedToolSchema)
-}
-
 // lookupOrCompile returns the compiled schema for the given (toolName,
 // schemaJSON) pair, compiling it when the name's entry holds another schema
 // or none, and keeping it as the name's entry. Compilation errors are cached
@@ -102,6 +94,42 @@ func (c *compiledSchemaCache) lookupOrCompile(toolName string, schemaJSON []byte
 	return compiled, compileErr
 }
 
+// compile returns the compilation of schemaJSON for the tool called toolName
+// without caching it: the cached entry when it holds the same schema, else a
+// fresh one. Registration compiles with it and caches what it compiled with
+// keep once the tool is registered.
+func (c *compiledSchemaCache) compile(toolName string, schemaJSON []byte) *cachedToolSchema {
+	digest := schemaDigest(schemaJSON)
+	c.mu.RLock()
+	entry, ok := c.cached[toolName]
+	c.mu.RUnlock()
+	if ok && entry.digest == digest {
+		return entry
+	}
+	compiled, compileErr := compileSchema(toolName, schemaJSON)
+	return &cachedToolSchema{digest: digest, compiled: compiled, compileErr: compileErr}
+}
+
+// keep caches entry as the tool called toolName's; a nil entry, for a tool
+// without the schema, drops the name's.
+func (c *compiledSchemaCache) keep(toolName string, entry *cachedToolSchema) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry == nil {
+		delete(c.cached, toolName)
+		return
+	}
+	c.cached[toolName] = entry
+}
+
+// schema returns the compiled schema e holds, nil for a nil e.
+func (e *cachedToolSchema) schema() *jsonschema.Schema {
+	if e == nil {
+		return nil
+	}
+	return e.compiled
+}
+
 // inputSchemaValidator validates tool call arguments against the tool's
 // declared input schema, reusing a compiledSchemaCache to amortize the
 // cost of JSON Schema compilation across calls.
@@ -124,22 +152,23 @@ func (v *inputSchemaValidator) invalidate(names ...string) {
 	v.compiledSchemaCache.invalidate(names...)
 }
 
-// invalidateAll drops the entire cache. Safe to call on a nil receiver.
-func (v *inputSchemaValidator) invalidateAll() {
+// keep caches the input schema registration compiled for the tool called
+// name, once the tool is registered. Safe to call on a nil receiver.
+func (v *inputSchemaValidator) keep(name string, entry *cachedToolSchema) {
 	if v == nil {
 		return
 	}
-	v.compiledSchemaCache.invalidateAll()
+	v.compiledSchemaCache.keep(name, entry)
 }
 
 // compileAtRegistration compiles a tool's input schema when the validator is
 // on, so a schema that cannot be compiled (an unsupported dialect, a $ref the
 // compiler will not fetch) is refused at registration rather than served
-// unvalidated (BaseProtocol.md rows 32 and 34). It returns the compiled
-// schema, nil for a tool with none, which the server keeps with the tool so
-// no call marshals, hashes or compiles it again. A nil validator compiles
-// nothing.
-func (v *inputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*jsonschema.Schema, error) {
+// unvalidated (BaseProtocol.md rows 32 and 34). It returns the compilation,
+// nil for a tool with none, uncached: once the tool is registered the server
+// keeps the schema with the tool, so no call marshals, hashes or compiles it
+// again, and caches it with keep. A nil validator compiles nothing.
+func (v *inputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*cachedToolSchema, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -147,11 +176,11 @@ func (v *inputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*jsonschema
 	if !ok {
 		return nil, nil
 	}
-	compiled, err := v.lookupOrCompile(tool.Name, schemaJSON)
-	if err != nil {
-		return nil, fmt.Errorf("tool %q input schema cannot be compiled: %w", tool.Name, err)
+	entry := v.compile(tool.Name, schemaJSON)
+	if entry.compileErr != nil {
+		return nil, fmt.Errorf("tool %q input schema cannot be compiled: %w", tool.Name, entry.compileErr)
 	}
-	return compiled, nil
+	return entry, nil
 }
 
 // validate validates raw arguments against the tool's input schema, read

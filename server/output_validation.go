@@ -36,30 +36,34 @@ func (v *outputSchemaValidator) invalidate(names ...string) {
 	v.compiledSchemaCache.invalidate(names...)
 }
 
-// invalidateAll drops the entire cache. Safe to call on a nil receiver.
-func (v *outputSchemaValidator) invalidateAll() {
+// keep caches the output schema registration compiled for the tool called
+// name, once the tool is registered. Safe to call on a nil receiver.
+func (v *outputSchemaValidator) keep(name string, entry *cachedToolSchema) {
 	if v == nil {
 		return
 	}
-	v.compiledSchemaCache.invalidateAll()
+	v.compiledSchemaCache.keep(name, entry)
 }
 
 // compileAtRegistration compiles a tool's output schema when the validator
 // is on, so a schema that cannot be compiled is refused at registration
 // rather than served unvalidated, as compileAtRegistration on the input
-// validator does. A nil validator compiles nothing.
-func (v *outputSchemaValidator) compileAtRegistration(tool mcp.Tool) error {
+// validator does. It returns the compilation, nil for a tool with none,
+// uncached, for keep once the tool is registered. A nil validator compiles
+// nothing.
+func (v *outputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*cachedToolSchema, error) {
 	if v == nil {
-		return nil
+		return nil, nil
 	}
 	schemaJSON, ok := outputSchemaJSONFor(tool)
 	if !ok {
-		return nil
+		return nil, nil
 	}
-	if _, err := v.lookupOrCompile(tool.Name, schemaJSON); err != nil {
-		return fmt.Errorf("tool %q output schema cannot be compiled: %w", tool.Name, err)
+	entry := v.compile(tool.Name, schemaJSON)
+	if entry.compileErr != nil {
+		return nil, fmt.Errorf("tool %q output schema cannot be compiled: %w", tool.Name, entry.compileErr)
 	}
-	return nil
+	return entry, nil
 }
 
 // validate checks the tool result against the tool's declared output schema.

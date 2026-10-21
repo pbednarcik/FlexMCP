@@ -60,25 +60,40 @@ func validateToolName(name string) error {
 
 // checkToolDefinition runs every registration-time check on a tool: its name,
 // its x-mcp-header annotations, and, with validation on, that its schemas
-// compile. It returns the compiled input schema, nil with input validation
-// off or for a tool with none, for retainInputSchema. Called with toolsMu held;
-// the caller panics on an error, as a definition the server cannot serve is a
-// programming error.
-func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (*jsonschema.Schema, error) {
+// compile. It returns the compiled schemas, uncached, for commitSchemas once
+// the tool's batch is registered. Called with toolsMu held; the caller panics
+// on an error, as a definition the server cannot serve is a programming error.
+func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (toolSchemas, error) {
 	if err := validateToolName(tool.Name); err != nil {
-		return nil, err
+		return toolSchemas{}, err
 	}
 	if err := validateToolHeaderAnnotations(tool); err != nil {
-		return nil, err
+		return toolSchemas{}, err
 	}
-	inputSchema, err := s.inputValidator.compileAtRegistration(*tool)
+	input, err := s.inputValidator.compileAtRegistration(*tool)
 	if err != nil {
-		return nil, err
+		return toolSchemas{}, err
 	}
-	if err := s.outputValidator.compileAtRegistration(*tool); err != nil {
-		return nil, err
+	output, err := s.outputValidator.compileAtRegistration(*tool)
+	if err != nil {
+		return toolSchemas{}, err
 	}
-	return inputSchema, nil
+	return toolSchemas{input: input, output: output}, nil
+}
+
+// toolSchemas are a tool's schemas as registration compiled them: nil for a
+// schema the tool has none of, or with that validation off.
+type toolSchemas struct {
+	input, output *cachedToolSchema
+}
+
+// commitSchemas caches the schemas registration compiled for the tool called
+// name, now registered, dropping what was cached for a schema it no longer
+// has, and keeps its input schema with it. Called with toolsMu held.
+func (s *MCPServer) commitSchemas(name string, schemas toolSchemas) {
+	s.inputValidator.keep(name, schemas.input)
+	s.outputValidator.keep(name, schemas.output)
+	s.retainInputSchema(name, schemas.input.schema())
 }
 
 // retainInputSchema keeps the input schema registration compiled for the tool
@@ -136,7 +151,7 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 	// Stage the whole batch before touching the registry so a rejected entry
 	// leaves earlier ones unregistered as well.
 	staged := make(map[string]ServerTool, len(tools))
-	inputSchemas := make(map[string]*jsonschema.Schema, len(tools))
+	schemas := make(map[string]toolSchemas, len(tools))
 	for _, entry := range tools {
 		name := entry.Tool.Name
 		// Check for collision with task tools
@@ -145,18 +160,18 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		inputSchema, err := s.checkToolDefinition(&entry.Tool)
+		compiled, err := s.checkToolDefinition(&entry.Tool)
 		if err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		staged[name] = entry
-		inputSchemas[name] = inputSchema
+		schemas[name] = compiled
 	}
 	maps.Copy(s.tools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
-		s.retainInputSchema(name, inputSchemas[name])
+		s.commitSchemas(name, schemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -177,7 +192,7 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 
 	s.toolsMu.Lock()
 	staged := make(map[string]ServerTaskTool, len(taskTools))
-	inputSchemas := make(map[string]*jsonschema.Schema, len(taskTools))
+	schemas := make(map[string]toolSchemas, len(taskTools))
 	for _, entry := range taskTools {
 		name := entry.Tool.Name
 		// Check for collision with regular tools
@@ -186,18 +201,18 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 			panic(fmt.Sprintf("task tool name '%s' already registered as regular tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		inputSchema, err := s.checkToolDefinition(&entry.Tool)
+		compiled, err := s.checkToolDefinition(&entry.Tool)
 		if err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		staged[name] = entry
-		inputSchemas[name] = inputSchema
+		schemas[name] = compiled
 	}
 	maps.Copy(s.taskTools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
-		s.retainInputSchema(name, inputSchemas[name])
+		s.commitSchemas(name, schemas[name])
 	}
 	s.toolsMu.Unlock()
 
@@ -216,14 +231,9 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 func (s *MCPServer) SetTools(tools ...ServerTool) {
 	s.implicitlyRegisterToolCapabilities()
 
-	// The old tools' compiled schemas go first, so the new ones compiled
-	// at registration below are the ones kept.
-	s.inputValidator.invalidateAll()
-	s.outputValidator.invalidateAll()
-
 	s.toolsMu.Lock()
 	newTools := make(map[string]ServerTool, len(tools))
-	inputSchemas := make(map[string]*jsonschema.Schema, len(tools))
+	schemas := make(map[string]toolSchemas, len(tools))
 	for _, entry := range tools {
 		name := entry.Tool.Name
 		// Check for collision with task tools
@@ -232,22 +242,26 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
-		inputSchema, err := s.checkToolDefinition(&entry.Tool)
+		compiled, err := s.checkToolDefinition(&entry.Tool)
 		if err != nil {
 			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		newTools[name] = entry
-		inputSchemas[name] = inputSchema
+		schemas[name] = compiled
 	}
+	// The old tools' cached schemas go first, so the new ones compiled above
+	// are the ones kept.
 	for name := range s.tools {
 		delete(s.toolHeaderBindings, name)
 		delete(s.toolInputSchemas, name)
+		s.inputValidator.invalidate(name)
+		s.outputValidator.invalidate(name)
 	}
 	s.tools = newTools
 	for name, entry := range newTools {
 		s.toolHeaderBindings[name] = mcp.ExtractParamHeaderBindings(&entry.Tool)
-		s.retainInputSchema(name, inputSchemas[name])
+		s.commitSchemas(name, schemas[name])
 	}
 	s.toolsMu.Unlock()
 
