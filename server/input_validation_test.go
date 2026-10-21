@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -226,8 +227,8 @@ func TestInputSchemaValidation(t *testing.T) {
 
 // TestInputSchemaValidation_RecompilesOnSchemaChange documents that
 // re-registering a tool with a different schema honours the new schema on
-// the next call. The cache keys by name+digest, so a fresh schema produces a
-// fresh entry rather than colliding with the previous one.
+// the next call. A fresh schema has a fresh digest, so it replaces the cached
+// entry rather than reusing the previous compilation.
 func TestInputSchemaValidation_RecompilesOnSchemaChange(t *testing.T) {
 	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
 	srv.AddTool(fakeListTool(), okHandler)
@@ -271,22 +272,46 @@ func TestInputSchemaValidation_DeleteToolInvalidatesCache(t *testing.T) {
 	require.Len(t, srv.inputValidator.cached, 0, "cache should be empty after DeleteTools")
 }
 
-// TestInputSchemaValidation_CachesPerSchemaDigest is the regression test for
-// the same-named-tool-with-different-schema scenario. Two compilations of the
-// same name with different schema bytes must coexist (one per digest), so
-// session-scoped tools that shadow global tools don't thrash the cache on
-// alternating calls.
-func TestInputSchemaValidation_CachesPerSchemaDigest(t *testing.T) {
-	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
-	srv.AddTool(fakeListTool(), okHandler)
-	_, err := srv.inputValidator.lookupOrCompile("kubernetes_list", []byte(`{"type":"object","additionalProperties":false}`))
-	require.NoError(t, err)
-	_, err = srv.inputValidator.lookupOrCompile("kubernetes_list", []byte(`{"type":"object","additionalProperties":true}`))
-	require.NoError(t, err)
+// compiledEntries counts the compiled schemas c holds for the tool called
+// name.
+func compiledEntries(c *compiledSchemaCache, name string) int {
+	if _, ok := c.cached[name]; ok {
+		return 1
+	}
+	return 0
+}
 
-	require.Len(t, srv.inputValidator.cached, 1, "expected exactly one tool entry in the cache")
-	require.Len(t, srv.inputValidator.cached["kubernetes_list"], 3,
-		"expected three compiled schema entries for the same tool name: the one registration compiled and the two looked up")
+// holdsSchema reports whether c holds the compilation of schemaJSON for the
+// tool called name.
+func holdsSchema(c *compiledSchemaCache, name string, schemaJSON []byte) bool {
+	entry, ok := c.cached[name]
+	return ok && entry.digest == schemaDigest(schemaJSON)
+}
+
+// The schema caches keep only a tool's current schemas: a tool registered
+// again and again with a new schema each time leaves one compiled input
+// schema and one output schema, the last registered, and none once it is
+// deleted.
+func TestSchemaCachesKeepOnlyTheCurrentSchema(t *testing.T) {
+	srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+	var schema json.RawMessage
+	for i := range 500 {
+		schema = json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"n%d":{"type":"number"}}}`, i))
+		srv.AddTool(mcp.Tool{Name: "churn", RawInputSchema: schema, RawOutputSchema: schema}, okHandler)
+	}
+	caches := map[string]*compiledSchemaCache{
+		"input":  srv.inputValidator.compiledSchemaCache,
+		"output": srv.outputValidator.compiledSchemaCache,
+	}
+	for kind, c := range caches {
+		assert.Equal(t, 1, compiledEntries(c, "churn"), "%s schemas cached for one tool", kind)
+		assert.True(t, holdsSchema(c, "churn", schema), "the %s schema cached is not the last registered", kind)
+	}
+
+	srv.DeleteTools("churn")
+	for kind, c := range caches {
+		assert.Zero(t, compiledEntries(c, "churn"), "%s schemas cached for a deleted tool", kind)
+	}
 }
 
 // TestInputSchemaValidation_NestedPathInError keeps a focused assertion that

@@ -20,27 +20,24 @@ import (
 )
 
 // compiledSchemaCache compiles and caches JSON Schema validators keyed by
-// tool name. Compilation is performed lazily on first use and the resulting
-// schema is cached for the lifetime of the cache.
-//
-// The cache is two-level: tool name -> schema digest -> compiled entry. A
-// tool can be re-registered with a different schema; each distinct schema is
-// compiled once. Name-level invalidation
-// drops every entry registered for that name in a single map delete, which
-// keeps DeleteTools / SetTools cleanup cheap.
+// tool name, one per name: the compilation of the schema the name was last
+// looked up with. A tool registered again with a different schema replaces
+// its entry, so the cache holds no schema a tool no longer has; deleting the
+// tool drops it.
 //
 // The same cache type backs both input and output schema validation; each
-// validator owns its own cache instance so input and output schemas with
-// the same digest do not collide.
+// validator owns its own cache instance so a tool's input and output schemas
+// do not collide.
 type compiledSchemaCache struct {
 	mu     sync.RWMutex
-	cached map[string]map[string]*cachedToolSchema
+	cached map[string]*cachedToolSchema
 }
 
-// cachedToolSchema records the result of compiling a single (toolName,
-// schemaDigest) pair. compileErr is stored alongside the compiled schema so
-// that a schema that fails to compile is not recompiled on every call.
+// cachedToolSchema records the result of compiling the schema whose digest
+// it carries. compileErr is stored alongside the compiled schema so that a
+// schema that fails to compile is not recompiled on every call.
 type cachedToolSchema struct {
+	digest     string
 	compiled   *jsonschema.Schema
 	compileErr error
 }
@@ -48,7 +45,7 @@ type cachedToolSchema struct {
 // newCompiledSchemaCache returns a fresh empty schema cache.
 func newCompiledSchemaCache() *compiledSchemaCache {
 	return &compiledSchemaCache{
-		cached: make(map[string]map[string]*cachedToolSchema),
+		cached: make(map[string]*cachedToolSchema),
 	}
 }
 
@@ -72,39 +69,33 @@ func (c *compiledSchemaCache) invalidateAll() {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cached = make(map[string]map[string]*cachedToolSchema)
+	c.cached = make(map[string]*cachedToolSchema)
 }
 
 // lookupOrCompile returns the compiled schema for the given (toolName,
-// schemaJSON) pair, compiling and caching it on first access. Compilation
-// errors are cached too so that a malformed schema is not recompiled on
-// every call.
+// schemaJSON) pair, compiling it when the name's entry holds another schema
+// or none, and keeping it as the name's entry. Compilation errors are cached
+// too so that a malformed schema is not recompiled on every call.
 func (c *compiledSchemaCache) lookupOrCompile(toolName string, schemaJSON []byte) (*jsonschema.Schema, error) {
 	digest := schemaDigest(schemaJSON)
 
 	c.mu.RLock()
-	if perName, ok := c.cached[toolName]; ok {
-		if entry, ok := perName[digest]; ok {
-			c.mu.RUnlock()
-			return entry.compiled, entry.compileErr
-		}
+	if entry, ok := c.cached[toolName]; ok && entry.digest == digest {
+		c.mu.RUnlock()
+		return entry.compiled, entry.compileErr
 	}
 	c.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Re-check under the write lock in case another goroutine compiled it.
-	perName, ok := c.cached[toolName]
-	if !ok {
-		perName = make(map[string]*cachedToolSchema)
-		c.cached[toolName] = perName
-	}
-	if entry, ok := perName[digest]; ok {
+	if entry, ok := c.cached[toolName]; ok && entry.digest == digest {
 		return entry.compiled, entry.compileErr
 	}
 
 	compiled, compileErr := compileSchema(toolName, schemaJSON)
-	perName[digest] = &cachedToolSchema{
+	c.cached[toolName] = &cachedToolSchema{
+		digest:     digest,
 		compiled:   compiled,
 		compileErr: compileErr,
 	}
@@ -213,8 +204,8 @@ func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, e
 }
 
 // schemaDigest returns a stable hex-encoded SHA-256 of the canonical schema
-// bytes. We use a digest rather than the raw bytes as a map key so the cache
-// stays cheap to look up even for large schemas; collisions are not a
+// bytes. The cache compares a digest rather than the raw bytes so it stays
+// cheap to look up even for large schemas; collisions are not a
 // security concern because both sides of the comparison are produced by the
 // same mcp-go server process.
 func schemaDigest(schemaJSON []byte) string {
