@@ -20,6 +20,7 @@ import (
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 
+	"github.com/mark3labs/mcp-go/internal/argsdecode"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -408,14 +409,19 @@ func normalizeArgumentsForValidation(rawArgs any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return jsonschema.UnmarshalJSON(bytes.NewReader(encoded))
+	return normalizeRawArguments(encoded)
 }
 
 // normalizeRawArguments decodes raw arguments for the validator, numbers kept
-// exact; blank arguments are an empty object.
+// exact, as jsonschema.UnmarshalJSON does: in one pass when mcp's decoder
+// settles them (argsdecode.Numbers), else with jsonschema.UnmarshalJSON
+// itself. Blank arguments are an empty object.
 func normalizeRawArguments(raw json.RawMessage) (any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return map[string]any{}, nil
+	}
+	if value, ok := argsdecode.Numbers(raw); ok {
+		return value, nil
 	}
 	return jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 }

@@ -1,12 +1,43 @@
 package mcp
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/mark3labs/mcp-go/internal/argsdecode"
+)
 
 // argumentDecoders keeps the decoders that read a tool call's arguments
 // between requests. They are not [metaDecoders]: argument values are new on
 // each call more often than a _meta's, and in a decoder of their own they do
 // not push out the strings a client repeats in every _meta.
 var argumentDecoders = sync.Pool{New: newValueDecoder}
+
+// numberDecoders keep the decoders that read a tool call's arguments for the
+// input validator, every number kept as the json.Number of its literal.
+var numberDecoders = sync.Pool{New: func() any {
+	d := newValueDecoder().(*valueDecoder)
+	d.numbers = true
+	return d
+}}
+
+func init() { argsdecode.Numbers = decodeArgumentsNumbers }
+
+// decodeArgumentsNumbers reads data, a tool call's arguments, in one pass into
+// the value jsonschema.UnmarshalJSON builds, a json.Decoder with UseNumber
+// that refuses trailing data: every number the json.Number of its literal as
+// sent, an object a map whose last duplicate name wins, an array a slice, an
+// empty one not nil. It reports whether it could, giving up on what
+// decodeArgumentsFast gives up on except a number out of a float64's range,
+// which a json.Number holds.
+func decodeArgumentsNumbers(data []byte) (any, bool) {
+	if len(data) > maxFastInput {
+		return nil, false
+	}
+	d := numberDecoders.Get().(*valueDecoder)
+	value, ok := d.decodeArguments(data)
+	numberDecoders.Put(d)
+	return value, ok
+}
 
 // decodeArgumentsFast reads data, a tool call's arguments, in one pass into
 // the value json.Unmarshal into an any builds, and reports whether it could.

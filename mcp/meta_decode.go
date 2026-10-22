@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/json/jsontext"
 	"errors"
 	"io"
@@ -25,6 +26,9 @@ type valueDecoder struct {
 	// maxKeptStrings, each at most maxKeptString bytes long, and
 	// is cleared when full.
 	strs map[string]keptString
+	// numbers keeps each number as the json.Number of its literal, as a
+	// json.Decoder with UseNumber does, rather than a float64.
+	numbers bool
 }
 
 // keptString is a string a decoder kept, and its boxed form once it was read
@@ -188,7 +192,8 @@ func (d *valueDecoder) progressToken() (ProgressToken, bool) {
 	return token, true
 }
 
-// value reads the next value as json.Unmarshal into an any reads it.
+// value reads the next value as json.Unmarshal into an any reads it, or, for a
+// decoder that keeps numbers, as a json.Decoder with UseNumber does.
 func (d *valueDecoder) value() (any, bool) {
 	switch d.dec.PeekKind() {
 	case '"':
@@ -208,6 +213,9 @@ func (d *valueDecoder) value() (any, bool) {
 		v, err := d.dec.ReadValue()
 		if err != nil {
 			return nil, false
+		}
+		if d.numbers {
+			return json.Number(v), true
 		}
 		f, err := strconv.ParseFloat(string(v), 64)
 		if err != nil {

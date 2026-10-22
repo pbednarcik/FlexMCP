@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -150,9 +151,28 @@ type numbersTally struct {
 	unguarded int
 }
 
-// checkNumbers validates args against compiled as a call does and as it did
-// before reading the decoded Arguments, from a second decode of the bytes,
-// and fails t when the two answers differ or validation changed Arguments.
+// validatedAsBefore validates raw against compiled from the tree validation
+// read before it read either the decoded Arguments or raw in one pass:
+// jsonschema.UnmarshalJSON's.
+func validatedAsBefore(t testing.TB, compiled *jsonschema.Schema, raw []byte) string {
+	t.Helper()
+	value, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	require.NoError(t, err, "%s", raw)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("validation panicked: %v", r)
+		}
+	}()
+	if err := validateTree(compiled, value); err != nil {
+		return validationOutcome(true, formatValidationError(err))
+	}
+	return validationOutcome(true, nil)
+}
+
+// checkNumbers validates args against compiled as a call does, from its
+// Arguments or from its bytes read in one pass, and as before, from
+// jsonschema.UnmarshalJSON's tree, and fails t when the answers differ or
+// validation changed Arguments.
 func checkNumbers(t testing.TB, compiled *jsonschema.Schema, args string, tally *numbersTally) {
 	t.Helper()
 	var p mcp.CallToolParams
@@ -163,8 +183,9 @@ func checkNumbers(t testing.TB, compiled *jsonschema.Schema, args string, tally 
 	require.NoError(t, json.Unmarshal(p.RawArguments, &before))
 	now := validated(t, compiled, callArguments{raw: p.RawArguments, decoded: p.Arguments})
 	sent := validated(t, compiled, callArguments{raw: p.RawArguments})
-	if now != sent {
-		t.Fatalf("arguments %s:\n validated now %s\n as sent       %s", args, now, sent)
+	asBefore := validatedAsBefore(t, compiled, p.RawArguments)
+	if now != asBefore || sent != asBefore {
+		t.Fatalf("arguments %s:\n validated now  %s\n as sent now    %s\n as sent before %s", args, now, sent, asBefore)
 	}
 	if !reflect.DeepEqual(p.Arguments, before) {
 		t.Fatalf("arguments %s: validation changed them to %#v", args, p.Arguments)
@@ -405,7 +426,7 @@ func TestInputValidationLeavesTheArgumentsAsDecoded(t *testing.T) {
 // complexValidationCall is a validated call of bench/compare's complex shape:
 // twenty items of an id, a name and three tags, and forty string properties,
 // against a schema of a hundred and thirty.
-func complexValidationCall(t testing.TB) (*MCPServer, json.RawMessage) {
+func complexValidationCall(t testing.TB, opts ...ServerOption) (*MCPServer, json.RawMessage) {
 	t.Helper()
 	var schema strings.Builder
 	schema.WriteString(`{"type":"object","required":["region","items"],"properties":{"region":{"type":"string"},` +
@@ -428,7 +449,7 @@ func complexValidationCall(t testing.TB) (*MCPServer, json.RawMessage) {
 		fmt.Fprintf(&args, `,"p%03d":"value %03d"`, i, i)
 	}
 	args.WriteString(`,"region":"us-east-1"}`)
-	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation())
+	srv := NewMCPServer("test", "1.0.0", append([]ServerOption{WithToolCapabilities(false), WithInputSchemaValidation()}, opts...)...)
 	srv.AddTool(mcp.NewToolWithRawSchema("complex", "a call of many arguments", json.RawMessage(schema.String())), okHandler)
 	return srv, json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"complex","arguments":` + args.String() + `}}`)
 }
@@ -451,4 +472,38 @@ func TestInputValidationComplexCallAllocations(t *testing.T) {
 
 	allocs := testing.AllocsPerRun(200, func() { srv.HandleMessage(ctx, msg) })
 	assert.LessOrEqual(t, allocs, 969.0, "allocations per validated complex tools/call")
+}
+
+// A validated call the validator cannot read from its Arguments has its
+// arguments read for the validator in one pass: a call whose numbers do not
+// read exactly as float64s (an id written with an exponent), and a call a
+// before-call hook could have changed: 1565 and 1650 allocations when
+// jsonschema.UnmarshalJSON read them, 1138 and 1223 in one pass.
+func TestInputValidationSecondReadAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	hooks := &Hooks{}
+	hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) {})
+	for _, tc := range []struct {
+		name    string
+		opts    []ServerOption
+		ceiling float64
+	}{
+		{"an exponent", nil, 1138},
+		{"a before-call hook", []ServerOption{WithHooks(hooks)}, 1223},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, msg := complexValidationCall(t, tc.opts...)
+			if tc.opts == nil {
+				msg = json.RawMessage(strings.Replace(string(msg), `"id":0,`, `"id":0e0,`, 1))
+			}
+			ctx := t.Context()
+			out, err := json.Marshal(srv.HandleMessage(ctx, msg))
+			require.NoError(t, err)
+			require.Contains(t, string(out), `"text":"ok"`)
+			allocs := testing.AllocsPerRun(200, func() { srv.HandleMessage(ctx, msg) })
+			assert.LessOrEqual(t, allocs, tc.ceiling, "allocations per validated complex tools/call with %s", tc.name)
+		})
+	}
 }
