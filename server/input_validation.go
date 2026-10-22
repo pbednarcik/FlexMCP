@@ -8,6 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"math/big"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -197,10 +201,84 @@ func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, e
 		return true, fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	if err := compiled.Validate(value); err != nil {
+	if err := validateTree(compiled, value); err != nil {
 		return true, formatValidationError(err)
 	}
 	return true, nil
+}
+
+// validateTree validates value, a tree jsonschema.UnmarshalJSON built or the
+// decoded arguments of a call, against compiled. jsonschema v6.0.2 reads every
+// number a schema checks through big.Rat and panics on one big.Rat cannot
+// read; that panic is recovered here, around Validate alone, and the number
+// is the error. Any other panic is raised again.
+func validateTree(compiled *jsonschema.Schema, value any) error {
+	recovered, err := validateRecovering(compiled, value)
+	if recovered == nil {
+		return err
+	}
+	if outOfRange := findNumberOutOfRange(value, nil); outOfRange != nil {
+		return outOfRange
+	}
+	panic(recovered)
+}
+
+// validateRecovering runs compiled.Validate on value and returns what a panic
+// in it raised, nil when it returned.
+func validateRecovering(compiled *jsonschema.Schema, value any) (recovered any, err error) {
+	defer func() { recovered = recover() }()
+	return nil, compiled.Validate(value)
+}
+
+// numberOutOfRange is a number in a value to validate, or in a schema, that
+// big.Rat cannot read, at the place it stands: one whose exponent does not
+// fit an int64 or, unless it is zero, whose scale is past a million either
+// way, such as 0e10000000000000000000 or 1e-1000001, though float64 reads
+// both as 0. It fails validation as a value that does not fit the schema does.
+type numberOutOfRange struct {
+	at      []string
+	literal string
+}
+
+// maxShownNumber bounds how much of a number's literal a failure repeats.
+const maxShownNumber = 64
+
+// Error renders the failure as formatLeafMessage renders the validator's.
+func (e *numberOutOfRange) Error() string {
+	location := jsonPointer(e.at)
+	if location == "" {
+		location = "<root>"
+	}
+	literal := e.literal
+	if len(literal) > maxShownNumber {
+		literal = literal[:maxShownNumber] + "..."
+	}
+	return location + ": number " + literal + " is out of range"
+}
+
+// findNumberOutOfRange returns the first number in value, a validator tree,
+// that big.Rat cannot read, objects' members taken in key order, or nil.
+// at is the place value stands.
+func findNumberOutOfRange(value any, at []string) *numberOutOfRange {
+	switch v := value.(type) {
+	case json.Number:
+		if _, ok := new(big.Rat).SetString(string(v)); !ok {
+			return &numberOutOfRange{at: slices.Clone(at), literal: string(v)}
+		}
+	case []any:
+		for i, item := range v {
+			if found := findNumberOutOfRange(item, append(at, strconv.Itoa(i))); found != nil {
+				return found
+			}
+		}
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			if found := findNumberOutOfRange(v[key], append(at, key)); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
 }
 
 // schemaDigest returns a stable hex-encoded SHA-256 of the canonical schema
@@ -244,11 +322,28 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 	if err := c.AddResource(resourceURL, doc); err != nil {
 		return nil, fmt.Errorf("register tool %q input schema: %w", toolName, err)
 	}
-	compiled, err := c.Compile(resourceURL)
+	recovered, compiled, err := compileRecovering(c, resourceURL)
+	if recovered != nil {
+		// Compiling validates the schema against its metaschema, which reads
+		// its numeric keywords through big.Rat and panics on a bound big.Rat
+		// cannot read; that bound is the error. Any other panic is raised again.
+		if outOfRange := findNumberOutOfRange(doc, nil); outOfRange != nil {
+			return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
+		}
+		panic(recovered)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, err)
 	}
 	return compiled, nil
+}
+
+// compileRecovering compiles the schema at resourceURL with c and returns what
+// a panic in Compile raised, nil when it returned.
+func compileRecovering(c *jsonschema.Compiler, resourceURL string) (recovered any, compiled *jsonschema.Schema, err error) {
+	defer func() { recovered = recover() }()
+	compiled, err = c.Compile(resourceURL)
+	return nil, compiled, err
 }
 
 // callArguments is what input validation reads of a call: raw, the arguments
@@ -390,6 +485,9 @@ const (
 // flat message that's friendly for an LLM to read. Each individual constraint
 // violation is rendered as `<path>: <message>` and joined with semicolons.
 func formatValidationError(err error) error {
+	if outOfRange, ok := errors.AsType[*numberOutOfRange](err); ok {
+		return fmt.Errorf("input schema validation failed: %s", outOfRange.Error())
+	}
 	var verr *jsonschema.ValidationError
 	if !errors.As(err, &verr) {
 		return fmt.Errorf("input schema validation failed: %w", err)

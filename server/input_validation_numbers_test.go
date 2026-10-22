@@ -110,13 +110,15 @@ func validationOutcome(ran bool, err error) string {
 	return fmt.Sprintf("ran=%v %s", ran, strings.Join(parts, "; "))
 }
 
-// validated validates args against compiled and renders the outcome. A
-// panic is an outcome too: jsonschema v6.0.2 panics on a number big.Rat
-// cannot read, such as 0e10000000000000000000, as sent.
-func validated(compiled *jsonschema.Schema, args callArguments) (outcome string) {
+// validated validates args against compiled and renders the outcome; a
+// panic fails t. jsonschema v6.0.2 panics on a number big.Rat cannot read,
+// such as 0e10000000000000000000, and validation must answer it as a
+// failure instead.
+func validated(t testing.TB, compiled *jsonschema.Schema, args callArguments) string {
+	t.Helper()
 	defer func() {
 		if r := recover(); r != nil {
-			outcome = fmt.Sprintf("panic: %v", r)
+			t.Fatalf("validation panicked: %v", r)
 		}
 	}()
 	return validationOutcome(validateArguments(compiled, args))
@@ -159,8 +161,8 @@ func checkNumbers(t testing.TB, compiled *jsonschema.Schema, args string, tally 
 	}
 	var before any
 	require.NoError(t, json.Unmarshal(p.RawArguments, &before))
-	now := validated(compiled, callArguments{raw: p.RawArguments, decoded: p.Arguments})
-	sent := validated(compiled, callArguments{raw: p.RawArguments})
+	now := validated(t, compiled, callArguments{raw: p.RawArguments, decoded: p.Arguments})
+	sent := validated(t, compiled, callArguments{raw: p.RawArguments})
 	if now != sent {
 		t.Fatalf("arguments %s:\n validated now %s\n as sent       %s", args, now, sent)
 	}
@@ -229,6 +231,7 @@ var numbersLiterals = []string{
 	`12345678901234567`, `0.00000000000001`, `0.000000000000001`, `99999999999999.9`,
 	`0.100000000000000`, `1e3`, `1E3`, `1e-7`, `2.5E+2`, `9.007199254740993e15`,
 	`3e-324`, `4.9e-324`, `1e-400`, `1e308`, `0.1e1`, `-0e0`,
+	`0e10000000000000000000`, `1e-1000001`, `0e1000000`, `-0.0e-9223372036854775808`,
 }
 
 // The differential: every keyword, both types, every literal in every place,
@@ -340,6 +343,7 @@ func FuzzInputValidationOfTheDecodedArguments(f *testing.F) {
 	f.Add("3e-324", "4e-324", uint8(0), uint8(4))
 	f.Add("-0", "0", uint8(5), uint8(2))
 	f.Add("0e10000000000000000000", "1", uint8(0), uint8(0))
+	f.Add("1e-1000001", "1", uint8(1), uint8(3))
 	f.Add("0", "0e10000000000000000000", uint8('t'), uint8(1))
 	keywords := []string{"maximum", "minimum", "exclusiveMaximum", "exclusiveMinimum", "multipleOf", "const", "enum"}
 	f.Fuzz(func(t *testing.T, n, bound string, kw, at uint8) {
