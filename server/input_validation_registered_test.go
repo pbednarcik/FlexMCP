@@ -268,7 +268,7 @@ func structSchemaTool() mcp.Tool {
 // schema registration compiled, not one marshalled and hashed again per call:
 // 96 allocations when it was, 71 with the schema kept from registration, 70
 // with the arguments passed to the validator unboxed, 62 with them read into
-// Arguments in one pass.
+// Arguments in one pass, 42 validated from Arguments.
 func TestInputValidationStructSchemaAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -285,5 +285,5 @@ func TestInputValidationStructSchemaAllocations(t *testing.T) {
 	require.Contains(t, string(refused), `"isError":true`)
 
 	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
-	assert.LessOrEqual(t, allocs, 62.0, "allocations per validated tools/call on a structured schema")
+	assert.LessOrEqual(t, allocs, 42.0, "allocations per validated tools/call on a structured schema")
 }

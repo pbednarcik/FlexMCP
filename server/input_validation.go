@@ -253,33 +253,42 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 
 // callArguments is what input validation reads of a call: raw, the arguments
 // as the client sent them, or, when raw is nil, decoded, the arguments as the
-// request holds them. The raw bytes travel typed, so no call boxes them into
-// an interface to reach the validator.
+// request holds them. With raw set, decoded is the request's Arguments when
+// they are still the decode of raw, else nil. The raw bytes travel typed, so
+// no call boxes them into an interface to reach the validator.
 type callArguments struct {
 	raw     json.RawMessage
 	decoded any
 }
 
 // normalize returns the arguments in the form the JSON Schema validator
-// reads, as normalizeArgumentsForValidation does for either form.
+// reads, as normalizeArgumentsForValidation does for either form. Arguments
+// sent as raw are read as sent, numbers exact: from their decode when every
+// number in them reads the same there (numbersReadExactly), else from a
+// second decode that keeps each number's literal.
 func (a callArguments) normalize() (any, error) {
-	if a.raw != nil {
-		return normalizeRawArguments(a.raw)
+	if a.raw == nil {
+		return normalizeArgumentsForValidation(a.decoded)
 	}
-	return normalizeArgumentsForValidation(a.decoded)
+	if a.decoded != nil && numbersReadExactly(a.raw) {
+		return a.decoded, nil
+	}
+	return normalizeRawArguments(a.raw)
 }
 
 // argumentsToValidate is what input validation reads of a call: the arguments
 // as the client sent them, which need no encoding again to be read and keep
 // their numbers exact, unless a hook that runs before the call holds the
 // request and could have changed them, or they are null, which validates as
-// an empty object.
+// an empty object. Sent as raw, they carry their decode too: with no such
+// hook nothing writes Arguments between the request's decode and validation,
+// since middlewares run after it.
 func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest) callArguments {
 	raw := request.Params.RawArguments
 	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
 		return callArguments{decoded: request.Params.Arguments}
 	}
-	return callArguments{raw: raw}
+	return callArguments{raw: raw, decoded: request.Params.Arguments}
 }
 
 // hooksSeeCallArguments reports whether a hook runs before a tools/call with
@@ -314,6 +323,57 @@ func normalizeRawArguments(raw json.RawMessage) (any, error) {
 		return map[string]any{}, nil
 	}
 	return jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+}
+
+// numbersReadExactly reports whether the validator reads every number in raw,
+// a JSON text, the same from the float64 that decoding raw into an any makes
+// of it as from its literal. The validator reads a number of either kind
+// through fmt.Sprint and big.Rat, so it reads a float64 as the shortest
+// decimal that rounds to it, and 2^53+1, read from its float64, would be 2^53.
+//
+// The rule is on the literal of each number outside a string: it has no
+// exponent ('e' or 'E') and at most 15 digits. Every digit counts: the
+// integer part's, its single leading zero included, and the fraction's, its
+// leading and trailing zeros included. The minus sign and the decimal point
+// are not digits. So 0.00000000000001 (15 digits) passes, 0.000000000000001
+// and 9007199254740993 (16 digits each) do not, and neither does 1e3.
+//
+// Such a literal is zero or lies in [1e-14, 1e15), inside float64's normal
+// range, where a decimal of at most 15 significant digits is the shortest
+// decimal of the float64 nearest it, up to trailing zeros: 10^15 < 2^52, so no
+// two such decimals round to the same float64. A minus zero reads as zero
+// either way. The scan reads raw once and allocates nothing.
+func numbersReadExactly(raw []byte) bool {
+	for i := 0; i < len(raw); i++ {
+		switch c := raw[i]; {
+		case c == '"':
+			for i++; i < len(raw) && raw[i] != '"'; i++ {
+				if raw[i] == '\\' {
+					i++
+				}
+			}
+		case c == '-' || '0' <= c && c <= '9':
+			digits := 0
+			for ; i < len(raw); i++ {
+				d := raw[i]
+				if '0' <= d && d <= '9' {
+					digits++
+					continue
+				}
+				if d == 'e' || d == 'E' {
+					return false
+				}
+				if d != '-' && d != '.' {
+					break
+				}
+			}
+			if digits > 15 {
+				return false
+			}
+			i--
+		}
+	}
+	return true
 }
 
 // A failing call's feedback is bounded: the first maxValidationMessages

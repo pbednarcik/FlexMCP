@@ -81,7 +81,7 @@ func TestInputValidationTakesNullArgumentsAsEmpty(t *testing.T) {
 // server without a tracer, 67 with the arguments copied once, 65 with the
 // context layers made in one allocation, 63 with the schema kept from
 // registration, 62 with the arguments passed to the validator unboxed, 58
-// with them read into Arguments in one pass.
+// with them read into Arguments in one pass, 42 validated from Arguments.
 func TestInputValidationAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -90,5 +90,5 @@ func TestInputValidationAllocations(t *testing.T) {
 	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"limited","arguments":{"limit":5}}}`)
 	ctx := t.Context()
 	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
-	assert.LessOrEqual(t, allocs, 58.0, "allocations per validated tools/call")
+	assert.LessOrEqual(t, allocs, 42.0, "allocations per validated tools/call")
 }
