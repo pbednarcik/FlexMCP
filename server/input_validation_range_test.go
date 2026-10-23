@@ -185,3 +185,45 @@ func TestRegistrationNamesABoundItCannotRead(t *testing.T) {
 	assert.PanicsWithValue(t, `tool "bounded" input schema cannot be compiled: compile tool "bounded" input schema: `+
 		`/properties/n/multipleOf: number `+outOfRangeNumber+` is out of range`, func() { srv.AddTool(tool, okHandler) })
 }
+
+// A bound the metaschema does not read as a number compiles, and jsonschema
+// v6.0.2 drops it: such a bound is refused at registration all the same, in
+// an input or an output schema, wherever a schema sits, with the lock let go.
+// A number big.Rat cannot read where no keyword reads it as a bound, such as
+// a default, or a property named for a keyword, is no bound.
+func TestRegistrationNamesABoundItCannotReadThatCompiles(t *testing.T) {
+	const unreadable = `1e-1000001`
+	for _, tc := range []struct {
+		schema, at string
+	}{
+		{`{"type":"object","properties":{"n":{"type":"number","maximum":` + unreadable + `}}}`, `/properties/n/maximum`},
+		{`{"type":"object","properties":{"n":{"minimum":` + unreadable + `}}}`, `/properties/n/minimum`},
+		{`{"type":"array","items":{"exclusiveMaximum":` + unreadable + `}}`, `/items/exclusiveMaximum`},
+		{`{"$defs":{"d":{"exclusiveMinimum":` + unreadable + `}},"properties":{"default":{"$ref":"#/$defs/d"}}}`, `/$defs/d/exclusiveMinimum`},
+		{`{"properties":{"maximum":{"anyOf":[{"type":"string"},{"maximum":` + unreadable + `}]}}}`, `/properties/maximum/anyOf/1/maximum`},
+	} {
+		for _, output := range []bool{false, true} {
+			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+			tool := mcp.NewTool("bounded")
+			which := "input"
+			if output {
+				tool.RawOutputSchema = json.RawMessage(tc.schema)
+				which = "output"
+			} else {
+				tool.RawInputSchema = json.RawMessage(tc.schema)
+			}
+			assert.PanicsWithValue(t, `tool "bounded" `+which+` schema cannot be compiled: compile tool "bounded" input schema: `+
+				tc.at+`: number `+unreadable+` is out of range`, func() { srv.AddTool(tool, okHandler) }, "%s schema %s", which, tc.schema)
+			require.True(t, srv.toolsMu.TryLock(), "toolsMu is held after the refusal")
+			srv.toolsMu.Unlock()
+		}
+	}
+	for _, schema := range []string{
+		`{"type":"object","properties":{"n":{"type":"number","default":` + unreadable + `}}}`,
+		`{"type":"object","properties":{"maximum":{"const":` + unreadable + `,"enum":[` + unreadable + `],"examples":[` + unreadable + `]}}}`,
+		`{"type":"object","properties":{"n":{"const":{"maximum":` + unreadable + `}}}}`,
+	} {
+		srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+		assert.NotPanics(t, func() { srv.AddTool(mcp.NewToolWithRawSchema("free", "", json.RawMessage(schema)), okHandler) }, schema)
+	}
+}

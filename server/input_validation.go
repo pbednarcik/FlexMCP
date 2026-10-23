@@ -401,7 +401,61 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 	if err != nil {
 		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, err)
 	}
+	// A bound the metaschema does not read as a number compiles, and the
+	// compiler drops one big.Rat cannot read: it is refused as well.
+	if outOfRange := findBoundOutOfRange(doc, nil, false); outOfRange != nil {
+		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
+	}
 	return compiled, nil
+}
+
+// numericKeywords are the keywords jsonschema v6.0.2 compiles to numbers.
+var numericKeywords = []string{
+	"multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum",
+	"minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
+	"minContains", "maxContains",
+}
+
+// findBoundOutOfRange returns the first numeric keyword in doc, a schema or,
+// with names, a map of named schemas, standing at at, whose number big.Rat
+// cannot read, members taken in key order, or nil. Values that are instances
+// rather than schemas, a const's, an enum's, a default's or examples', hold
+// no bound.
+func findBoundOutOfRange(doc any, at []string, names bool) *numberOutOfRange {
+	switch v := doc.(type) {
+	case []any:
+		for i, item := range v {
+			if found := findBoundOutOfRange(item, append(at, strconv.Itoa(i)), false); found != nil {
+				return found
+			}
+		}
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			member, memberAt := v[key], append(at, key)
+			var found *numberOutOfRange
+			switch {
+			case names:
+				found = findBoundOutOfRange(member, memberAt, false)
+			case slices.Contains(numericKeywords, key):
+				if number, ok := member.(json.Number); ok {
+					found = findNumberOutOfRange(number, memberAt)
+				}
+			case key == "const" || key == "enum" || key == "default" || key == "examples":
+			default:
+				found = findBoundOutOfRange(member, memberAt, schemaMapKeywords[key])
+			}
+			if found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// schemaMapKeywords are the keywords whose value maps names to schemas.
+var schemaMapKeywords = map[string]bool{
+	"properties": true, "patternProperties": true, "$defs": true, "definitions": true,
+	"dependentSchemas": true, "dependencies": true,
 }
 
 // compileRecovering compiles the schema at resourceURL with c and returns what
