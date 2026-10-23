@@ -140,6 +140,38 @@ func TestArgumentsOnDemandValidation(t *testing.T) {
 	assert.Contains(t, onDemandCall(t, server(true, nil), `{"limit":"x"}`), `"isError":true`)
 }
 
+// Arguments that are not an object validate under the opt-in exactly as they
+// do without it, with or without a hook before the call: through their
+// decode, as a call decoded at once carries it, when a hook may have changed
+// them.
+func TestArgumentsOnDemandValidationOfArgumentsNotAnObject(t *testing.T) {
+	schema := json.RawMessage(`{"type":["object","array","string","number"],` +
+		`"properties":{"limit":{"maximum":9007199254740992}},"items":{"type":"integer","maximum":9007199254740992}}`)
+	server := func(onDemand bool, hook func(*mcp.CallToolRequest)) *MCPServer {
+		opts := []ServerOption{WithToolCapabilities(false), WithInputSchemaValidation()}
+		if hook != nil {
+			h := &Hooks{}
+			h.AddBeforeCallTool(func(_ context.Context, _ any, r *mcp.CallToolRequest) { hook(r) })
+			opts = append(opts, WithHooks(h))
+		}
+		srv := NewMCPServer("test", "1.0.0", opts...)
+		srv.AddTools(ServerTool{Tool: mcp.NewToolWithRawSchema("echo", "", schema), Handler: okHandler, ArgumentsOnDemand: onDemand})
+		return srv
+	}
+	noop := func(*mcp.CallToolRequest) {}
+	assign := func(r *mcp.CallToolRequest) { r.Params.Arguments = []any{json.Number("9007199254740993")} }
+	for _, hook := range []func(*mcp.CallToolRequest){nil, noop, assign} {
+		for _, arguments := range []string{
+			`[9007199254740993]`, `[9007199254740992]`, `[1.5]`, `[3]`, `[1e2]`, `[0e1000000]`, `["x"]`, `[]`,
+			`"text"`, `9007199254740993`, `true`, `{"limit":9007199254740993}`,
+		} {
+			eager := onDemandCall(t, server(false, hook), arguments)
+			onDemand := onDemandCall(t, server(true, hook), arguments)
+			assert.Equal(t, eager, onDemand, "hook %v, arguments %s", hook != nil, arguments)
+		}
+	}
+}
+
 // A server with no tool that opted in never looks a tool up while decoding.
 func TestArgumentsOnDemandGate(t *testing.T) {
 	srv := onDemandServer(t, false, newOnDemandSeen())

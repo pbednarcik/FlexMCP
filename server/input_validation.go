@@ -506,7 +506,8 @@ func (a callArguments) normalize() (any, error) {
 // The call of a tool that reads its arguments on demand (onDemand) carries
 // no Arguments unless a hook set them: validation reads the getters' map,
 // built here and shared with the handler, or, for arguments that are not an
-// object, the arguments as sent.
+// object, their decode, as a call decoded at once carries it, so that it
+// reads what it reads without the opt-in.
 func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bool) callArguments {
 	raw := request.Params.RawArguments
 	arguments := request.Params.Arguments
@@ -517,7 +518,7 @@ func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bo
 	}
 	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
 		if arguments == nil && onDemand && len(raw) > 0 && string(raw) != "null" {
-			return callArguments{raw: raw}
+			arguments = argumentsAtOnce(request.Params).Arguments
 		}
 		return callArguments{decoded: arguments}
 	}

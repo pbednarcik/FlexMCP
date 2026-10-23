@@ -29,10 +29,11 @@ func (s *MCPServer) mayLeaveArgumentsToTheGetters(params *mcp.CallToolParams) bo
 }
 
 // argumentsAtOnce returns params with the Arguments a call decoded at once
-// carries, for a call whose decode left them to the getters but whose tool,
-// found when the call reaches it, does not read them on demand: one
-// registered again without ServerTool.ArgumentsOnDemand since the call was
-// decoded. Only the calls that reach it move params to the heap.
+// carries, when its decode left them to the getters: for a tool found, when
+// the call reaches it, not to read them on demand, one registered again
+// without ServerTool.ArgumentsOnDemand since the call was decoded, and for
+// validation, which reads arguments that are not an object as such a call
+// carries them. Only the calls that reach it move params to the heap.
 func argumentsAtOnce(params mcp.CallToolParams) mcp.CallToolParams {
 	argsdecode.AtOnce(&params)
 	return params
