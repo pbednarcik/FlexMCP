@@ -155,18 +155,27 @@ func TestStdioWriteResponseAllocations(t *testing.T) {
 			write := func() { _ = s.writeResponse(response, io.Discard) }
 			allocs := testing.AllocsPerRun(100, write)
 			assert.LessOrEqual(t, allocs, 4.0, "allocations per response written")
-
-			const runs = 50
-			var before, after runtime.MemStats
-			runtime.ReadMemStats(&before)
-			for range runs {
-				write()
-			}
-			runtime.ReadMemStats(&after)
-			perWrite := (after.TotalAlloc - before.TotalAlloc) / runs
+			perWrite := bytesPerRun(50, write)
 			assert.Less(t, perWrite, uint64(4<<10), "bytes allocated per response written")
 		})
 	}
+}
+
+// bytesPerRun returns the bytes f allocates per call, averaged over runs
+// calls after one that warms it up. Like testing.AllocsPerRun, it measures on
+// one P: a buffer f takes from a sync.Pool and puts back is kept for the P it
+// ran on, so with more Ps a goroutine the scheduler moves between two calls
+// finds no buffer and allocates one, the size of the whole response.
+func bytesPerRun(runs int, f func()) uint64 {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	f()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range runs {
+		f()
+	}
+	runtime.ReadMemStats(&after)
+	return (after.TotalAlloc - before.TotalAlloc) / uint64(runs)
 }
 
 // An event is written as it always was; one that cannot be encoded writes
