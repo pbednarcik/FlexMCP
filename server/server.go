@@ -80,11 +80,11 @@ type ServerTool struct {
 	// holds what Params.Arguments would have held. A handler that reads its
 	// arguments only through those getters, BindArguments or RawArguments, as
 	// a handler from NewTypedToolHandler or NewStructuredToolHandler does,
-	// works unchanged and no longer pays for a map it may never read. A
+	// works unchanged and does not pay for a map it may never read. A
 	// handler that reads every argument through the getters gains nothing
-	// from opting in: the map is built all the same, and the opt-in adds the
-	// scan of the arguments' numbers that keeps a malformed call's error as
-	// it was.
+	// from opting in: the map is built all the same, and the opt-in adds a
+	// scan of the arguments' numbers, which gives a malformed call the error
+	// it gets without the opt-in.
 	//
 	// Code that reads Params.Arguments itself sees nil for this tool's calls:
 	// the handler, tool handler middlewares, and the hooks before and after

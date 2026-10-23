@@ -119,7 +119,8 @@ func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 	// The decoder gave raw.Arguments its own copy of the bytes.
 	p.RawArguments = raw.Arguments
 	// The arguments of a tool that reads them on demand are decoded by the
-	// getters; a number out of range fails the decode now, as before.
+	// getters; a number out of range fails the decode now, as it does for
+	// any other tool.
 	if p.onDemand != nil && p.onDemand(raw.Name) && argumentNumbersInRange(raw.Arguments) {
 		p.lazy = &lazyArguments{raw: raw.Arguments}
 		return nil

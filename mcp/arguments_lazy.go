@@ -49,8 +49,8 @@ func (l *lazyArguments) get() any {
 // argumentNumbersInRange reports whether every number in raw, a valid JSON
 // text, is in a float64's range: the one check json.Unmarshal into an any
 // makes that copying raw does not, so arguments it accepts decode on demand
-// exactly as they would have at once, and a call it refuses is decoded at once
-// to fail as before. Only a literal with an exponent, or of more than 308
+// exactly as at once, and a call it refuses is decoded at once, to fail with
+// json.Unmarshal's error. Only a literal with an exponent, or of more than 308
 // digits, can be out of range, so only those are parsed; the scan allocates
 // for nothing else.
 func argumentNumbersInRange(raw []byte) bool {

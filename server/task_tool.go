@@ -85,7 +85,9 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 
 	// The call was decoded for the tool registered then, and a tool that has
 	// not opted in gets the arguments as a call decoded at once carries them.
-	onDemand := !hasTaskHandler && regularTool.ArgumentsOnDemand
+	// A task tool's name is never a regular tool's, so regularTool is then
+	// the zero tool, which has not.
+	onDemand := regularTool.ArgumentsOnDemand
 	if !onDemand && s.mayLeaveArgumentsToTheGetters(&request.Params) {
 		request.Params = argumentsAtOnce(request.Params)
 	}

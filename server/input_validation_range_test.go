@@ -20,7 +20,7 @@ import (
 
 // A number big.Rat cannot read: float64 reads it as 0, and jsonschema
 // v6.0.2's validator, which reads every number it checks through big.Rat,
-// panicked on it. Any client could send one.
+// panics on it. Any client can send one.
 const outOfRangeNumber = `0e10000000000000000000`
 
 // outOfRangeServer validates a tool's limit as a number of at most 5, and its
@@ -99,8 +99,8 @@ func TestOutputValidationRefusesANumberItCannotRead(t *testing.T) {
 	assert.Contains(t, out, `output schema validation failed: /n: number `+outOfRangeNumber+` is out of range`)
 }
 
-// Over stdio the call is answered with the validation failure; it was
-// answered with INTERNAL_ERROR, the panic recovered by the transport.
+// Over stdio the call is answered with the validation failure, not with the
+// INTERNAL_ERROR of a panic the transport recovers.
 func TestStdioInputValidationRefusesANumberItCannotRead(t *testing.T) {
 	stdin, stdinWriter := io.Pipe()
 	stdoutReader, stdout := io.Pipe()
@@ -139,8 +139,8 @@ func TestStdioInputValidationRefusesANumberItCannotRead(t *testing.T) {
 	assert.Contains(t, answer, outOfRangeFailure)
 }
 
-// Over streamable HTTP the call is answered with the validation failure; the
-// panic used to reach net/http, which dropped the connection unanswered.
+// Over streamable HTTP the call is answered with the validation failure: no
+// panic reaches net/http, which would drop the connection unanswered.
 func TestStreamableHTTPInputValidationRefusesANumberItCannotRead(t *testing.T) {
 	ts := httptest.NewUnstartedServer(NewStreamableHTTPServer(outOfRangeServer(t, nil, nil)))
 	ts.Config.ErrorLog = log.New(io.Discard, "", 0)

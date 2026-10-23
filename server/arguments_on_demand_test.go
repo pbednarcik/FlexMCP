@@ -181,6 +181,46 @@ func TestArgumentsOnDemandGate(t *testing.T) {
 	assert.True(t, srv.toolReadsArgumentsOnDemand("lazy"))
 	assert.False(t, srv.toolReadsArgumentsOnDemand("echo"))
 	assert.True(t, srv.ListTools()["lazy"].ArgumentsOnDemand, "ListTools copies the opt-in")
+
+	// Tools registered through SetTools opt in as those AddTools registers.
+	seen := newOnDemandSeen()
+	srv = NewMCPServer("test", "1.0.0", WithToolCapabilities(false))
+	srv.SetTools(ServerTool{
+		Tool: mcp.NewTool("echo", mcp.WithString("region")),
+		Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			seen.see("handler", &r)
+			return mcp.NewToolResultText("ok"), nil
+		},
+		ArgumentsOnDemand: true,
+	})
+	assert.True(t, srv.argumentsOnDemand.Load(), "SetTools")
+	assert.Contains(t, onDemandCall(t, srv, `{"region":"r"}`), `"text":"ok"`)
+	assert.True(t, seen.argumentsNil["handler"], "SetTools: Params.Arguments nil in the handler")
+	assert.Equal(t, "r", seen.region["handler"], "SetTools: GetString")
+}
+
+// A task-augmented call to an opted-in tool reads its arguments on demand as
+// a synchronous one does.
+func TestArgumentsOnDemandTaskCall(t *testing.T) {
+	seen := make(chan bool, 1)
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithTaskCapabilities(true, true, true))
+	srv.AddTools(ServerTool{
+		Tool: mcp.NewTool("echo", mcp.WithString("region"), mcp.WithTaskSupport(mcp.TaskSupportOptional)),
+		Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			seen <- r.Params.Arguments == nil
+			return mcp.NewToolResultText(r.GetString("region", "none")), nil
+		},
+		ArgumentsOnDemand: true,
+	})
+	var request mcp.CallToolRequest
+	require.NoError(t, srv.decodeToolCall(json.RawMessage(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"region":"r"},"task":{}}}`), &request))
+	created, reqErr := srv.handleToolCall(t.Context(), 1, request)
+	require.Nil(t, reqErr)
+	assert.True(t, <-seen, "Params.Arguments nil in the handler of an opted-in tool run as a task")
+	result, reqErr := srv.handleTaskResult(t.Context(), 2, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: created.(*mcp.CreateTaskResult).Task.TaskId}})
+	require.Nil(t, reqErr)
+	assert.Equal(t, "r", result.Content[0].(mcp.TextContent).Text)
 }
 
 // A tool re-registered without the opt-in while a call to its opted-in

@@ -159,8 +159,8 @@ func TestArgumentNumbersInRange(t *testing.T) {
 	} {
 		assert.Equal(t, want, argumentNumbersInRange([]byte(raw)), raw)
 	}
-	// Strings of every length either side of the eight bytes skipped at once,
-	// with a quote or a backslash at every place in them, then a number.
+	// Strings of every length up to 19, with an escape at every place in
+	// them, then a number.
 	for n := range 20 {
 		for at := -1; at < n; at++ {
 			for _, esc := range []string{`\"`, `\\`, `\\u0022`, `\n`} {
