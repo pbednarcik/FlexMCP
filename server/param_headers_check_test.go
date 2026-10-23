@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -309,4 +310,40 @@ func FuzzCheckParamHeaders(f *testing.F) {
 			t.Logf("message %q", message)
 		}
 	})
+}
+
+// A tool with more bindings than the walk tracks, one bit each, is checked by
+// the check the walk replaced: a correct request is accepted and a wrong one
+// refused as that check refuses it, whichever binding is wrong.
+func TestCheckParamHeadersPastTheWalksBindings(t *testing.T) {
+	const count = maxWalkBindings + 1
+	properties := make([]string, count)
+	arguments := make([]string, count)
+	for i := range count {
+		properties[i] = fmt.Sprintf(`"p%d":{"type":"string","x-mcp-header":"H%d"}`, i, i)
+		arguments[i] = fmt.Sprintf(`"p%d":"v%d"`, i, i)
+	}
+	bindings := keepHeaderBindings(&mcp.Tool{Name: "many", RawInputSchema: json.RawMessage(
+		`{"type":"object","properties":{` + strings.Join(properties, ",") + `}}`)})
+	require.Len(t, bindings, count)
+	message := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"many","arguments":{` +
+		strings.Join(arguments, ",") + `}}}`)
+	headers := func(wrong int) http.Header {
+		h := http.Header{}
+		for i := range count {
+			value := fmt.Sprintf("v%d", i)
+			if i == wrong {
+				value = "wrong"
+			}
+			h.Set(fmt.Sprintf("%sH%d", mcp.HeaderParamPrefix, i), value)
+		}
+		return h
+	}
+	assert.False(t, walkSettles(headers(-1), bindings, message), "the walk settles %d bindings", count)
+	assert.NoError(t, checkParamHeaders(headers(-1), bindings, message), "a correct request")
+	for _, wrong := range []int{0, 9, maxWalkBindings - 1, maxWalkBindings} {
+		want := headerWalkOracle(headers(wrong), bindings, message)
+		require.Error(t, want, "the old check accepts p%d wrong", wrong)
+		assert.Equal(t, want, checkParamHeaders(headers(wrong), bindings, message), "p%d wrong", wrong)
+	}
 }
