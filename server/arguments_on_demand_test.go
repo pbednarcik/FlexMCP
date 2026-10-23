@@ -151,6 +151,58 @@ func TestArgumentsOnDemandGate(t *testing.T) {
 	assert.True(t, srv.ListTools()["lazy"].ArgumentsOnDemand, "ListTools copies the opt-in")
 }
 
+// A tool re-registered without the opt-in while a call to its opted-in
+// predecessor is in flight sees the arguments as a call decoded at once
+// carries them, here re-registered by the hook before the call.
+func TestArgumentsOnDemandToolSwappedDuringTheCall(t *testing.T) {
+	var srv *MCPServer
+	seen := newOnDemandSeen()
+	plain := ServerTool{
+		Tool: mcp.NewTool("echo", mcp.WithString("region")),
+		Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			seen.see("handler", &r)
+			return mcp.NewToolResultText("ok"), nil
+		},
+	}
+	hooks := &Hooks{}
+	hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) { srv.SetTools(plain) })
+	srv = NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithHooks(hooks))
+	onDemand := plain
+	onDemand.ArgumentsOnDemand = true
+	srv.AddTools(onDemand)
+	assert.Contains(t, onDemandCall(t, srv, `{"region":"r"}`), `"text":"ok"`)
+	assert.False(t, seen.argumentsNil["handler"], "Params.Arguments nil in the handler of a tool that did not opt in")
+	assert.Equal(t, "r", seen.region["handler"])
+}
+
+// The same on the task path, which looks the tool up again: a call decoded
+// for an opted-in task tool reaches, as a task, the tool that replaced it.
+func TestArgumentsOnDemandTaskToolSwappedDuringTheCall(t *testing.T) {
+	seen := make(chan bool, 1)
+	plain := ServerTool{
+		Tool: mcp.NewTool("echo", mcp.WithString("region"), mcp.WithTaskSupport(mcp.TaskSupportOptional)),
+		Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			seen <- r.Params.Arguments == nil
+			return mcp.NewToolResultText(r.GetString("region", "none")), nil
+		},
+	}
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithTaskCapabilities(true, true, true))
+	onDemand := plain
+	onDemand.ArgumentsOnDemand = true
+	srv.AddTools(onDemand)
+	var request mcp.CallToolRequest
+	require.NoError(t, srv.decodeToolCall(json.RawMessage(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"region":"r"},"task":{}}}`), &request))
+	require.Nil(t, request.Params.Arguments, "the call was decoded for the opted-in tool")
+	srv.SetTools(plain)
+	created, reqErr := srv.handleTaskAugmentedToolCall(t.Context(), 1, request)
+	require.Nil(t, reqErr)
+	assert.False(t, <-seen, "Params.Arguments nil in the handler of a tool that did not opt in")
+	result, reqErr := srv.handleTaskResult(t.Context(), 2, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: created.Task.TaskId}})
+	require.Nil(t, reqErr)
+	assert.Equal(t, "r", result.Content[0].(mcp.TextContent).Text)
+}
+
 // complexTypedCall is a typed tool of bench/compare's complex shape and a call
 // to it.
 func complexTypedCall(t testing.TB, onDemand bool) (*MCPServer, json.RawMessage) {

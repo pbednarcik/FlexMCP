@@ -83,6 +83,13 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 		}
 	}
 
+	// The call was decoded for the tool registered then, and a tool that has
+	// not opted in gets the arguments as a call decoded at once carries them.
+	onDemand := !hasTaskHandler && regularTool.ArgumentsOnDemand
+	if !onDemand && s.mayLeaveArgumentsToTheGetters(&request.Params) {
+		request.Params = argumentsAtOnce(request.Params)
+	}
+
 	// The arguments are validated as on the synchronous path (Tools.md row
 	// 23): ones that fail never reach the handler. The task is still
 	// created, so the client fetches the same tool error through
@@ -94,7 +101,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 		if hasTaskHandler {
 			toolDef = toolToUse.Tool
 		}
-		if _, err := s.inputValidator.validateRegistered(toolDef, inputSchema, inputSchemaKept, s.argumentsToValidate(request, !hasTaskHandler && regularTool.ArgumentsOnDemand)); err != nil {
+		if _, err := s.inputValidator.validateRegistered(toolDef, inputSchema, inputSchemaKept, s.argumentsToValidate(request, onDemand)); err != nil {
 			invalid = err
 		}
 	}

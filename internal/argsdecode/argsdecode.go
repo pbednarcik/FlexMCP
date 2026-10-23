@@ -16,3 +16,9 @@ var Numbers func(data []byte) (any, bool)
 // demand; nil, after the decode, takes it away again. Package mcp sets it
 // when it is initialised.
 var SetOnDemand func(params any, onDemand func(name string) bool)
+
+// AtOnce sets on params, a decoded *mcp.CallToolParams whose decode left its
+// arguments to the getters, the Arguments a call decoded at once carries; it
+// leaves any other params as they are. Package mcp sets it when it is
+// initialised.
+var AtOnce func(params any)

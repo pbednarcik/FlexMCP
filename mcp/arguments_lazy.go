@@ -12,6 +12,13 @@ func init() {
 	argsdecode.SetOnDemand = func(params any, onDemand func(name string) bool) {
 		params.(*CallToolParams).onDemand = onDemand
 	}
+	argsdecode.AtOnce = func(params any) {
+		p := params.(*CallToolParams)
+		if p.Arguments == nil && p.lazy != nil {
+			p.Arguments = p.lazy.get()
+			p.lazy = nil
+		}
+	}
 }
 
 // lazyArguments holds the arguments of a call whose tool reads them on

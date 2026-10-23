@@ -482,6 +482,12 @@ func (s *MCPServer) handleToolCall(
 		}
 	}
 
+	// The call was decoded for the tool registered then; a tool that has not
+	// opted in gets the arguments as a call decoded at once carries them.
+	if !tool.ArgumentsOnDemand && s.mayLeaveArgumentsToTheGetters(&request.Params) {
+		request.Params = argumentsAtOnce(request.Params)
+	}
+
 	// Enforce tool filters at call time to prevent access to filtered-out
 	// tools. Only the requested tool is passed through the filter chain so this
 	// access check does not rebuild and filter the full tool list.
