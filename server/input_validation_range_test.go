@@ -189,8 +189,9 @@ func TestRegistrationNamesABoundItCannotRead(t *testing.T) {
 // A bound the metaschema does not read as a number compiles, and jsonschema
 // v6.0.2 drops it: such a bound is refused at registration all the same, in
 // an input or an output schema, wherever a schema sits, with the lock let go.
-// A number big.Rat cannot read where no keyword reads it as a bound, such as
-// a default, or a property named for a keyword, is no bound.
+// A number big.Rat cannot read where the schema's dialect reads no bound,
+// such as a default, a property named for a keyword, an unknown keyword or a
+// keyword of a later dialect, is no bound: it is an annotation, as it was.
 func TestRegistrationNamesABoundItCannotReadThatCompiles(t *testing.T) {
 	const unreadable = `1e-1000001`
 	for _, tc := range []struct {
@@ -201,6 +202,7 @@ func TestRegistrationNamesABoundItCannotReadThatCompiles(t *testing.T) {
 		{`{"type":"array","items":{"exclusiveMaximum":` + unreadable + `}}`, `/items/exclusiveMaximum`},
 		{`{"$defs":{"d":{"exclusiveMinimum":` + unreadable + `}},"properties":{"default":{"$ref":"#/$defs/d"}}}`, `/$defs/d/exclusiveMinimum`},
 		{`{"properties":{"maximum":{"anyOf":[{"type":"string"},{"maximum":` + unreadable + `}]}}}`, `/properties/maximum/anyOf/1/maximum`},
+		{`{"$schema":"http://json-schema.org/draft-07/schema#","properties":{"n":{"maximum":` + unreadable + `}}}`, `/properties/n/maximum`},
 	} {
 		for _, output := range []bool{false, true} {
 			srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
@@ -222,6 +224,9 @@ func TestRegistrationNamesABoundItCannotReadThatCompiles(t *testing.T) {
 		`{"type":"object","properties":{"n":{"type":"number","default":` + unreadable + `}}}`,
 		`{"type":"object","properties":{"maximum":{"const":` + unreadable + `,"enum":[` + unreadable + `],"examples":[` + unreadable + `]}}}`,
 		`{"type":"object","properties":{"n":{"const":{"maximum":` + unreadable + `}}}}`,
+		`{"type":"object","x-vendor":{"minimum":` + unreadable + `}}`,
+		`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","minContains":` + unreadable + `}`,
+		`{"$schema":"http://json-schema.org/draft-07/schema#","type":"array","contains":{},"minContains":` + unreadable + `}`,
 	} {
 		srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
 		assert.NotPanics(t, func() { srv.AddTool(mcp.NewToolWithRawSchema("free", "", json.RawMessage(schema)), okHandler) }, schema)

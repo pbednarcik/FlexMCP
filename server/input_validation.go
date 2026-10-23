@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	neturl "net/url"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -270,23 +271,30 @@ func blameUnreadableNumber(value any, recovered *recoveredPanic, run func(zeroed
 // unreadableNumbersAsZero returns a copy of value, a validator tree, in which
 // every number big.Rat cannot read is 0; value itself is left as it is.
 func unreadableNumbersAsZero(value any) any {
+	return unreadableNumbersReplaced(value, func() json.Number { return "0" })
+}
+
+// unreadableNumbersReplaced returns a copy of value, a validator tree, in
+// which every number big.Rat cannot read is the next number next makes;
+// value itself is left as it is.
+func unreadableNumbersReplaced(value any, next func() json.Number) any {
 	switch v := value.(type) {
 	case json.Number:
 		if _, ok := new(big.Rat).SetString(string(v)); !ok {
-			return json.Number("0")
+			return next()
 		}
 	case []any:
-		zeroed := make([]any, len(v))
+		replaced := make([]any, len(v))
 		for i, item := range v {
-			zeroed[i] = unreadableNumbersAsZero(item)
+			replaced[i] = unreadableNumbersReplaced(item, next)
 		}
-		return zeroed
+		return replaced
 	case map[string]any:
-		zeroed := make(map[string]any, len(v))
+		replaced := make(map[string]any, len(v))
 		for key, member := range v {
-			zeroed[key] = unreadableNumbersAsZero(member)
+			replaced[key] = unreadableNumbersReplaced(member, next)
 		}
-		return zeroed
+		return replaced
 	}
 	return value
 }
@@ -403,59 +411,171 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 	}
 	// A bound the metaschema does not read as a number compiles, and the
 	// compiler drops one big.Rat cannot read: it is refused as well.
-	if outOfRange := findBoundOutOfRange(doc, nil, false); outOfRange != nil {
+	if outOfRange := findBoundOutOfRange(doc, resourceURL); outOfRange != nil {
 		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
 	}
 	return compiled, nil
 }
 
-// numericKeywords are the keywords jsonschema v6.0.2 compiles to numbers.
-var numericKeywords = []string{
-	"multipleOf", "maximum", "exclusiveMaximum", "minimum", "exclusiveMinimum",
-	"minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
-	"minContains", "maxContains",
-}
-
-// findBoundOutOfRange returns the first numeric keyword in doc, a schema or,
-// with names, a map of named schemas, standing at at, whose number big.Rat
-// cannot read, members taken in key order, or nil. Values that are instances
-// rather than schemas, a const's, an enum's, a default's or examples', hold
-// no bound.
-func findBoundOutOfRange(doc any, at []string, names bool) *numberOutOfRange {
-	switch v := doc.(type) {
-	case []any:
-		for i, item := range v {
-			if found := findBoundOutOfRange(item, append(at, strconv.Itoa(i)), false); found != nil {
+// findBoundOutOfRange returns a bound in doc, the schema compiled at
+// resourceURL, whose number big.Rat cannot read, nil when there is none: a
+// bound the compiler dropped. Which keywords are bounds, and where, is what
+// jsonschema compiles for the schema's dialect, so it is read from a
+// compilation of doc in which every such number is a distinct positive
+// integer, and each bound that compilation holds is looked up in doc. A
+// number where the dialect reads no bound, as in an annotation, an unknown
+// keyword or a keyword of a later dialect, is no bound. Schemas are taken
+// depth first, members in key order.
+func findBoundOutOfRange(doc any, resourceURL string) *numberOutOfRange {
+	if findNumberOutOfRange(doc, nil) == nil {
+		return nil
+	}
+	n := 0
+	readable := unreadableNumbersReplaced(doc, func() json.Number {
+		n++
+		return json.Number(strconv.Itoa(n))
+	})
+	c := jsonschema.NewCompiler()
+	if c.AddResource(resourceURL, readable) != nil {
+		return nil
+	}
+	recovered, compiled, err := compileRecovering(c, resourceURL)
+	if recovered != nil || err != nil {
+		return nil
+	}
+	seen := map[*jsonschema.Schema]bool{}
+	var find func(s *jsonschema.Schema) *numberOutOfRange
+	find = func(s *jsonschema.Schema) *numberOutOfRange {
+		if s == nil || seen[s] {
+			return nil
+		}
+		seen[s] = true
+		at, ok := schemaPointer(s.Location, resourceURL)
+		if !ok {
+			return nil
+		}
+		if object, ok := valueAt(doc, at).(map[string]any); ok {
+			for _, bound := range compiledBounds(s) {
+				if number, ok := object[bound].(json.Number); ok {
+					if found := findNumberOutOfRange(number, append(at, bound)); found != nil {
+						return found
+					}
+				}
+			}
+		}
+		for _, sub := range subschemas(s) {
+			if found := find(sub); found != nil {
 				return found
 			}
 		}
-	case map[string]any:
-		for _, key := range slices.Sorted(maps.Keys(v)) {
-			member, memberAt := v[key], append(at, key)
-			var found *numberOutOfRange
-			switch {
-			case names:
-				found = findBoundOutOfRange(member, memberAt, false)
-			case slices.Contains(numericKeywords, key):
-				if number, ok := member.(json.Number); ok {
-					found = findNumberOutOfRange(number, memberAt)
-				}
-			case key == "const" || key == "enum" || key == "default" || key == "examples":
-			default:
-				found = findBoundOutOfRange(member, memberAt, schemaMapKeywords[key])
-			}
-			if found != nil {
-				return found
-			}
+		return nil
+	}
+	return find(compiled)
+}
+
+// compiledBounds returns the keywords s, a compiled schema, holds bounds of.
+// Draft 4 reads an exclusive bound from maximum or minimum.
+func compiledBounds(s *jsonschema.Schema) []string {
+	var bounds []string
+	add := func(held bool, keywords ...string) {
+		if held {
+			bounds = append(bounds, keywords...)
 		}
 	}
-	return nil
+	add(s.MultipleOf != nil, "multipleOf")
+	add(s.Maximum != nil, "maximum")
+	add(s.ExclusiveMaximum != nil, "exclusiveMaximum", "maximum")
+	add(s.Minimum != nil, "minimum")
+	add(s.ExclusiveMinimum != nil, "exclusiveMinimum", "minimum")
+	add(s.MinLength != nil, "minLength")
+	add(s.MaxLength != nil, "maxLength")
+	add(s.MinItems != nil, "minItems")
+	add(s.MaxItems != nil, "maxItems")
+	add(s.MinProperties != nil, "minProperties")
+	add(s.MaxProperties != nil, "maxProperties")
+	add(s.MinContains != nil, "minContains")
+	add(s.MaxContains != nil, "maxContains")
+	return bounds
 }
 
-// schemaMapKeywords are the keywords whose value maps names to schemas.
-var schemaMapKeywords = map[string]bool{
-	"properties": true, "patternProperties": true, "$defs": true, "definitions": true,
-	"dependentSchemas": true, "dependencies": true,
+// subschemas returns the schemas s, a compiled schema, applies or refers to,
+// members in key order.
+func subschemas(s *jsonschema.Schema) []*jsonschema.Schema {
+	subs := []*jsonschema.Schema{s.Ref, s.RecursiveRef, s.Not, s.If, s.Then, s.Else, s.PropertyNames,
+		s.UnevaluatedProperties, s.Contains, s.Items2020, s.UnevaluatedItems, s.ContentSchema}
+	if s.DynamicRef != nil {
+		subs = append(subs, s.DynamicRef.Ref)
+	}
+	subs = append(subs, s.AllOf...)
+	subs = append(subs, s.AnyOf...)
+	subs = append(subs, s.OneOf...)
+	subs = append(subs, s.PrefixItems...)
+	for _, name := range slices.Sorted(maps.Keys(s.Properties)) {
+		subs = append(subs, s.Properties[name])
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.DependentSchemas)) {
+		subs = append(subs, s.DependentSchemas[name])
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.Dependencies)) {
+		if sub, ok := s.Dependencies[name].(*jsonschema.Schema); ok {
+			subs = append(subs, sub)
+		}
+	}
+	patterns := slices.SortedFunc(maps.Keys(s.PatternProperties), func(a, b jsonschema.Regexp) int {
+		return strings.Compare(a.String(), b.String())
+	})
+	for _, pattern := range patterns {
+		subs = append(subs, s.PatternProperties[pattern])
+	}
+	for _, sub := range []any{s.AdditionalProperties, s.AdditionalItems, s.Items} {
+		switch sub := sub.(type) {
+		case *jsonschema.Schema:
+			subs = append(subs, sub)
+		case []*jsonschema.Schema:
+			subs = append(subs, sub...)
+		}
+	}
+	return subs
+}
+
+// schemaPointer returns the place in the document at resourceURL that
+// location, a compiled schema's, names, and whether it names one there.
+func schemaPointer(location, resourceURL string) ([]string, bool) {
+	fragment, ok := strings.CutPrefix(location, resourceURL+"#")
+	if !ok {
+		return nil, false
+	}
+	pointer, err := neturl.PathUnescape(fragment)
+	if err != nil {
+		return nil, false
+	}
+	if pointer == "" {
+		return nil, true
+	}
+	tokens := strings.Split(strings.TrimPrefix(pointer, "/"), "/")
+	for i, token := range tokens {
+		tokens[i] = strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~")
+	}
+	return tokens, true
+}
+
+// valueAt returns the member of doc at the place at names, nil for none.
+func valueAt(doc any, at []string) any {
+	for _, token := range at {
+		switch v := doc.(type) {
+		case map[string]any:
+			doc = v[token]
+		case []any:
+			i, err := strconv.Atoi(token)
+			if err != nil || i < 0 || i >= len(v) {
+				return nil
+			}
+			doc = v[i]
+		default:
+			return nil
+		}
+	}
+	return doc
 }
 
 // compileRecovering compiles the schema at resourceURL with c and returns what
