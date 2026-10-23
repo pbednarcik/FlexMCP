@@ -8,10 +8,18 @@ import (
 	"strconv"
 )
 
-// GetArguments returns the Arguments as map[string]any for backward compatibility
-// If Arguments is not a map, it returns an empty map
+// GetArguments returns the Arguments as map[string]any for backward
+// compatibility, nil when they are not an object. For a call to a tool that
+// reads its arguments on demand, whose Arguments are nil, it returns the map
+// decoded from RawArguments the first time a getter asks: the same map for
+// every getter, and every copy of the request, within the call. A map set in
+// Arguments, as by a hook, is returned instead.
 func (r CallToolRequest) GetArguments() map[string]any {
 	if args, ok := r.Params.Arguments.(map[string]any); ok {
+		return args
+	}
+	if r.Params.Arguments == nil && r.Params.lazy != nil {
+		args, _ := r.Params.lazy.get().(map[string]any)
 		return args
 	}
 	return nil

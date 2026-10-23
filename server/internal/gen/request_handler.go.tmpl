@@ -44,7 +44,7 @@ func (s *MCPServer) dispatchRequest(
 				code: mcp.METHOD_NOT_FOUND,
 				err:  fmt.Errorf("{{toLower .GroupName}} %w", ErrUnsupported),
 			}
-		} else{{ end }} if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
+		} else{{ end }} if unmarshalErr := {{ if .Decode }}s.{{.Decode}}(message, &request){{ else }}json.Unmarshal(message, &request){{ end }}; unmarshalErr != nil {
 			err = &requestError{
 				id:      baseMessage.ID,
 				code:    mcp.INVALID_PARAMS,

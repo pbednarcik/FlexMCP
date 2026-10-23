@@ -71,6 +71,28 @@ type PromptFilterFunc func(ctx context.Context, prompts []mcp.Prompt) []mcp.Prom
 type ServerTool struct {
 	Tool    mcp.Tool
 	Handler ToolHandlerFunc
+
+	// ArgumentsOnDemand, when true, has the server leave a call's arguments
+	// undecoded until the handler asks for them: Params.Arguments is nil, and
+	// GetArguments, and every Get*, Require* and ParseArgument helper built on
+	// it, decodes RawArguments into the map the first time one is called. The
+	// map is decoded once per call and shared by every copy of the request; it
+	// holds what Params.Arguments would have held. A handler that reads its
+	// arguments only through those getters, BindArguments or RawArguments, as
+	// a handler from NewTypedToolHandler or NewStructuredToolHandler does,
+	// works unchanged and no longer pays for a map it may never read. A
+	// handler that reads every argument through the getters gains nothing
+	// from opting in: the map is built all the same, and the opt-in adds the
+	// scan of the arguments' numbers that keeps a malformed call's error as
+	// it was.
+	//
+	// Code that reads Params.Arguments itself sees nil for this tool's calls:
+	// the handler, tool handler middlewares, and the hooks before and after
+	// the call. It must call GetArguments instead. A hook that assigns
+	// Params.Arguments still wins: the getters and input validation read what
+	// it left. RawArguments, BindArguments, GetRawArguments, input validation
+	// and the error a call with malformed arguments gets are unchanged.
+	ArgumentsOnDemand bool
 }
 
 // ServerTaskTool combines a Tool with its TaskToolHandlerFunc.
@@ -137,11 +159,17 @@ type MCPServer struct {
 	// resourceTemplateOrder counts the templates registered, under
 	// resourcesMu: among templates matching a URI, the earlier registered
 	// wins between equal literal prefixes.
-	resourceTemplateOrder      uint64
-	prompts                    map[string]mcp.Prompt
-	promptHandlers             map[string]PromptHandlerFunc
-	tools                      map[string]ServerTool
-	taskTools                  map[string]ServerTaskTool
+	resourceTemplateOrder uint64
+	prompts               map[string]mcp.Prompt
+	promptHandlers        map[string]PromptHandlerFunc
+	tools                 map[string]ServerTool
+	taskTools             map[string]ServerTaskTool
+	// argumentsOnDemand is set, for good, once a tool registered with
+	// ServerTool.ArgumentsOnDemand: until then a tools/call is decoded as
+	// json.Unmarshal decodes it, with no tool lookup. readsArgumentsOnDemand
+	// is set, under toolsMu, before it.
+	argumentsOnDemand          atomic.Bool
+	readsArgumentsOnDemand     func(name string) bool
 	toolHandlerMiddlewares     []ToolHandlerMiddleware
 	taskToolHandlerMiddlewares []TaskToolHandlerMiddleware
 	resourceHandlerMiddlewares []ResourceHandlerMiddleware

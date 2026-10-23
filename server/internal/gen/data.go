@@ -9,6 +9,9 @@ type MCPRequestType struct {
 	GroupName   string
 	HandlerFunc string
 	ResultIsAny bool // If true, result type is 'any' instead of '*mcp.ResultType'
+	// Decode, when set, is the server method that decodes the request in
+	// place of json.Unmarshal(message, &request).
+	Decode string
 	// RemovedInModern marks methods removed by protocol version 2026-07-28.
 	// They are rejected with METHOD_NOT_FOUND on requests declaring that
 	// version or later.
@@ -113,6 +116,7 @@ var MCPRequestTypes = []MCPRequestType{
 		HookName:    "CallTool",
 		HandlerFunc: "handleToolCall",
 		ResultIsAny: true, // Returns 'any' to support both CallToolResult and CreateTaskResult
+		Decode:      "decodeToolCall",
 	}, {
 		MethodName:  "MethodTasksGet",
 		ParamType:   "GetTaskRequest",

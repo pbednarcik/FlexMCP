@@ -74,6 +74,13 @@ type CallToolParams struct {
 	// RawArguments preserves the original JSON bytes for arguments when unmarshaled
 	// from a wire message. This avoids precision loss for integers above 2^53.
 	RawArguments json.RawMessage `json:"-"`
+
+	// onDemand, set by the server only while it decodes a call, reports
+	// whether the tool called name reads its arguments on demand.
+	onDemand func(name string) bool
+	// lazy holds the arguments of a call to such a tool, for the getters to
+	// decode on first use; Arguments is then nil.
+	lazy *lazyArguments
 }
 
 // UnmarshalJSON preserves the original arguments JSON while also populating
@@ -103,6 +110,7 @@ func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 	// arguments when the new one omits them.
 	p.Arguments = nil
 	p.RawArguments = nil
+	p.lazy = nil
 
 	if len(raw.Arguments) == 0 {
 		return nil
@@ -110,6 +118,12 @@ func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 
 	// The decoder gave raw.Arguments its own copy of the bytes.
 	p.RawArguments = raw.Arguments
+	// The arguments of a tool that reads them on demand are decoded by the
+	// getters; a number out of range fails the decode now, as before.
+	if p.onDemand != nil && p.onDemand(raw.Name) && argumentNumbersInRange(raw.Arguments) {
+		p.lazy = &lazyArguments{raw: raw.Arguments}
+		return nil
+	}
 	if arguments, ok := decodeArgumentsFast(raw.Arguments); ok {
 		p.Arguments = arguments
 		return nil

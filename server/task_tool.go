@@ -94,7 +94,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 		if hasTaskHandler {
 			toolDef = toolToUse.Tool
 		}
-		if _, err := s.inputValidator.validateRegistered(toolDef, inputSchema, inputSchemaKept, s.argumentsToValidate(request)); err != nil {
+		if _, err := s.inputValidator.validateRegistered(toolDef, inputSchema, inputSchemaKept, s.argumentsToValidate(request, !hasTaskHandler && regularTool.ArgumentsOnDemand)); err != nil {
 			invalid = err
 		}
 	}

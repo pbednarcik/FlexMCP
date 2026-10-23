@@ -334,7 +334,7 @@ func (s *MCPServer) dispatchRequest(
 				code: mcp.METHOD_NOT_FOUND,
 				err:  fmt.Errorf("tools %w", ErrUnsupported),
 			}
-		} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
+		} else if unmarshalErr := s.decodeToolCall(message, &request); unmarshalErr != nil {
 			err = &requestError{
 				id:      baseMessage.ID,
 				code:    mcp.INVALID_PARAMS,

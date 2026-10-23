@@ -379,12 +379,26 @@ func (a callArguments) normalize() (any, error) {
 // an empty object. Sent as raw, they carry their decode too: with no such
 // hook nothing writes Arguments between the request's decode and validation,
 // since middlewares run after it.
-func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest) callArguments {
+//
+// The call of a tool that reads its arguments on demand (onDemand) carries
+// no Arguments unless a hook set them: validation reads the getters' map,
+// built here and shared with the handler, or, for arguments that are not an
+// object, the arguments as sent.
+func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bool) callArguments {
 	raw := request.Params.RawArguments
-	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
-		return callArguments{decoded: request.Params.Arguments}
+	arguments := request.Params.Arguments
+	if arguments == nil && len(raw) > 0 {
+		if m := request.GetArguments(); m != nil {
+			arguments = m
+		}
 	}
-	return callArguments{raw: raw, decoded: request.Params.Arguments}
+	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
+		if arguments == nil && onDemand && len(raw) > 0 && string(raw) != "null" {
+			return callArguments{raw: raw}
+		}
+		return callArguments{decoded: arguments}
+	}
+	return callArguments{raw: raw, decoded: arguments}
 }
 
 // hooksSeeCallArguments reports whether a hook runs before a tools/call with

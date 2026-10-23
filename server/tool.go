@@ -196,6 +196,7 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
 		s.commitSchemas(name, schemas[name])
 	}
+	s.noteArgumentsOnDemand(tools)
 	s.toolsMu.Unlock()
 
 	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
@@ -287,6 +288,7 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
 		s.commitSchemas(name, schemas[name])
 	}
+	s.noteArgumentsOnDemand(tools)
 	s.toolsMu.Unlock()
 
 	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
@@ -316,8 +318,9 @@ func (s *MCPServer) ListTools() map[string]*ServerTool {
 	toolsCopy := make(map[string]*ServerTool, len(s.tools))
 	for name, tool := range s.tools {
 		toolsCopy[name] = &ServerTool{
-			Tool:    tool.Tool,
-			Handler: tool.Handler,
+			Tool:              tool.Tool,
+			Handler:           tool.Handler,
+			ArgumentsOnDemand: tool.ArgumentsOnDemand,
 		}
 	}
 	return toolsCopy
@@ -542,7 +545,7 @@ func (s *MCPServer) handleToolCall(
 	// validation failure is returned as a SEP-1303 tool execution error so the
 	// model receives feedback in its context window and can self-correct.
 	if s.inputValidator != nil {
-		if _, err := s.inputValidator.validateRegistered(tool.Tool, inputSchema, inputSchemaKept, s.argumentsToValidate(request)); err != nil {
+		if _, err := s.inputValidator.validateRegistered(tool.Tool, inputSchema, inputSchemaKept, s.argumentsToValidate(request, tool.ArgumentsOnDemand)); err != nil {
 			return validationToolResult(err), nil
 		}
 	}
