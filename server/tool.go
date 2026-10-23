@@ -169,8 +169,20 @@ func (s *MCPServer) AddTaskTool(tool mcp.Tool, handler TaskToolHandlerFunc) {
 // calls run is a data race anyway.
 func (s *MCPServer) AddTools(tools ...ServerTool) {
 	s.implicitlyRegisterToolCapabilities()
+	s.addTools(tools)
 
+	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
+	if s.capabilities.tools.listChanged {
+		// Send notification to all initialized sessions
+		s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
+	}
+}
+
+// addTools registers tools for AddTools under the tools lock, which a panic,
+// a refused tool's or any other, leaves free.
+func (s *MCPServer) addTools(tools []ServerTool) {
 	s.toolsMu.Lock()
+	defer s.toolsMu.Unlock()
 	// Stage the whole batch before touching the registry so a rejected entry
 	// leaves earlier ones unregistered as well.
 	staged := make(map[string]ServerTool, len(tools))
@@ -179,13 +191,11 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 		name := entry.Tool.Name
 		// Check for collision with task tools
 		if _, exists := s.taskTools[name]; exists {
-			s.toolsMu.Unlock()
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
 		compiled, err := s.checkToolDefinition(&entry.Tool)
 		if err != nil {
-			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		staged[name] = entry
@@ -197,13 +207,6 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 		s.commitSchemas(name, schemas[name])
 	}
 	s.noteArgumentsOnDemand(tools)
-	s.toolsMu.Unlock()
-
-	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
-	if s.capabilities.tools.listChanged {
-		// Send notification to all initialized sessions
-		s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
-	}
 }
 
 // AddTaskTools registers multiple task tools at once. With input validation
@@ -213,21 +216,31 @@ func (s *MCPServer) AddTools(tools ...ServerTool) {
 // race anyway.
 func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 	s.implicitlyRegisterToolCapabilities()
+	s.addTaskTools(taskTools)
 
+	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
+	if s.capabilities.tools.listChanged {
+		// Send notification to all initialized sessions
+		s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
+	}
+}
+
+// addTaskTools registers taskTools for AddTaskTools under the tools lock,
+// which a panic, a refused tool's or any other, leaves free.
+func (s *MCPServer) addTaskTools(taskTools []ServerTaskTool) {
 	s.toolsMu.Lock()
+	defer s.toolsMu.Unlock()
 	staged := make(map[string]ServerTaskTool, len(taskTools))
 	schemas := make(map[string]toolSchemas, len(taskTools))
 	for _, entry := range taskTools {
 		name := entry.Tool.Name
 		// Check for collision with regular tools
 		if _, exists := s.tools[name]; exists {
-			s.toolsMu.Unlock()
 			panic(fmt.Sprintf("task tool name '%s' already registered as regular tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
 		compiled, err := s.checkToolDefinition(&entry.Tool)
 		if err != nil {
-			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		staged[name] = entry
@@ -238,13 +251,6 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
 		s.commitSchemas(name, schemas[name])
 	}
-	s.toolsMu.Unlock()
-
-	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
-	if s.capabilities.tools.listChanged {
-		// Send notification to all initialized sessions
-		s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
-	}
 }
 
 // SetTools replaces all existing tools with the provided list. With input
@@ -254,21 +260,31 @@ func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
 // is a data race anyway.
 func (s *MCPServer) SetTools(tools ...ServerTool) {
 	s.implicitlyRegisterToolCapabilities()
+	s.replaceTools(tools)
 
+	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
+	if s.capabilities.tools.listChanged {
+		// Send notification to all initialized sessions
+		s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
+	}
+}
+
+// replaceTools replaces the registered tools with tools for SetTools under
+// the tools lock, which a panic, a refused tool's or any other, leaves free.
+func (s *MCPServer) replaceTools(tools []ServerTool) {
 	s.toolsMu.Lock()
+	defer s.toolsMu.Unlock()
 	newTools := make(map[string]ServerTool, len(tools))
 	schemas := make(map[string]toolSchemas, len(tools))
 	for _, entry := range tools {
 		name := entry.Tool.Name
 		// Check for collision with task tools
 		if _, exists := s.taskTools[name]; exists {
-			s.toolsMu.Unlock()
 			panic(fmt.Sprintf("tool name '%s' already registered as task tool", name))
 		}
 		s.applyStrictInputSchemaDefault(&entry.Tool)
 		compiled, err := s.checkToolDefinition(&entry.Tool)
 		if err != nil {
-			s.toolsMu.Unlock()
 			panic(err.Error())
 		}
 		newTools[name] = entry
@@ -289,13 +305,6 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 		s.commitSchemas(name, schemas[name])
 	}
 	s.noteArgumentsOnDemand(tools)
-	s.toolsMu.Unlock()
-
-	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
-	if s.capabilities.tools.listChanged {
-		// Send notification to all initialized sessions
-		s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
-	}
 }
 
 // GetTool retrieves the specified tool

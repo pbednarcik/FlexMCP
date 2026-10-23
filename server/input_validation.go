@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -212,23 +213,82 @@ func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, e
 // decoded arguments of a call, against compiled. jsonschema v6.0.2 reads every
 // number a schema checks through big.Rat and panics on one big.Rat cannot
 // read; that panic is recovered here, around Validate alone, and the number
-// is the error. Any other panic is raised again.
+// is the error. Any other panic is raised again (blameUnreadableNumber).
 func validateTree(compiled *jsonschema.Schema, value any) error {
 	recovered, err := validateRecovering(compiled, value)
 	if recovered == nil {
 		return err
 	}
-	if outOfRange := findNumberOutOfRange(value, nil); outOfRange != nil {
-		return outOfRange
-	}
-	panic(recovered)
+	return blameUnreadableNumber(value, recovered, func(zeroed any) *recoveredPanic {
+		again, _ := validateRecovering(compiled, zeroed)
+		return again
+	})
 }
 
 // validateRecovering runs compiled.Validate on value and returns what a panic
 // in it raised, nil when it returned.
-func validateRecovering(compiled *jsonschema.Schema, value any) (recovered any, err error) {
-	defer func() { recovered = recover() }()
+func validateRecovering(compiled *jsonschema.Schema, value any) (recovered *recoveredPanic, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			recovered = &recoveredPanic{value: r, stack: debug.Stack()}
+		}
+	}()
 	return nil, compiled.Validate(value)
+}
+
+// recoveredPanic is a panic recovered from the validator or the compiler,
+// with the stack it was raised at, raised again when no unreadable number
+// raised it.
+type recoveredPanic struct {
+	value any
+	stack []byte
+}
+
+// Error renders the panic's value and the stack it was raised at.
+func (p *recoveredPanic) Error() string {
+	return fmt.Sprintf("%v\n\npanicked at:\n%s", p.value, p.stack)
+}
+
+// Unwrap returns the panic's value when it is an error.
+func (p *recoveredPanic) Unwrap() error {
+	err, _ := p.value.(error)
+	return err
+}
+
+// blameUnreadableNumber returns the first number in value that big.Rat cannot
+// read when such a number raised recovered, a panic of a run on value: when
+// run, on a copy of value with every such number read as 0, raises none. Any
+// other panic is raised again, its value and stack with it.
+func blameUnreadableNumber(value any, recovered *recoveredPanic, run func(zeroed any) *recoveredPanic) *numberOutOfRange {
+	outOfRange := findNumberOutOfRange(value, nil)
+	if outOfRange == nil || run(unreadableNumbersAsZero(value)) != nil {
+		panic(recovered)
+	}
+	return outOfRange
+}
+
+// unreadableNumbersAsZero returns a copy of value, a validator tree, in which
+// every number big.Rat cannot read is 0; value itself is left as it is.
+func unreadableNumbersAsZero(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		if _, ok := new(big.Rat).SetString(string(v)); !ok {
+			return json.Number("0")
+		}
+	case []any:
+		zeroed := make([]any, len(v))
+		for i, item := range v {
+			zeroed[i] = unreadableNumbersAsZero(item)
+		}
+		return zeroed
+	case map[string]any:
+		zeroed := make(map[string]any, len(v))
+		for key, member := range v {
+			zeroed[key] = unreadableNumbersAsZero(member)
+		}
+		return zeroed
+	}
+	return value
 }
 
 // numberOutOfRange is a number in a value to validate, or in a schema, that
@@ -328,10 +388,15 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 		// Compiling validates the schema against its metaschema, which reads
 		// its numeric keywords through big.Rat and panics on a bound big.Rat
 		// cannot read; that bound is the error. Any other panic is raised again.
-		if outOfRange := findNumberOutOfRange(doc, nil); outOfRange != nil {
-			return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
-		}
-		panic(recovered)
+		outOfRange := blameUnreadableNumber(doc, recovered, func(zeroed any) *recoveredPanic {
+			c := jsonschema.NewCompiler()
+			if c.AddResource(resourceURL, zeroed) != nil {
+				return nil
+			}
+			again, _, _ := compileRecovering(c, resourceURL)
+			return again
+		})
+		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, err)
@@ -341,8 +406,12 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 
 // compileRecovering compiles the schema at resourceURL with c and returns what
 // a panic in Compile raised, nil when it returned.
-func compileRecovering(c *jsonschema.Compiler, resourceURL string) (recovered any, compiled *jsonschema.Schema, err error) {
-	defer func() { recovered = recover() }()
+func compileRecovering(c *jsonschema.Compiler, resourceURL string) (recovered *recoveredPanic, compiled *jsonschema.Schema, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			recovered = &recoveredPanic{value: r, stack: debug.Stack()}
+		}
+	}()
 	compiled, err = c.Compile(resourceURL)
 	return nil, compiled, err
 }
