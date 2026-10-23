@@ -39,6 +39,16 @@ func argumentsAtOnce(params mcp.CallToolParams) mcp.CallToolParams {
 	return params
 }
 
+// settleToolCall gives request, the dispatcher's own copy of a call, the
+// Arguments argumentsAtOnce gave the handler's, so that the hooks after the
+// call see what the handler saw. A call to a tool that opted in is left as
+// it is.
+func (s *MCPServer) settleToolCall(request *mcp.CallToolRequest) {
+	if s.mayLeaveArgumentsToTheGetters(&request.Params) {
+		argsdecode.Settle(&request.Params)
+	}
+}
+
 // toolReadsArgumentsOnDemand reports whether the tool called name is
 // registered with ServerTool.ArgumentsOnDemand.
 func (s *MCPServer) toolReadsArgumentsOnDemand(name string) bool {

@@ -12,6 +12,9 @@ type MCPRequestType struct {
 	// Decode, when set, is the server method that decodes the request in
 	// place of json.Unmarshal(message, &request).
 	Decode string
+	// Settle, when set, is the server method run on the request once the
+	// handler returns, before the hooks after the request see it.
+	Settle string
 	// RemovedInModern marks methods removed by protocol version 2026-07-28.
 	// They are rejected with METHOD_NOT_FOUND on requests declaring that
 	// version or later.
@@ -117,6 +120,7 @@ var MCPRequestTypes = []MCPRequestType{
 		HandlerFunc: "handleToolCall",
 		ResultIsAny: true, // Returns 'any' to support both CallToolResult and CreateTaskResult
 		Decode:      "decodeToolCall",
+		Settle:      "settleToolCall",
 	}, {
 		MethodName:  "MethodTasksGet",
 		ParamType:   "GetTaskRequest",

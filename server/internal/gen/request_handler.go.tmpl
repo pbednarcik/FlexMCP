@@ -54,7 +54,8 @@ func (s *MCPServer) dispatchRequest(
 		} else {
 			request.Header = headers
 			s.hooks.before{{.HookName}}(ctx, baseMessage.ID, &request)
-			result, err = s.{{.HandlerFunc}}(ctx, baseMessage.ID, request)
+			result, err = s.{{.HandlerFunc}}(ctx, baseMessage.ID, request){{ if .Settle }}
+			s.{{.Settle}}(&request){{ end }}
 		}
 		if err != nil {
 			s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &request, err)

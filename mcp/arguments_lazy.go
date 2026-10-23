@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mark3labs/mcp-go/internal/argsdecode"
 )
@@ -15,6 +16,14 @@ func init() {
 	argsdecode.AtOnce = func(params any) {
 		p := params.(*CallToolParams)
 		if p.Arguments == nil && p.lazy != nil {
+			p.lazy.atOnce.Store(true)
+			p.Arguments = p.lazy.get()
+			p.lazy = nil
+		}
+	}
+	argsdecode.Settle = func(params any) {
+		p := params.(*CallToolParams)
+		if p.Arguments == nil && p.lazy != nil && p.lazy.atOnce.Load() {
 			p.Arguments = p.lazy.get()
 			p.lazy = nil
 		}
@@ -29,6 +38,9 @@ type lazyArguments struct {
 	once  sync.Once
 	raw   json.RawMessage
 	value any
+	// atOnce records that a copy of the request was given its Arguments at
+	// once (argsdecode.AtOnce), for argsdecode.Settle to give every other.
+	atOnce atomic.Bool
 }
 
 // get returns the arguments decoded, decoding them on the first call.

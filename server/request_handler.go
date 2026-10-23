@@ -345,6 +345,7 @@ func (s *MCPServer) dispatchRequest(
 			request.Header = headers
 			s.hooks.beforeCallTool(ctx, baseMessage.ID, &request)
 			result, err = s.handleToolCall(ctx, baseMessage.ID, request)
+			s.settleToolCall(&request)
 		}
 		if err != nil {
 			s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &request, err)

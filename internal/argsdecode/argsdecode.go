@@ -22,3 +22,9 @@ var SetOnDemand func(params any, onDemand func(name string) bool)
 // leaves any other params as they are. Package mcp sets it when it is
 // initialised.
 var AtOnce func(params any)
+
+// Settle sets on params, a decoded *mcp.CallToolParams whose decode left its
+// arguments to the getters, the Arguments AtOnce gave a copy of it, if AtOnce
+// gave a copy any; it leaves any other params as they are. Package mcp sets
+// it when it is initialised.
+var Settle func(params any)

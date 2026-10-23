@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -245,6 +246,69 @@ func TestArgumentsOnDemandToolSwappedDuringTheCall(t *testing.T) {
 	assert.Contains(t, onDemandCall(t, srv, `{"region":"r"}`), `"text":"ok"`)
 	assert.False(t, seen.argumentsNil["handler"], "Params.Arguments nil in the handler of a tool that did not opt in")
 	assert.Equal(t, "r", seen.region["handler"])
+}
+
+// The hooks after such a call, on success, on error and on the task path, see
+// the arguments the handler saw; a tool that opted in still gives them nil.
+func TestArgumentsOnDemandToolSwappedDuringTheCallHooks(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fail    bool
+		task    bool
+		swapped bool
+	}{
+		{"success", false, false, true},
+		{"error", true, false, true},
+		{"task", false, true, true},
+		{"opted in, success", false, false, false},
+		{"opted in, error", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var srv *MCPServer
+			seen := newOnDemandSeen()
+			tool := mcp.NewTool("echo", mcp.WithString("region"))
+			if tc.task {
+				tool = mcp.NewTool("echo", mcp.WithString("region"), mcp.WithTaskSupport(mcp.TaskSupportOptional))
+			}
+			plain := ServerTool{
+				Tool: tool,
+				Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					if tc.fail {
+						return nil, errors.New("refused")
+					}
+					return mcp.NewToolResultText("ok"), nil
+				},
+			}
+			hooks := &Hooks{}
+			hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) {
+				if tc.swapped {
+					srv.SetTools(plain)
+				}
+			})
+			hooks.AddAfterCallTool(func(_ context.Context, _ any, r *mcp.CallToolRequest, _ any) { seen.see("after hook", r) })
+			hooks.AddOnError(func(_ context.Context, _ any, method mcp.MCPMethod, message any, _ error) {
+				if r, ok := message.(*mcp.CallToolRequest); ok && method == mcp.MethodToolsCall {
+					seen.see("error hook", r)
+				}
+			})
+			srv = NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithTaskCapabilities(true, true, true), WithHooks(hooks))
+			onDemand := plain
+			onDemand.ArgumentsOnDemand = true
+			srv.AddTools(onDemand)
+			params := `{"name":"echo","arguments":{"region":"r"}}`
+			if tc.task {
+				params = `{"name":"echo","arguments":{"region":"r"},"task":{}}`
+			}
+			_ = srv.HandleMessage(t.Context(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+params+`}`))
+			reader := "after hook"
+			if tc.fail {
+				reader = "error hook"
+			}
+			require.Contains(t, seen.argumentsNil, reader, "the hook did not run")
+			assert.Equal(t, !tc.swapped, seen.argumentsNil[reader], "%s: Params.Arguments nil", reader)
+			assert.Equal(t, "r", seen.region[reader], "%s: GetString", reader)
+		})
+	}
 }
 
 // The same on the task path, which looks the tool up again: a call decoded
