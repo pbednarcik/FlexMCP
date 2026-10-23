@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -87,7 +88,22 @@ type SessionWithSubscriptionStreams interface {
 type subscriptionStreams struct {
 	mu      sync.RWMutex
 	modern  bool
-	streams map[any]mcp.SubscriptionFilter
+	streams map[any]listenStream
+	// open holds the streams as a broadcast reads them. It is built again
+	// whenever a stream opens or closes and never changed once built, so a
+	// broadcast reads it without a copy.
+	open []listenStream
+}
+
+// listenStream is one stream subscriptionStreams holds.
+type listenStream struct {
+	id     any
+	filter mcp.SubscriptionFilter
+	// tag is the _meta of a notification on the stream that carries none of
+	// its own, on a session that encodes its notifications before any other
+	// code sees them (encodesNotifications): the stream's id alone. Every
+	// such notification shares it, and nothing writes it.
+	tag map[string]any
 }
 
 func (s *subscriptionStreams) OpenSubscriptionStream(id any, filter mcp.SubscriptionFilter) {
@@ -99,9 +115,10 @@ func (s *subscriptionStreams) OpenSubscriptionStream(id any, filter mcp.Subscrip
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.streams == nil {
-		s.streams = make(map[any]mcp.SubscriptionFilter)
+		s.streams = make(map[any]listenStream)
 	}
-	s.streams[id] = filter
+	s.streams[id] = listenStream{id: id, filter: filter, tag: map[string]any{mcp.MetaKeySubscriptionID: id}}
+	s.open = slices.Collect(maps.Values(s.streams))
 }
 
 func (s *subscriptionStreams) CloseSubscriptionStream(id any) {
@@ -110,20 +127,60 @@ func (s *subscriptionStreams) CloseSubscriptionStream(id any) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.streams[id]; !ok {
+		return
+	}
 	delete(s.streams, id)
+	s.open = slices.Collect(maps.Values(s.streams))
 }
 
 func (s *subscriptionStreams) SubscriptionStreams() ([]SubscriptionStream, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if len(s.streams) == 0 {
+	if len(s.open) == 0 {
 		return nil, s.modern
 	}
-	streams := make([]SubscriptionStream, 0, len(s.streams))
-	for id, filter := range s.streams {
-		streams = append(streams, SubscriptionStream{ID: id, Filter: filter})
+	streams := make([]SubscriptionStream, 0, len(s.open))
+	for _, stream := range s.open {
+		streams = append(streams, SubscriptionStream{ID: stream.id, Filter: stream.filter})
 	}
 	return streams, s.modern
+}
+
+// streamsToBroadcast returns what SubscriptionStreams does without copying
+// the streams.
+func (s *subscriptionStreams) streamsToBroadcast() ([]listenStream, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.open, s.modern
+}
+
+// broadcastStreams is a session whose streams subscriptionStreams holds.
+type broadcastStreams interface {
+	streamsToBroadcast() ([]listenStream, bool)
+}
+
+// encodesNotifications is a session whose notifications the server alone
+// receives, encoding each to bytes before any other code can see it. The
+// stdio session is one: only StdioServer.writeLoop receives from its
+// channel, and NotificationChannel hands out only the sending end. The
+// in-process session is not: the transport hands each notification to the
+// client's handler as it is, and ClientNotifications hands the receiving end
+// to any caller, so a notification's _meta reaches user code, which may write
+// it.
+type encodesNotifications interface {
+	encodesNotifications()
+}
+
+// tagged returns notification tagged for the stream. On a session that
+// encodes its notifications at once (shared), one that carries no _meta of
+// its own shares the stream's tag; any other gets a _meta of its own.
+func (stream listenStream) tagged(notification mcp.JSONRPCNotification, shared bool) mcp.JSONRPCNotification {
+	if shared && len(notification.Params.Meta) == 0 {
+		notification.Params.Meta = stream.tag
+		return notification
+	}
+	return tagSubscription(notification, stream.id)
 }
 
 func (s *subscriptionStreams) MarkModern() {

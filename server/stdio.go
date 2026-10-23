@@ -233,6 +233,10 @@ func (s *stdioSession) SessionID() string {
 	return "stdio"
 }
 
+// encodesNotifications marks the session as one whose notifications only
+// writeLoop receives, each encoded before any other code sees it.
+func (*stdioSession) encodesNotifications() {}
+
 func (s *stdioSession) NotificationChannel() chan<- mcp.JSONRPCNotification {
 	return s.notifications
 }

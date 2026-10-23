@@ -232,7 +232,18 @@ func (s *MCPServer) broadcastToSession(session ClientSession, notification mcp.J
 	// one long-lived channel receives a broadcast once per stream that asked
 	// for it, tagged with the stream's id, and not at all without one;
 	// a handshake-era client on such a session is served below, unfiltered.
-	if streams, ok := session.(SessionWithSubscriptionStreams); ok {
+	if streams, ok := session.(broadcastStreams); ok {
+		open, modern := streams.streamsToBroadcast()
+		if modern {
+			_, shared := session.(encodesNotifications)
+			for _, stream := range open {
+				if filterAllows(stream.filter, notification.Method) {
+					s.deliverBroadcast(session, stream.tagged(notification, shared))
+				}
+			}
+			return
+		}
+	} else if streams, ok := session.(SessionWithSubscriptionStreams); ok {
 		open, modern := streams.SubscriptionStreams()
 		if modern {
 			for _, stream := range open {

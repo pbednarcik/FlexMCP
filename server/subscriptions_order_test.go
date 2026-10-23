@@ -220,3 +220,13 @@ func TestSubscriptionsListen_ListChangesWhileTheStreamIsSetUp(t *testing.T) {
 		receivesExactly(t, session.notify, acknowledged)
 	})
 }
+
+// Only the stdio session, which encodes every notification before any other
+// code sees it, shares a stream's tag; the in-process one hands its
+// notifications to user code.
+func TestOnlyStdioSessionsShareStreamTags(t *testing.T) {
+	_, stdio := any(NewStdioServer(NewMCPServer("t", "1")).session).(encodesNotifications)
+	_, inProcess := any(NewInProcessSession("p")).(encodesNotifications)
+	assert.True(t, stdio, "stdio")
+	assert.False(t, inProcess, "in process")
+}

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -66,6 +67,40 @@ func TestListenStreamsTheSubscribedNotificationsUntilStopped(t *testing.T) {
 	stop()
 	require.NoError(t, receive(t, done))
 	assert.Equal(t, int32(1), closed.Load())
+}
+
+// A handler that writes a notification's _meta changes no other notification
+// the client receives: two list changes delivered back to back each carry
+// the stream's tag alone.
+func TestListenNotificationsDoNotShareTheirMeta(t *testing.T) {
+	s, _ := newListenServer(server.WithToolCapabilities(true))
+	c := connectInProcess(t, s, "")
+	received := make(chan map[string]any, 16)
+	c.OnNotification(func(n mcp.JSONRPCNotification) {
+		received <- maps.Clone(n.Params.Meta)
+		if n.Params.Meta != nil {
+			n.Params.Meta[mcp.MetaKeySubscriptionID] = "overwritten"
+			n.Params.Meta["added"] = true
+		}
+	})
+
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Listen(ctx, mcp.SubscriptionFilter{ToolsListChanged: true})
+	}()
+	ack := receive(t, received)
+	id := ack[mcp.MetaKeySubscriptionID]
+	require.NotNil(t, id)
+
+	s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
+	s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
+	for i := range 2 {
+		assert.Equal(t, map[string]any{mcp.MetaKeySubscriptionID: id}, receive(t, received), "change %d", i)
+	}
+	stop()
+	require.NoError(t, receive(t, done))
 }
 
 func TestListenReturnsAtOnceWhenNothingWasEstablished(t *testing.T) {
