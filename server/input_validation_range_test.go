@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -230,5 +231,38 @@ func TestRegistrationNamesABoundItCannotReadThatCompiles(t *testing.T) {
 	} {
 		srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
 		assert.NotPanics(t, func() { srv.AddTool(mcp.NewToolWithRawSchema("free", "", json.RawMessage(schema)), okHandler) }, schema)
+	}
+}
+
+// Registering a validated tool looks for a bound big.Rat cannot read only in
+// a schema that holds such a number, and finding none costs one walk of the
+// schema that neither sorts nor places its members: 21299 allocations for an
+// 8 KB schema when the walk did both, 20205 with one that does neither.
+func TestRegistrationBoundCheckAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	tool := mcp.NewToolWithRawSchema("big", "an 8 KB schema", bigRawSchema(8192, false))
+	allocs := testing.AllocsPerRun(20, func() {
+		srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation())
+		srv.SetTools(ServerTool{Tool: tool, Handler: okHandler})
+	})
+	assert.LessOrEqual(t, allocs, 20300.0, "allocations to register a validated tool with an 8 KB schema")
+}
+
+// hasUnreadableNumber finds a number big.Rat cannot read wherever
+// findNumberOutOfRange finds one.
+func TestHasUnreadableNumber(t *testing.T) {
+	for _, raw := range []string{
+		`{}`, `[]`, `1`, `"0e10000000000000000000"`, outOfRangeNumber, `1e-1000001`, `0e1000000`,
+		`{"a":1,"b":{"c":[1,2,{"d":` + outOfRangeNumber + `}]}}`,
+		`{"a":1,"b":{"c":[1,2,{"d":3}]}}`,
+		`[[[[1e-1000001]]]]`, `[1,[2,[3]],{"x":"1e-1000001"}]`,
+		`{"z":{"y":{"x":{"w":-2.5e-9223372036854775808}}}}`,
+		`{"properties":{"n":{"maximum":1e-1000001}},"k":[true,null,"s"]}`,
+	} {
+		value, err := jsonschema.UnmarshalJSON(strings.NewReader(raw))
+		require.NoError(t, err, raw)
+		assert.Equal(t, findNumberOutOfRange(value, nil) != nil, hasUnreadableNumber(value), raw)
 	}
 }

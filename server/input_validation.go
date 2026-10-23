@@ -325,6 +325,26 @@ func (e *numberOutOfRange) Error() string {
 	return location + ": number " + literal + " is out of range"
 }
 
+// hasUnreadableNumber reports whether value, a validator tree, holds a number
+// big.Rat cannot read: findNumberOutOfRange's answer, without the order and
+// the place it finds one in.
+func hasUnreadableNumber(value any) bool {
+	switch v := value.(type) {
+	case json.Number:
+		_, ok := new(big.Rat).SetString(string(v))
+		return !ok
+	case []any:
+		return slices.ContainsFunc(v, hasUnreadableNumber)
+	case map[string]any:
+		for _, member := range v {
+			if hasUnreadableNumber(member) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // findNumberOutOfRange returns the first number in value, a validator tree,
 // that big.Rat cannot read, objects' members taken in key order, or nil.
 // at is the place value stands.
@@ -427,7 +447,7 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 // keyword or a keyword of a later dialect, is no bound. Schemas are taken
 // depth first, members in key order.
 func findBoundOutOfRange(doc any, resourceURL string) *numberOutOfRange {
-	if findNumberOutOfRange(doc, nil) == nil {
+	if !hasUnreadableNumber(doc) {
 		return nil
 	}
 	n := 0
