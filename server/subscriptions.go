@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -182,7 +183,9 @@ func (s *MCPServer) handleSubscriptionsListen(
 	// client can correlate it. It is queued before the subscription is
 	// recorded: nothing for the subscription precedes its acknowledgement
 	// (Patterns.md row 15), and a broadcast reaches the subscription only
-	// once it is recorded.
+	// once it is recorded. A list change a broadcast missed the subscription
+	// with meanwhile is sent once it is recorded; see listChangeCounts.
+	finished := s.listChanges.finishedNow()
 	ack := mcp.JSONRPCNotification{
 		JSONRPC: mcp.JSONRPC_VERSION,
 		Method:  mcp.MethodNotificationSubscriptionsAcknowledged,
@@ -199,6 +202,10 @@ func (s *MCPServer) handleSubscriptionsListen(
 		}
 	}
 
+	if s.testHookListen != nil {
+		s.testHookListen("gap")
+	}
+
 	// Record the filter so notification fan-out can honour the opt-in: a
 	// request's own session holds one filter, a long-lived session one
 	// stream per listen request.
@@ -211,6 +218,10 @@ func (s *MCPServer) handleSubscriptionsListen(
 		defer streams.CloseSubscriptionStream(id)
 		s.closeStreamOnCancel(ctx, id, streams)
 	}
+	s.resendListChanges(session, allowed, finished)
+	if s.testHookListen != nil {
+		s.testHookListen("established")
+	}
 
 	// Hold the stream open for as long as anything was subscribed. When the
 	// filter is empty there is nothing to deliver, so close immediately.
@@ -222,6 +233,69 @@ func (s *MCPServer) handleSubscriptionsListen(
 	meta := result.EnsureResultMeta()
 	meta.SetSubscriptionID(id)
 	return result, nil
+}
+
+// listChangeMethods are the notifications a subscriptions/listen stream
+// carries: the list changes, in the order listChangeCounts keeps them.
+var listChangeMethods = [...]string{
+	mcp.MethodNotificationToolsListChanged,
+	mcp.MethodNotificationPromptsListChanged,
+	mcp.MethodNotificationResourcesListChanged,
+}
+
+// listChangeCounts counts, for each list change, the broadcasts that have
+// started reading the sessions and those that have finished with them.
+//
+// subscriptions/listen queues a stream's acknowledgement before it records
+// the stream, so that nothing precedes the acknowledgement, and a broadcast
+// that reads the sessions between the two misses the stream. So that no such
+// change is lost, the handler reads F, how many broadcasts of each list
+// change have finished, before it queues the acknowledgement, and S, how
+// many have started, once the stream is recorded, and sends the stream a
+// list change of each type it subscribed to whose S exceeds its F. A
+// broadcast that finished before F was read preceded the acknowledgement,
+// and one that started after S was read finds the stream recorded. Any other
+// started before S was read and had not finished when F was read: it is
+// counted in S and not in F, while every broadcast counted in F started
+// before it and is counted in S, so S > F. One counter read twice would not
+// do: a broadcast counted before the first read, or after the second, can
+// still read the sessions between the two. A list change a broadcast did
+// deliver may arrive twice; it only asks the client to list again.
+type listChangeCounts [len(listChangeMethods)]listChangeCount
+
+// listChangeCount is listChangeCounts' count of one list change.
+type listChangeCount struct {
+	started, finished atomic.Uint64
+}
+
+// of returns the counts of method, nil for a method that is no list change.
+func (c *listChangeCounts) of(method string) *listChangeCount {
+	for i, listChange := range listChangeMethods {
+		if method == listChange {
+			return &c[i]
+		}
+	}
+	return nil
+}
+
+// finishedNow returns how many broadcasts of each list change have finished.
+func (c *listChangeCounts) finishedNow() (finished [len(listChangeMethods)]uint64) {
+	for i := range c {
+		finished[i] = c[i].finished.Load()
+	}
+	return finished
+}
+
+// resendListChanges sends session, whose stream subscribing to filter is now
+// recorded, a list change of each type filter admits that a broadcast
+// started since finished was read may have missed the stream with, as a
+// broadcast reaches the session.
+func (s *MCPServer) resendListChanges(session ClientSession, filter mcp.SubscriptionFilter, finished [len(listChangeMethods)]uint64) {
+	for i, method := range listChangeMethods {
+		if filterAllows(filter, method) && s.listChanges[i].started.Load() > finished[i] {
+			s.broadcastToSession(session, mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: method})
+		}
+	}
 }
 
 // closeStreamOnCancel arranges for a cancel by notification to close the

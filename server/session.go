@@ -204,6 +204,16 @@ func (s *MCPServer) SendLogMessageToClient(ctx context.Context, notification mcp
 }
 
 func (s *MCPServer) sendNotificationToAllClients(notification mcp.JSONRPCNotification) {
+	// A list change counts itself started before it reads the sessions and
+	// finished once it is done with them; see listChangeCounts.
+	if counts := s.listChanges.of(notification.Method); counts != nil {
+		counts.started.Add(1)
+		defer counts.finished.Add(1)
+	}
+	if s.testHookBroadcast != nil {
+		s.testHookBroadcast("started")
+		defer s.testHookBroadcast("delivered")
+	}
 	s.sessions.Range(func(k, v any) bool {
 		if session, ok := v.(ClientSession); ok && session.Initialized() {
 			s.broadcastToSession(session, notification)

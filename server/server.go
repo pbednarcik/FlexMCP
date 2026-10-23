@@ -200,11 +200,21 @@ type MCPServer struct {
 	// tool's output schema as registration compiled it, nil for a tool with
 	// none, so a call validates its result without a cache lookup that could
 	// outlive the tool. Keyed and kept like toolHeaderBindings.
-	toolOutputSchemas        map[string]*jsonschema.Schema
-	paginationLimit          *int
-	toolResultSizeLimit      int
-	sessions                 sync.Map
-	listenSessions           sync.Map // see registerListenSession
+	toolOutputSchemas   map[string]*jsonschema.Schema
+	paginationLimit     *int
+	toolResultSizeLimit int
+	sessions            sync.Map
+	listenSessions      sync.Map // see registerListenSession
+	listChanges         listChangeCounts
+	// testHookListen, nil outside tests, runs in subscriptions/listen at
+	// "gap", once the acknowledgement is queued and before the stream is
+	// recorded, and at "established", once any list change missed is sent.
+	testHookListen func(stage string)
+	// testHookBroadcast, nil outside tests, runs in a broadcast at "started",
+	// once a list change counts itself started and before the sessions are
+	// read, and at "delivered", once they are and before it counts itself
+	// finished.
+	testHookBroadcast        func(stage string)
 	hooks                    *Hooks
 	taskHooks                *TaskHooks
 	tasks                    map[string]*taskEntry

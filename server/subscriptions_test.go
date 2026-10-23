@@ -124,6 +124,15 @@ func listen(
 	}
 	done := make(chan outcome, 1)
 
+	// The acknowledgement comes before the subscription is recorded: the
+	// stream is ready once the server has recorded it.
+	established := make(chan struct{}, 1)
+	srv.testHookListen = func(stage string) {
+		if stage == "established" {
+			established <- struct{}{}
+		}
+	}
+
 	go func() {
 		result, err := srv.handleSubscriptionsListen(ctx, 7, mcp.SubscriptionsListenRequest{
 			Params: mcp.SubscriptionsListenParams{Notifications: filter},
@@ -131,8 +140,7 @@ func listen(
 		done <- outcome{result, err}
 	}()
 
-	// Wait for the acknowledgement, which the server sends once the
-	// subscription is established.
+	// Wait for the acknowledgement, then for the subscription to be recorded.
 	select {
 	case notification := <-session.notify:
 		require.Equal(t, mcp.MethodNotificationSubscriptionsAcknowledged, notification.Method)
@@ -140,6 +148,11 @@ func listen(
 			"the acknowledgement must identify the stream it belongs to")
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for subscriptions/acknowledged")
+	}
+	select {
+	case <-established:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the subscription to be recorded")
 	}
 
 	return func() *mcp.SubscriptionsListenResult {
