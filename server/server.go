@@ -89,9 +89,11 @@ type ServerTool struct {
 	// Code that reads Params.Arguments itself sees nil for this tool's calls:
 	// the handler, tool handler middlewares, and the hooks before and after
 	// the call. It must call GetArguments instead. A hook that assigns
-	// Params.Arguments still wins: the getters and input validation read what
-	// it left. RawArguments, BindArguments, GetRawArguments, input validation
-	// and the error a call with malformed arguments gets are unchanged.
+	// Params.Arguments a non-nil value still wins: the getters and input
+	// validation read what it left. One that assigns nil does not, since nil
+	// is what the field already holds: they read the arguments as sent.
+	// RawArguments, BindArguments, GetRawArguments, input validation and the
+	// error a call with malformed arguments gets are unchanged.
 	ArgumentsOnDemand bool
 }
 
