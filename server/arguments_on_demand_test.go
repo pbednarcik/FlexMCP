@@ -311,6 +311,47 @@ func TestArgumentsOnDemandToolSwappedDuringTheCallHooks(t *testing.T) {
 	}
 }
 
+// Validating an opted-in tool's arguments that are not an object, with a hook
+// before the call, decodes them for the validator alone: the handler and the
+// hooks after the call, on success and on error, still see Params.Arguments
+// nil.
+func TestArgumentsOnDemandValidationLeavesTheHooksNil(t *testing.T) {
+	for _, arguments := range []string{`[1]`, `42`, `"text"`} {
+		for _, fail := range []bool{false, true} {
+			seen := newOnDemandSeen()
+			hooks := &Hooks{}
+			hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) {})
+			hooks.AddAfterCallTool(func(_ context.Context, _ any, r *mcp.CallToolRequest, _ any) { seen.see("after hook", r) })
+			hooks.AddOnError(func(_ context.Context, _ any, method mcp.MCPMethod, message any, _ error) {
+				if r, ok := message.(*mcp.CallToolRequest); ok && method == mcp.MethodToolsCall {
+					seen.see("error hook", r)
+				}
+			})
+			srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation(), WithHooks(hooks))
+			srv.AddTools(ServerTool{
+				Tool: mcp.NewToolWithRawSchema("echo", "", json.RawMessage(`{"type":["array","number","string"]}`)),
+				Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					seen.see("handler", &r)
+					if fail {
+						return nil, errors.New("refused")
+					}
+					return mcp.NewToolResultText("ok"), nil
+				},
+				ArgumentsOnDemand: true,
+			})
+			onDemandCall(t, srv, arguments)
+			reader := "after hook"
+			if fail {
+				reader = "error hook"
+			}
+			for _, r := range []string{"handler", reader} {
+				require.Contains(t, seen.argumentsNil, r, "%s did not run: arguments %s, fail %v", r, arguments, fail)
+				assert.True(t, seen.argumentsNil[r], "%s: Params.Arguments nil, arguments %s, fail %v", r, arguments, fail)
+			}
+		}
+	}
+}
+
 // The same on the task path, which looks the tool up again: a call decoded
 // for an opted-in task tool reaches, as a task, the tool that replaced it.
 func TestArgumentsOnDemandTaskToolSwappedDuringTheCall(t *testing.T) {

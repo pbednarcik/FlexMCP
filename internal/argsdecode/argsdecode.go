@@ -28,3 +28,9 @@ var AtOnce func(params any)
 // gave a copy any; it leaves any other params as they are. Package mcp sets
 // it when it is initialised.
 var Settle func(params any)
+
+// Decoded returns the Arguments of params, a decoded *mcp.CallToolParams,
+// decoding them from RawArguments when its decode left them to the getters,
+// and changes nothing: for input validation, which reads them and publishes
+// nothing. Package mcp sets it when it is initialised.
+var Decoded func(params any) any

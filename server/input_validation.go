@@ -658,7 +658,7 @@ func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bo
 	}
 	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
 		if arguments == nil && onDemand && len(raw) > 0 && string(raw) != "null" {
-			arguments = argumentsAtOnce(request.Params).Arguments
+			arguments = decodedArguments(request.Params)
 		}
 		return callArguments{decoded: arguments}
 	}

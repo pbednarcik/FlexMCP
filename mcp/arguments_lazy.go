@@ -21,6 +21,13 @@ func init() {
 			p.lazy = nil
 		}
 	}
+	argsdecode.Decoded = func(params any) any {
+		p := params.(*CallToolParams)
+		if p.Arguments == nil && p.lazy != nil {
+			return p.lazy.get()
+		}
+		return p.Arguments
+	}
 	argsdecode.Settle = func(params any) {
 		p := params.(*CallToolParams)
 		if p.Arguments == nil && p.lazy != nil && p.lazy.atOnce.Load() {
