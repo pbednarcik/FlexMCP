@@ -223,10 +223,62 @@ func TestSubscriptionsListen_ListChangesWhileTheStreamIsSetUp(t *testing.T) {
 
 // Only the stdio session, which encodes every notification before any other
 // code sees it, shares a stream's tag; the in-process one hands its
-// notifications to user code.
+// notifications to user code. A type that embeds either is neither: the
+// broadcast goes through its own methods.
 func TestOnlyStdioSessionsShareStreamTags(t *testing.T) {
-	_, stdio := any(NewStdioServer(NewMCPServer("t", "1")).session).(encodesNotifications)
-	_, inProcess := any(NewInProcessSession("p")).(encodesNotifications)
-	assert.True(t, stdio, "stdio")
-	assert.False(t, inProcess, "in process")
+	stdio := NewStdioServer(NewMCPServer("t", "1")).session
+	inProcess := NewInProcessSession("p")
+	for _, tc := range []struct {
+		name       string
+		session    ClientSession
+		own, share bool
+	}{
+		{"stdio", stdio, true, true},
+		{"in process", inProcess, true, false},
+		{"embedding stdio", &stdioWrapper{stdioSession: stdio}, false, false},
+		{"embedding in process", &struct{ *InProcessSession }{inProcess}, false, false},
+	} {
+		_, shared, own := ownStreams(tc.session)
+		assert.Equal(t, tc.own, own, "%s: the server's own streams", tc.name)
+		assert.Equal(t, tc.share, shared, "%s: shares a stream's tag", tc.name)
+	}
+}
+
+// stdioWrapper embeds a stdio session; hide, when set, hides its streams.
+type stdioWrapper struct {
+	*stdioSession
+	hide bool
+}
+
+func (s *stdioWrapper) SubscriptionStreams() ([]SubscriptionStream, bool) {
+	if s.hide {
+		return nil, true
+	}
+	return s.stdioSession.SubscriptionStreams()
+}
+
+// A broadcast reaches a session that embeds the stdio session through the
+// wrapper's own SubscriptionStreams: one that reports no streams receives
+// nothing, and one that reports the stdio session's gives each notification
+// a _meta of its own.
+func TestABroadcastReadsAWrappedStdioSessionsOwnStreams(t *testing.T) {
+	for _, hide := range []bool{true, false} {
+		srv := NewMCPServer("t", "1", WithToolCapabilities(true))
+		stdio := NewStdioServer(srv).session
+		stdio.Initialize()
+		stdio.MarkModern()
+		stdio.OpenSubscriptionStream(9, mcp.SubscriptionFilter{ToolsListChanged: true})
+		srv.registerListenSession(&stdioWrapper{stdioSession: stdio, hide: hide})
+		srv.SendNotificationToAllClients(toolsChanged, nil)
+		srv.SendNotificationToAllClients(toolsChanged, nil)
+		if hide {
+			assert.Empty(t, stdio.notifications, "a wrapper that reports no streams receives nothing")
+			continue
+		}
+		require.Len(t, stdio.notifications, 2)
+		first, second := <-stdio.notifications, <-stdio.notifications
+		assert.Equal(t, 9, first.Params.Meta[mcp.MetaKeySubscriptionID])
+		first.Params.Meta[mcp.MetaKeySubscriptionID] = "written"
+		assert.Equal(t, 9, second.Params.Meta[mcp.MetaKeySubscriptionID], "the wrapper's notifications share no _meta")
+	}
 }

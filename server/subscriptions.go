@@ -101,7 +101,7 @@ type listenStream struct {
 	filter mcp.SubscriptionFilter
 	// tag is the _meta of a notification on the stream that carries none of
 	// its own, on a session that encodes its notifications before any other
-	// code sees them (encodesNotifications): the stream's id alone. Every
+	// code sees them (see ownStreams): the stream's id alone. Every
 	// such notification shares it, and nothing writes it.
 	tag map[string]any
 }
@@ -155,21 +155,25 @@ func (s *subscriptionStreams) streamsToBroadcast() ([]listenStream, bool) {
 	return s.open, s.modern
 }
 
-// broadcastStreams is a session whose streams subscriptionStreams holds.
-type broadcastStreams interface {
-	streamsToBroadcast() ([]listenStream, bool)
-}
-
-// encodesNotifications is a session whose notifications the server alone
-// receives, encoding each to bytes before any other code can see it. The
-// stdio session is one: only StdioServer.writeLoop receives from its
-// channel, and NotificationChannel hands out only the sending end. The
-// in-process session is not: the transport hands each notification to the
-// client's handler as it is, and ClientNotifications hands the receiving end
-// to any caller, so a notification's _meta reaches user code, which may write
-// it.
-type encodesNotifications interface {
-	encodesNotifications()
+// ownStreams returns the streams of session when it is one of the server's
+// own sessions, by its exact type: a type that embeds one has methods of its
+// own, SubscriptionStreams among them, which a broadcast must call, so it
+// does not qualify. shared reports whether the session encodes its
+// notifications to bytes before any other code can see them, so that the
+// notifications on one of its streams may share the stream's tag. The stdio
+// session does: only StdioServer.writeLoop receives from its channel, and
+// NotificationChannel hands out only the sending end. The in-process session
+// does not: the transport hands each notification to the client's handler
+// as it is, and ClientNotifications hands the receiving end to any caller,
+// so a notification's _meta reaches user code, which may write it.
+func ownStreams(session ClientSession) (streams *subscriptionStreams, shared, ok bool) {
+	switch session := session.(type) {
+	case *stdioSession:
+		return &session.subscriptionStreams, true, true
+	case *InProcessSession:
+		return &session.subscriptionStreams, false, true
+	}
+	return nil, false, false
 }
 
 // tagged returns notification tagged for the stream. On a session that

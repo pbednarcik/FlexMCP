@@ -21,44 +21,44 @@ func (s *broadcastSession) NotificationChannel() chan<- mcp.JSONRPCNotification 
 func (s *broadcastSession) Initialize()                                         {}
 func (s *broadcastSession) Initialized() bool                                   { return true }
 
-// broadcastStreamSession is a long-lived session that holds
-// subscriptions/listen streams and encodes its notifications before any
-// other code sees them, as the stdio session does.
-type broadcastStreamSession struct {
-	subscriptionStreams
-	broadcastSession
-}
-
-func (*broadcastStreamSession) encodesNotifications() {}
-
-var _ SessionWithSubscriptionStreams = (*broadcastStreamSession)(nil)
-
 // broadcaster returns a server with sessions registered, every tenth a
-// modern one with a subscriptions/listen stream for tool list changes, of
-// the stdio kind or, with inProcess, an in-process session, and the channels
-// the sessions are sent on, buffered size deep; an in-process session's holds
-// a hundred.
+// modern one with a subscriptions/listen stream for tool list changes: a
+// stdio session or, with inProcess, an in-process one. Stdio sessions all
+// share one id, so they are reached as listen sessions are rather than
+// registered. It returns too the channels the sessions are sent on, buffered
+// size deep, or a hundred for a stdio or in-process session's.
 func broadcaster(tb testing.TB, sessions, size int, inProcess bool) (*MCPServer, []<-chan mcp.JSONRPCNotification) {
 	tb.Helper()
 	srv := NewMCPServer("bench", "1.0.0", WithToolCapabilities(true))
 	channels := make([]<-chan mcp.JSONRPCNotification, 0, sessions)
 	for i := range sessions {
-		base := broadcastSession{id: "s" + strconv.Itoa(i), ch: make(chan mcp.JSONRPCNotification, size)}
-		var session ClientSession = &base
-		var ch <-chan mcp.JSONRPCNotification = base.ch
-		if i%10 == 0 {
-			var streams SessionWithSubscriptionStreams = &broadcastStreamSession{broadcastSession: base}
-			if inProcess {
-				own := NewInProcessSession(base.id)
-				own.Initialize()
-				streams, ch = own, own.ClientNotifications()
+		if i%10 != 0 {
+			base := &broadcastSession{id: "s" + strconv.Itoa(i), ch: make(chan mcp.JSONRPCNotification, size)}
+			if err := srv.RegisterSession(tb.Context(), base); err != nil {
+				tb.Fatal(err)
 			}
-			streams.MarkModern()
-			streams.OpenSubscriptionStream(int64(i), mcp.SubscriptionFilter{ToolsListChanged: true})
-			session = streams
+			channels = append(channels, base.ch)
+			continue
 		}
-		if err := srv.RegisterSession(tb.Context(), session); err != nil {
-			tb.Fatal(err)
+		var streams SessionWithSubscriptionStreams
+		var ch <-chan mcp.JSONRPCNotification
+		if inProcess {
+			own := NewInProcessSession("s" + strconv.Itoa(i))
+			own.Initialize()
+			streams, ch = own, own.ClientNotifications()
+		} else {
+			stdio := NewStdioServer(srv).session
+			stdio.Initialize()
+			streams, ch = stdio, stdio.notifications
+		}
+		streams.MarkModern()
+		streams.OpenSubscriptionStream(int64(i), mcp.SubscriptionFilter{ToolsListChanged: true})
+		if inProcess {
+			if err := srv.RegisterSession(tb.Context(), streams); err != nil {
+				tb.Fatal(err)
+			}
+		} else {
+			srv.registerListenSession(streams)
 		}
 		channels = append(channels, ch)
 	}
