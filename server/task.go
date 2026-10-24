@@ -14,7 +14,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// taskEntry holds task state and associated data
+// taskEntry holds task state and associated data. Its flags come last, side
+// by side, where they take one word between them.
 type taskEntry struct {
 	task       mcp.Task
 	sessionID  string
@@ -24,22 +25,25 @@ type taskEntry struct {
 	resultErr  error              // Error if task failed
 	cancelFunc context.CancelFunc // Function to cancel the task
 	done       chan struct{}      // Channel to signal task completion
-	completed  bool               // Whether the task has been completed (guards done channel closure)
+	// pendingHooks, under tasksMu, holds the hooks of a completion or
+	// cancellation that wait for the created hook; see createdHookDone.
+	pendingHooks []func()
+	// outputSchema is the output schema registration kept for the task's
+	// tool, read with the tool's definition when the call came in, and
+	// outputSchemaKept whether one was kept. Set before the handler starts.
+	outputSchema *jsonschema.Schema
+
+	completed bool // Whether the task has been completed (guards done channel closure)
 	// createdHookDone, under tasksMu, says the created hook has returned;
 	// until then the hook of a completion or cancellation waits in
 	// pendingHooks, which createTask runs after the created hook. A task's
 	// hooks so keep their order with no lock held across hook code: a hook
 	// that cancels its own task does not wait for itself.
 	createdHookDone bool
-	pendingHooks    []func()
 	// slotReleased, under tasksMu, says the concurrency slot createTask took
 	// has been given back: once, when the handler has returned.
-	slotReleased bool
-	// outputSchema is the output schema registration kept for the task's
-	// tool, read with the tool's definition when the call came in, and
-	// outputSchemaKept whether one was kept. Set before the handler starts.
-	outputSchema     *jsonschema.Schema
-	outputSchemaKept bool
+	slotReleased     bool
+	outputSchemaKept bool // see outputSchema
 }
 
 //
