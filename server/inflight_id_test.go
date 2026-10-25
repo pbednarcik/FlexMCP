@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // A request whose id is still in flight in its session is refused, and the

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // A capability a server gains at runtime, by its first tool, resource or

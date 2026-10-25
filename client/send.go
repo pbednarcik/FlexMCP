@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/client/transport"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // sendRequest sends a JSON-RPC request to the server and waits for a response.

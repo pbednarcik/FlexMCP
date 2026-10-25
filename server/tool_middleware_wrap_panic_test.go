@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // A tool middleware that panics while wrapping, on a synchronous call or on

@@ -11,7 +11,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // taskEntry holds task state and associated data. Its flags come last, side

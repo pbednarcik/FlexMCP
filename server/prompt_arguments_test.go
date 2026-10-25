@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // TestGetPromptRequiresDeclaredArguments pins Prompts.md row 10: a prompts/get

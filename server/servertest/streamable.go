@@ -3,7 +3,7 @@ package servertest
 import (
 	"net/http/httptest"
 
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/server"
 )
 
 // NewTestStreamableHTTPServer creates a test Streamable HTTP server. Replaces server.NewTestStreamableHTTPServer.

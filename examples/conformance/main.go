@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/mcp"
+	"github.com/pbednarcik/flexmcp/server"
 )
 
 func main() {

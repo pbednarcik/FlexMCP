@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/client/transport"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // mockElicitationHandler implements ElicitationHandler for testing

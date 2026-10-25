@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/mcp"
+	"github.com/pbednarcik/flexmcp/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

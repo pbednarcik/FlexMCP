@@ -3,8 +3,8 @@ package server
 import (
 	"encoding/json"
 
-	"github.com/mark3labs/mcp-go/internal/argsdecode"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/internal/argsdecode"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // decodeToolCall decodes message, a tools/call request, into request. A call

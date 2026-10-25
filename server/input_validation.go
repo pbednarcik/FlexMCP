@@ -22,8 +22,8 @@ import (
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 
-	"github.com/mark3labs/mcp-go/internal/argsdecode"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/internal/argsdecode"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // compiledSchemaCache compiles and caches JSON Schema validators keyed by

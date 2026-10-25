@@ -22,10 +22,10 @@ import (
 	"log"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/client"
+	"github.com/pbednarcik/flexmcp/client/transport"
+	"github.com/pbednarcik/flexmcp/mcp"
+	"github.com/pbednarcik/flexmcp/server"
 )
 
 // confirmKey identifies the input request across the two round trips. The

@@ -32,8 +32,8 @@ package main
 
 import (
     "context"
-    "github.com/mark3labs/mcp-go/mcp"
-    "github.com/mark3labs/mcp-go/server"
+    "github.com/pbednarcik/flexmcp/mcp"
+    "github.com/pbednarcik/flexmcp/server"
 )
 
 func main() {
@@ -324,7 +324,7 @@ type ElicitationHandler interface {
 Register the handler when creating the client:
 
 ```go
-import "github.com/mark3labs/mcp-go/client"
+import "github.com/pbednarcik/flexmcp/client"
 
 handler := &MyElicitationHandler{}
 c := client.NewClient(transport, client.WithElicitationHandler(handler))

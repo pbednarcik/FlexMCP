@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // BenchmarkStreamableHTTPToolCallValidated drives ServeHTTP with one modern

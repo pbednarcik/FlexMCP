@@ -1,4 +1,4 @@
-module github.com/mark3labs/mcp-go/bench/compare/mcpgo
+module github.com/pbednarcik/flexmcp/bench/compare/mcpgo
 
 go 1.27.2
 
@@ -6,7 +6,7 @@ toolchain go1.27.3
 
 require (
 	github.com/mark3labs/mcp-go v1.2.1
-	github.com/mark3labs/mcp-go/bench/compare/harness v0.0.0
+	github.com/pbednarcik/flexmcp/bench/compare/harness v0.0.0
 )
 
 require (
@@ -18,4 +18,4 @@ require (
 	golang.org/x/text v0.14.0 // indirect
 )
 
-replace github.com/mark3labs/mcp-go/bench/compare/harness => ../harness
+replace github.com/pbednarcik/flexmcp/bench/compare/harness => ../harness

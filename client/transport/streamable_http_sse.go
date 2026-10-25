@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/internal/jsonrpc"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // handleSSEResponse processes an SSE stream for a specific request.

@@ -4,8 +4,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/client"
+	"github.com/pbednarcik/flexmcp/server"
 )
 
 // WithServerTracing installs an OpenTelemetry tracer, a W3C TraceContext header

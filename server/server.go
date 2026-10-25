@@ -12,8 +12,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/tracing"
+	"github.com/pbednarcik/flexmcp/mcp"
+	"github.com/pbednarcik/flexmcp/tracing"
 )
 
 // ServerOption is a function that configures an MCPServer.

@@ -15,8 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/mark3labs/mcp-go/internal/jsonrpc"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // StdioContextFunc is a function that takes an existing context and returns

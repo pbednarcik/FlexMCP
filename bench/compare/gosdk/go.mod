@@ -1,12 +1,12 @@
-module github.com/mark3labs/mcp-go/bench/compare/gosdk
+module github.com/pbednarcik/flexmcp/bench/compare/gosdk
 
 go 1.27.2
 
 toolchain go1.27.3
 
 require (
-	github.com/mark3labs/mcp-go/bench/compare/harness v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/pbednarcik/flexmcp/bench/compare/harness v0.0.0
 )
 
 require (
@@ -20,4 +20,4 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 )
 
-replace github.com/mark3labs/mcp-go/bench/compare/harness => ../harness
+replace github.com/pbednarcik/flexmcp/bench/compare/harness => ../harness

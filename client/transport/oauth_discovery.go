@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // AuthServerMetadata represents the OAuth 2.0 Authorization Server Metadata

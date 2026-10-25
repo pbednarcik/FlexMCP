@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // listByPagination returns the page of allElements that follows cursor. A nil

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // TestSessionHookGoroutine_PanicsWithoutRecovery proves that a panicking

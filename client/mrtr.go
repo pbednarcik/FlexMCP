@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // Multi round-trip requests (SEP-2322) replace the server-initiated

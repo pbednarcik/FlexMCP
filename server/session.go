@@ -6,7 +6,7 @@ import (
 	"log"
 	"sync/atomic"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // ClientSession represents an active session that can be used by MCPServer to interact with client.

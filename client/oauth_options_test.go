@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/pbednarcik/flexmcp/client/transport"
 )
 
 // The OAuth constructors add their option to a copy of the caller's options:

@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/pbednarcik/flexmcp/client/transport"
 )
 
 // The OAuth flavour of a 401 is still an authorization-required error: the

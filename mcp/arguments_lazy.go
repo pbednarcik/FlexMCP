@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/mark3labs/mcp-go/internal/argsdecode"
+	"github.com/pbednarcik/flexmcp/internal/argsdecode"
 )
 
 func init() {

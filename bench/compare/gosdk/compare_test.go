@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/bench/compare/harness"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/pbednarcik/flexmcp/bench/compare/harness"
 )
 
 // newHandler sets the official SDK up as its docs set up a production

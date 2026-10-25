@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-	"github.com/mark3labs/mcp-go/tracing"
+	"github.com/pbednarcik/flexmcp/mcp"
+	"github.com/pbednarcik/flexmcp/server"
+	"github.com/pbednarcik/flexmcp/tracing"
 )
 
 // traceWriter is a MetaPropagator that writes a traceparent field into the

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +22,7 @@ import (
 func forwardersRunning() int {
 	buf := make([]byte, 1<<22)
 	n := runtime.Stack(buf, true)
-	return strings.Count(string(buf[:n]), "created by github.com/mark3labs/mcp-go/server.(*StreamableHTTPServer).handlePost")
+	return strings.Count(string(buf[:n]), "created by github.com/pbednarcik/flexmcp/server.(*StreamableHTTPServer).handlePost")
 }
 
 // postToolCall sends one legacy tools/call of name and returns the response.

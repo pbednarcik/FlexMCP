@@ -3,7 +3,7 @@ package mcp
 import (
 	"sync"
 
-	"github.com/mark3labs/mcp-go/internal/argsdecode"
+	"github.com/pbednarcik/flexmcp/internal/argsdecode"
 )
 
 // argumentDecoders keeps the decoders that read a tool call's arguments

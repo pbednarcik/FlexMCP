@@ -1,11 +1,11 @@
-# mcp-go OpenTelemetry adapter
+# FlexMCP OpenTelemetry adapter
 
-OpenTelemetry tracing for [`mcp-go`](https://github.com/mark3labs/mcp-go),
+OpenTelemetry tracing for [FlexMCP](https://github.com/pbednarcik/FlexMCP),
 shipped as a separate Go module so the core has zero OpenTelemetry
 dependencies.
 
 ```go
-import otelmcp "github.com/mark3labs/mcp-go/otel"
+import otelmcp "github.com/pbednarcik/flexmcp/otel"
 
 srv := server.NewMCPServer("svc", "1.0", otelmcp.WithServerTracing(tp.Tracer("mcp")))
 cli := client.NewClient(t, otelmcp.WithClientTracing(tp.Tracer("mcp")))

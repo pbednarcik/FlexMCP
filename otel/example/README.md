@@ -1,7 +1,7 @@
 # OpenTelemetry Tracing
 
 End-to-end OpenTelemetry tracing across an mcp-go server and client, wired
-through the `github.com/mark3labs/mcp-go/otel` submodule.
+through the `github.com/pbednarcik/flexmcp/otel` submodule.
 
 ## What this demonstrates
 

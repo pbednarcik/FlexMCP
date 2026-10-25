@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // inflightID keys a request in flight: its session and its JSON-RPC id, the

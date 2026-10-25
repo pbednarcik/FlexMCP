@@ -1,4 +1,4 @@
-module github.com/mark3labs/mcp-go/bench/compare/run
+module github.com/pbednarcik/flexmcp/bench/compare/run
 
 go 1.27.2
 

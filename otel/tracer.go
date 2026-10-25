@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/mark3labs/mcp-go/tracing"
+	"github.com/pbednarcik/flexmcp/tracing"
 )
 
 // NewTracer wraps an OpenTelemetry trace.Tracer as a tracing.Tracer. A nil

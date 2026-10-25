@@ -11,11 +11,11 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
-	otelmcp "github.com/mark3labs/mcp-go/otel"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/client"
+	"github.com/pbednarcik/flexmcp/client/transport"
+	"github.com/pbednarcik/flexmcp/mcp"
+	otelmcp "github.com/pbednarcik/flexmcp/otel"
+	"github.com/pbednarcik/flexmcp/server"
 )
 
 // paramsCapturingTransport records the raw params of the most recent outgoing request.

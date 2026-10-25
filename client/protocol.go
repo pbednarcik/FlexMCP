@@ -14,8 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/client/transport"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // defaultDiscoverProbeTimeout bounds the server/discover probe sent during
@@ -124,7 +124,7 @@ func (c *Client) isModern() bool {
 }
 
 // modulePath is this SDK's module, as its build information names it.
-const modulePath = "github.com/mark3labs/mcp-go"
+const modulePath = "github.com/pbednarcik/flexmcp"
 
 var (
 	defaultInfoOnce sync.Once

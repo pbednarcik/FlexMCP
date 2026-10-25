@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
-	otelmcp "github.com/mark3labs/mcp-go/otel"
+	otelmcp "github.com/pbednarcik/flexmcp/otel"
 )
 
 // captureExporter is a minimal sdklog.Exporter that holds onto every

@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/mark3labs/mcp-go/internal/jsonrpc"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) {

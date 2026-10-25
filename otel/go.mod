@@ -1,11 +1,11 @@
-module github.com/mark3labs/mcp-go/otel
+module github.com/pbednarcik/flexmcp/otel
 
 go 1.27.2
 
 toolchain go1.27.3
 
 require (
-	github.com/mark3labs/mcp-go v1.0.0
+	github.com/pbednarcik/flexmcp v0.1.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.18.0
 	go.opentelemetry.io/otel v1.45.0
@@ -32,4 +32,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/mark3labs/mcp-go => ../
+replace github.com/pbednarcik/flexmcp => ../

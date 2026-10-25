@@ -1,4 +1,4 @@
-module github.com/mark3labs/mcp-go
+module github.com/pbednarcik/flexmcp
 
 go 1.27.2
 

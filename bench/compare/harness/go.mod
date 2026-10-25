@@ -1,4 +1,4 @@
-module github.com/mark3labs/mcp-go/bench/compare/harness
+module github.com/pbednarcik/flexmcp/bench/compare/harness
 
 go 1.27.2
 

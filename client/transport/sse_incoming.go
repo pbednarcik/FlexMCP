@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/internal/jsonrpc"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // readSSE continuously reads the SSE stream and processes events.

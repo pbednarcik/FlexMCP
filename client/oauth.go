@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/pbednarcik/flexmcp/client/transport"
 )
 
 // OAuthConfig is a convenience type that wraps transport.OAuthConfig

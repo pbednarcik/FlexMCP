@@ -1,13 +1,13 @@
 // Package tracing defines the tracing interfaces used by the mcp-go client
 // and server. Concrete implementations live in adapter modules; an
-// OpenTelemetry adapter ships at github.com/mark3labs/mcp-go/otel.
+// OpenTelemetry adapter ships at github.com/pbednarcik/flexmcp/otel.
 package tracing
 
 import (
 	"context"
 	"net/http"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // SpanKind identifies the role of a span in a trace.

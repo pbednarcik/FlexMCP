@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // sessionProtocolVersionSetter is implemented by sessions that record the

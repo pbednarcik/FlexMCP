@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // toolCallRequest is one tools/call the way Claude Code sends it to a

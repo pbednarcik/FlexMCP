@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/mark3labs/mcp-go/internal/jsonrpc"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // HandleMessage processes an incoming JSON-RPC message and returns an appropriate response

@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // Multi round-trip requests (SEP-2322) are how a server asks a client for

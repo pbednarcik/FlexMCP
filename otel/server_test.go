@@ -13,9 +13,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	otelmcp "github.com/mark3labs/mcp-go/otel"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/mcp"
+	otelmcp "github.com/pbednarcik/flexmcp/otel"
+	"github.com/pbednarcik/flexmcp/server"
 )
 
 const (

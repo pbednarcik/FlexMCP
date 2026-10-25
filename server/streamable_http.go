@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // StreamableHTTPServer implements a Streamable-http based MCP server.

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/pbednarcik/flexmcp/server"
 )
 
 func TestProtectedResourceMetadataPath(t *testing.T) {

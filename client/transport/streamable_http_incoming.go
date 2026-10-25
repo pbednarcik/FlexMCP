@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 func (c *StreamableHTTP) listenForever(ctx context.Context) {

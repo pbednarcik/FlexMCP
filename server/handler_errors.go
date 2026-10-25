@@ -5,7 +5,7 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pbednarcik/flexmcp/mcp"
 )
 
 // internalErrorMessage is what a client is told about an error the handler

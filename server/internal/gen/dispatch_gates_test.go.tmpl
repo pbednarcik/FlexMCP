@@ -2,7 +2,7 @@
 // source: server/internal/gen/dispatch_gates_test.go.tmpl
 package server
 
-import "github.com/mark3labs/mcp-go/mcp"
+import "github.com/pbednarcik/flexmcp/mcp"
 
 // dispatchGates is the generator's table as the dispatch tests read it.
 var dispatchGates = []dispatchGate{

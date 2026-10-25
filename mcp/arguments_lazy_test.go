@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mark3labs/mcp-go/internal/argsdecode"
+	"github.com/pbednarcik/flexmcp/internal/argsdecode"
 )
 
 // decodeOnDemand decodes data, tools/call params, as the server decodes a
