@@ -394,27 +394,23 @@ func (s *MCPServer) filteredTools(ctx context.Context) []mcp.Tool {
 	}
 	s.toolsMu.RUnlock()
 
-	// Apply tool filters if any are defined
-	s.toolFiltersMu.RLock()
-	if len(s.toolFilters) > 0 {
-		for _, filter := range s.toolFilters {
-			tools = filter(ctx, tools)
-		}
+	// Apply tool filters if any are defined, outside the lock (see
+	// toolFilterSnapshot).
+	for _, filter := range s.toolFilterSnapshot() {
+		tools = filter(ctx, tools)
 	}
-	s.toolFiltersMu.RUnlock()
 
 	return tools
 }
 
 func (s *MCPServer) passesToolFilters(ctx context.Context, tool mcp.Tool) bool {
-	s.toolFiltersMu.RLock()
-	defer s.toolFiltersMu.RUnlock()
-	if len(s.toolFilters) == 0 {
+	filters := s.toolFilterSnapshot()
+	if len(filters) == 0 {
 		return true
 	}
 
 	tools := []mcp.Tool{tool}
-	for _, filter := range s.toolFilters {
+	for _, filter := range filters {
 		tools = filter(ctx, tools)
 		if len(tools) == 0 {
 			return false
@@ -427,6 +423,24 @@ func (s *MCPServer) passesToolFilters(ctx context.Context, tool mcp.Tool) bool {
 		}
 	}
 	return false
+}
+
+// toolFilterSnapshot returns the tool filters as they are now.
+//
+// Every filter and middleware chain of the server, for tools, prompts and
+// resources alike, follows the rule stated here. Filters and middlewares are
+// registered by appending to a slice under its lock, never changed in place
+// or removed, so the slice a reader takes under the read lock holds the same
+// callbacks once the lock is released. The callbacks therefore run outside
+// the lock: the filters, the middlewares while they wrap a handler, and the
+// handler. One that panics does not leave the lock held, and one that
+// registers another filter or middleware, which takes the write lock, does
+// not deadlock.
+func (s *MCPServer) toolFilterSnapshot() []ToolFilterFunc {
+	s.toolFiltersMu.RLock()
+	filters := s.toolFilters
+	s.toolFiltersMu.RUnlock()
+	return filters
 }
 
 func (s *MCPServer) handleListTools(
@@ -565,10 +579,8 @@ func (s *MCPServer) handleToolCall(
 		}
 	}
 
-	// The handler runs inside the middlewares, outermost first. The chain is
-	// built outside the lock, from the slice as it is now: Use only appends,
-	// so what the slice holds does not change under a reader, and a
-	// middleware that panics while wrapping does not keep the lock.
+	// The handler runs inside the middlewares, outermost first, the chain
+	// built outside the lock (see toolFilterSnapshot).
 	finalHandler := tool.Handler
 	s.toolMiddlewareMu.RLock()
 	mw := s.toolHandlerMiddlewares

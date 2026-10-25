@@ -109,27 +109,23 @@ func (s *MCPServer) filteredPrompts(ctx context.Context) []mcp.Prompt {
 		return prompts[i].Name < prompts[j].Name
 	})
 
-	// Apply prompt filters if any are defined
-	s.promptFiltersMu.RLock()
-	if len(s.promptFilters) > 0 {
-		for _, filter := range s.promptFilters {
-			prompts = filter(ctx, prompts)
-		}
+	// Apply prompt filters if any are defined, outside the lock (see
+	// toolFilterSnapshot).
+	for _, filter := range s.promptFilterSnapshot() {
+		prompts = filter(ctx, prompts)
 	}
-	s.promptFiltersMu.RUnlock()
 
 	return prompts
 }
 
 func (s *MCPServer) passesPromptFilters(ctx context.Context, prompt mcp.Prompt) bool {
-	s.promptFiltersMu.RLock()
-	defer s.promptFiltersMu.RUnlock()
-	if len(s.promptFilters) == 0 {
+	filters := s.promptFilterSnapshot()
+	if len(filters) == 0 {
 		return true
 	}
 
 	prompts := []mcp.Prompt{prompt}
-	for _, filter := range s.promptFilters {
+	for _, filter := range filters {
 		prompts = filter(ctx, prompts)
 		if len(prompts) == 0 {
 			return false
@@ -142,6 +138,15 @@ func (s *MCPServer) passesPromptFilters(ctx context.Context, prompt mcp.Prompt) 
 		}
 	}
 	return false
+}
+
+// promptFilterSnapshot returns the prompt filters as they are now, to run
+// outside the lock as toolFilterSnapshot describes.
+func (s *MCPServer) promptFilterSnapshot() []PromptFilterFunc {
+	s.promptFiltersMu.RLock()
+	filters := s.promptFilters
+	s.promptFiltersMu.RUnlock()
+	return filters
 }
 
 func (s *MCPServer) handleListPrompts(
@@ -212,16 +217,15 @@ func (s *MCPServer) handleGetPrompt(
 		}
 	}
 
+	// The handler runs inside the middlewares, outermost first, the chain
+	// built outside the lock (see toolFilterSnapshot).
 	finalHandler := handler
-
 	s.promptMiddlewareMu.RLock()
 	mw := s.promptHandlerMiddlewares
-
-	// Apply middlewares in reverse order
+	s.promptMiddlewareMu.RUnlock()
 	for _, m := range slices.Backward(mw) {
 		finalHandler = m(finalHandler)
 	}
-	s.promptMiddlewareMu.RUnlock()
 
 	result, err := finalHandler(ctx, request)
 	if err != nil {

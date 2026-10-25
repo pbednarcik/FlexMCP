@@ -288,16 +288,7 @@ func (s *MCPServer) handleReadResource(
 		handler := globalResource.handler
 		s.resourcesMu.RUnlock()
 
-		finalHandler := handler
-		s.resourceMiddlewareMu.RLock()
-		mw := s.resourceHandlerMiddlewares
-		// Apply middlewares in reverse order
-		for _, m := range slices.Backward(mw) {
-			finalHandler = m(finalHandler)
-		}
-		s.resourceMiddlewareMu.RUnlock()
-
-		contents, err := finalHandler(ctx, request)
+		contents, err := s.wrapResourceHandler(handler)(ctx, request)
 		if err != nil {
 			return nil, handlerError(ctx, id, err)
 		}
@@ -331,17 +322,7 @@ func (s *MCPServer) handleReadResource(
 	s.resourcesMu.RUnlock()
 
 	if matched {
-		// If a match is found, then we have a final handler and can
-		// apply middlewares.
-		s.resourceMiddlewareMu.RLock()
-		finalHandler := ResourceHandlerFunc(matchedHandler)
-		mw := s.resourceHandlerMiddlewares
-		// Apply middlewares in reverse order
-		for _, m := range slices.Backward(mw) {
-			finalHandler = m(finalHandler)
-		}
-		s.resourceMiddlewareMu.RUnlock()
-		contents, err := finalHandler(ctx, request)
+		contents, err := s.wrapResourceHandler(ResourceHandlerFunc(matchedHandler))(ctx, request)
 		if err != nil {
 			return nil, handlerError(ctx, id, err)
 		}
@@ -360,6 +341,19 @@ func (s *MCPServer) handleReadResource(
 		),
 		data: map[string]any{"uri": request.Params.URI},
 	}
+}
+
+// wrapResourceHandler returns handler inside the resource middlewares,
+// outermost first, the chain built outside the lock (see
+// toolFilterSnapshot).
+func (s *MCPServer) wrapResourceHandler(handler ResourceHandlerFunc) ResourceHandlerFunc {
+	s.resourceMiddlewareMu.RLock()
+	mw := s.resourceHandlerMiddlewares
+	s.resourceMiddlewareMu.RUnlock()
+	for _, m := range slices.Backward(mw) {
+		handler = m(handler)
+	}
+	return handler
 }
 
 // readResourceResult wraps the contents a resource handler returned. contents
