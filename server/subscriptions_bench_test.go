@@ -67,18 +67,21 @@ func broadcaster(tb testing.TB, sessions, size int, inProcess bool) (*MCPServer,
 
 // BenchmarkBroadcastListChanged measures a tool list change broadcast to 0, 10
 // and 1000 sessions, a tenth of them listening, of the stdio kind or in
-// process, each drained as a transport's writer would.
+// process, each drained as a transport's writer would. Each drainer stops on
+// a channel of its own, so the drainers do not contend on one.
 func BenchmarkBroadcastListChanged(b *testing.B) {
 	for _, listening := range []string{"stdio", "inprocess"} {
 		for _, sessions := range []int{0, 10, 1000} {
 			b.Run(fmt.Sprintf("%s/sessions=%d", listening, sessions), func(b *testing.B) {
 				srv, channels := broadcaster(b, sessions, 64, listening == "inprocess")
 				for _, ch := range channels {
+					done := make(chan struct{})
+					b.Cleanup(func() { close(done) })
 					go func() {
 						for {
 							select {
 							case <-ch:
-							case <-b.Context().Done():
+							case <-done:
 								return
 							}
 						}
