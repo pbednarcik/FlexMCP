@@ -72,28 +72,28 @@ type ServerTool struct {
 	Tool    mcp.Tool
 	Handler ToolHandlerFunc
 
-	// ArgumentsOnDemand, when true, has the server leave a call's arguments
-	// undecoded until the handler asks for them: Params.Arguments is nil, and
-	// GetArguments, and every Get*, Require* and ParseArgument helper built on
-	// it, decodes RawArguments into the map the first time one is called. The
-	// map is decoded once per call and shared by every copy of the request; it
-	// holds what Params.Arguments would have held. A handler that reads its
-	// arguments only through those getters, BindArguments or RawArguments, as
-	// a handler from NewTypedToolHandler or NewStructuredToolHandler does,
-	// works unchanged and does not pay for a map it may never read. A
-	// handler that reads every argument through the getters gains nothing
-	// from opting in: the map is built all the same, and the opt-in adds a
-	// scan of the arguments' numbers, which gives a malformed call the error
-	// it gets without the opt-in.
+	// ArgumentsOnDemand, when true, leaves a call's arguments undecoded until
+	// the handler asks for them. Params.Arguments is nil; GetArguments, and
+	// every Get*, Require* and ParseArgument helper built on it, decodes
+	// RawArguments the first time one is called, into one map per call that
+	// every copy of the request shares and that holds what Params.Arguments
+	// would have held. A handler that reads its arguments only through those
+	// getters, BindArguments or RawArguments, as one from NewTypedToolHandler
+	// or NewStructuredToolHandler does, works unchanged and does not pay for a
+	// map it may never read. One that reads every argument through the getters
+	// gains nothing: the map is built all the same, plus a scan of the numbers
+	// that gives a malformed call the error it gets without the opt-in.
 	//
 	// Code that reads Params.Arguments itself sees nil for this tool's calls:
 	// the handler, tool handler middlewares, and the hooks before and after
 	// the call. It must call GetArguments instead. A hook that assigns
-	// Params.Arguments a non-nil value still wins: the getters and input
-	// validation read what it left. One that assigns nil does not, since nil
-	// is what the field already holds: they read the arguments as sent.
-	// RawArguments, BindArguments, GetRawArguments, input validation and the
-	// error a call with malformed arguments gets are unchanged.
+	// Params.Arguments a non-nil value wins: the getters and input validation
+	// read it. One that assigns nil does not, nil being what the field holds:
+	// they read the arguments as sent. RawArguments, BindArguments,
+	// GetRawArguments, input validation and the error a call with malformed
+	// arguments gets are unchanged. A call decoded before its tool opted in,
+	// as when the tool is registered again with the opt-in during the call,
+	// keeps its decoded arguments: its handler sees Params.Arguments filled.
 	ArgumentsOnDemand bool
 }
 

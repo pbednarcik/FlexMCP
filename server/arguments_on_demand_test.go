@@ -412,3 +412,49 @@ func TestArgumentsOnDemandTypedComplexAllocations(t *testing.T) {
 	t.Logf("allocations per typed complex call: %v at once, %v on demand", eager, onDemand)
 	assert.LessOrEqual(t, onDemand, 105.0, "allocations per typed complex tools/call on demand")
 }
+
+// A call decoded at once before its tool opted in, here when the hook before
+// the call registers the tool again with ArgumentsOnDemand, keeps the
+// arguments it was decoded with: the handler and the hooks after the call, on
+// success and on error, see Params.Arguments filled, not nil.
+func TestArgumentsOnDemandToolOptedInDuringTheCall(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint("fail ", fail), func(t *testing.T) {
+			var srv *MCPServer
+			seen := newOnDemandSeen()
+			plain := ServerTool{
+				Tool: mcp.NewTool("echo", mcp.WithString("region")),
+				Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					seen.see("handler", &r)
+					if fail {
+						return nil, errors.New("refused")
+					}
+					return mcp.NewToolResultText("ok"), nil
+				},
+			}
+			onDemand := plain
+			onDemand.ArgumentsOnDemand = true
+			hooks := &Hooks{}
+			hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) { srv.SetTools(onDemand) })
+			hooks.AddAfterCallTool(func(_ context.Context, _ any, r *mcp.CallToolRequest, _ any) { seen.see("after hook", r) })
+			hooks.AddOnError(func(_ context.Context, _ any, method mcp.MCPMethod, message any, _ error) {
+				if r, ok := message.(*mcp.CallToolRequest); ok && method == mcp.MethodToolsCall {
+					seen.see("error hook", r)
+				}
+			})
+			srv = NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithHooks(hooks))
+			srv.AddTools(plain)
+			onDemandCall(t, srv, `{"region":"r"}`)
+			require.True(t, srv.toolReadsArgumentsOnDemand("echo"), "the tool did not opt in during the call")
+			reader := "after hook"
+			if fail {
+				reader = "error hook"
+			}
+			for _, r := range []string{"handler", reader} {
+				require.Contains(t, seen.argumentsNil, r, "%s did not run", r)
+				assert.False(t, seen.argumentsNil[r], "%s: Params.Arguments nil", r)
+				assert.Equal(t, "r", seen.region[r], "%s: GetString", r)
+			}
+		})
+	}
+}
