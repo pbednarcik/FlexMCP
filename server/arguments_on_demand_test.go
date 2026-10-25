@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/pbednarcik/flexmcp/mcp"
@@ -14,6 +15,7 @@ import (
 
 // onDemandSeen records what each reader of a call saw of its arguments.
 type onDemandSeen struct {
+	mu           sync.Mutex // a task's handler records from its own goroutine
 	argumentsNil map[string]bool
 	region       map[string]string
 }
@@ -23,6 +25,8 @@ func newOnDemandSeen() *onDemandSeen {
 }
 
 func (s *onDemandSeen) see(reader string, r *mcp.CallToolRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.argumentsNil[reader] = r.Params.Arguments == nil
 	s.region[reader] = r.GetString("region", "")
 }
@@ -415,46 +419,82 @@ func TestArgumentsOnDemandTypedComplexAllocations(t *testing.T) {
 
 // A call decoded at once before its tool opted in, here when the hook before
 // the call registers the tool again with ArgumentsOnDemand, keeps the
-// arguments it was decoded with: the handler and the hooks after the call, on
-// success and on error, see Params.Arguments filled, not nil.
+// arguments it was decoded with: the handler and the hooks after the call see
+// Params.Arguments filled, not nil, whether the call runs at once or as a
+// task, with input validation or without, on success and on error.
 func TestArgumentsOnDemandToolOptedInDuringTheCall(t *testing.T) {
-	for _, fail := range []bool{false, true} {
-		t.Run(fmt.Sprint("fail ", fail), func(t *testing.T) {
-			var srv *MCPServer
-			seen := newOnDemandSeen()
-			plain := ServerTool{
-				Tool: mcp.NewTool("echo", mcp.WithString("region")),
-				Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-					seen.see("handler", &r)
-					if fail {
-						return nil, errors.New("refused")
-					}
-					return mcp.NewToolResultText("ok"), nil
-				},
+	for _, task := range []bool{false, true} {
+		for _, validate := range []bool{false, true} {
+			for _, fail := range []bool{false, true} {
+				t.Run(fmt.Sprintf("task %v, validation %v, fail %v", task, validate, fail), func(t *testing.T) {
+					optedInDuringTheCall(t, task, validate, fail)
+				})
 			}
-			onDemand := plain
-			onDemand.ArgumentsOnDemand = true
-			hooks := &Hooks{}
-			hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) { srv.SetTools(onDemand) })
-			hooks.AddAfterCallTool(func(_ context.Context, _ any, r *mcp.CallToolRequest, _ any) { seen.see("after hook", r) })
-			hooks.AddOnError(func(_ context.Context, _ any, method mcp.MCPMethod, message any, _ error) {
-				if r, ok := message.(*mcp.CallToolRequest); ok && method == mcp.MethodToolsCall {
-					seen.see("error hook", r)
-				}
-			})
-			srv = NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithHooks(hooks))
-			srv.AddTools(plain)
-			onDemandCall(t, srv, `{"region":"r"}`)
-			require.True(t, srv.toolReadsArgumentsOnDemand("echo"), "the tool did not opt in during the call")
-			reader := "after hook"
+		}
+	}
+}
+
+// optedInDuringTheCall makes one call of TestArgumentsOnDemandToolOptedInDuringTheCall:
+// as a task, with input validation, to a handler that fails, as asked.
+func optedInDuringTheCall(t *testing.T, task, validate, fail bool) {
+	var srv *MCPServer
+	seen := newOnDemandSeen()
+	plain := ServerTool{
+		Tool: mcp.NewTool("echo", mcp.WithString("region"), mcp.WithTaskSupport(mcp.TaskSupportOptional)),
+		Handler: func(_ context.Context, r mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			seen.see("handler", &r)
 			if fail {
-				reader = "error hook"
+				return nil, errors.New("refused")
 			}
-			for _, r := range []string{"handler", reader} {
-				require.Contains(t, seen.argumentsNil, r, "%s did not run", r)
-				assert.False(t, seen.argumentsNil[r], "%s: Params.Arguments nil", r)
-				assert.Equal(t, "r", seen.region[r], "%s: GetString", r)
-			}
-		})
+			return mcp.NewToolResultText("ok"), nil
+		},
+	}
+	onDemand := plain
+	onDemand.ArgumentsOnDemand = true
+	hooks := &Hooks{}
+	hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) { srv.SetTools(onDemand) })
+	hooks.AddAfterCallTool(func(_ context.Context, _ any, r *mcp.CallToolRequest, _ any) { seen.see("after hook", r) })
+	hooks.AddOnError(func(_ context.Context, _ any, method mcp.MCPMethod, message any, _ error) {
+		if r, ok := message.(*mcp.CallToolRequest); ok && method == mcp.MethodToolsCall {
+			seen.see("error hook", r)
+		}
+	})
+	opts := []ServerOption{WithToolCapabilities(false), WithTaskCapabilities(true, true, true), WithHooks(hooks)}
+	if validate {
+		opts = append(opts, WithInputSchemaValidation())
+	}
+	srv = NewMCPServer("test", "1.0.0", opts...)
+	srv.AddTools(plain)
+	params := `{"name":"echo","arguments":{"region":"r"}}`
+	if task {
+		params = `{"name":"echo","arguments":{"region":"r"},"task":{}}`
+	}
+	out, err := json.Marshal(srv.HandleMessage(t.Context(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+params+`}`)))
+	require.NoError(t, err)
+	require.True(t, srv.toolReadsArgumentsOnDemand("echo"), "the tool did not opt in during the call")
+
+	// A synchronous call's failure reaches the error hook. A task's reaches its
+	// tasks/result, which also waits for the handler; the call that created the
+	// task succeeded, so the hook after it ran.
+	reader := "after hook"
+	if task {
+		var created struct {
+			Result struct {
+				Task struct {
+					TaskID string `json:"taskId"`
+				} `json:"task"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(out, &created))
+		require.NotEmpty(t, created.Result.Task.TaskID, "the call created no task: %s", out)
+		_, reqErr := srv.handleTaskResult(t.Context(), 2, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: created.Result.Task.TaskID}})
+		assert.Equal(t, fail, reqErr != nil, "tasks/result error: %v", reqErr)
+	} else if fail {
+		reader = "error hook"
+	}
+	for _, r := range []string{"handler", reader} {
+		require.Contains(t, seen.argumentsNil, r, "%s did not run: %s", r, out)
+		assert.False(t, seen.argumentsNil[r], "%s: Params.Arguments nil", r)
+		assert.Equal(t, "r", seen.region[r], "%s: GetString", r)
 	}
 }
