@@ -279,7 +279,7 @@ func (s *MCPServer) deliverBroadcast(session ClientSession, notification mcp.JSO
 			go func(sessionID string, hooks *Hooks) {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf("mcp-go: panic in OnError hook (notification blocked, session %s): %v", sessionID, r)
+						log.Printf("flexmcp: panic in OnError hook (notification blocked, session %s): %v", sessionID, r)
 					}
 				}()
 				ctx := context.Background()
@@ -311,7 +311,7 @@ func (s *MCPServer) sendNotificationToSpecificClient(session ClientSession, noti
 			go func(sID string, hooks *Hooks) {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf("mcp-go: panic in OnError hook (notification blocked, session %s): %v", sID, r)
+						log.Printf("flexmcp: panic in OnError hook (notification blocked, session %s): %v", sID, r)
 					}
 				}()
 				// Use the error hook to report the blocked channel
@@ -392,7 +392,7 @@ func (s *MCPServer) sendNotificationCore(
 			go func(sessionID string, hooks *Hooks) {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf("mcp-go: panic in OnError hook (notification blocked, session %s): %v", sessionID, r)
+						log.Printf("flexmcp: panic in OnError hook (notification blocked, session %s): %v", sessionID, r)
 					}
 				}()
 				// Use the error hook to report the blocked channel

@@ -26,7 +26,7 @@ var metaDiffCorpus = []string{
 	// unknown key
 	metaClaudeCode,
 	`{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test-client","version":"1.0.0"},"io.modelcontextprotocol/protocolVersion":"2026-07-28","progressToken":"p-1"}`,
-	`{"io.modelcontextprotocol/clientCapabilities":{"elicitation":{},"roots":{},"sampling":{}},"io.modelcontextprotocol/clientInfo":{"name":"mcp-go","version":"(devel)"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}`,
+	`{"io.modelcontextprotocol/clientCapabilities":{"elicitation":{},"roots":{},"sampling":{}},"io.modelcontextprotocol/clientInfo":{"name":"flexmcp","version":"(devel)"},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}`,
 	`{"io.modelcontextprotocol/clientCapabilities":{"elicitation":{"form":{},"url":{}},"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}},"roots":{},"sampling":{"context":{},"tools":{}}},"io.modelcontextprotocol/clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.97"},"io.modelcontextprotocol/protocolVersion":"2026-07-28","progressToken":7}`,
 	`{"io.modelcontextprotocol/protocolVersion":"2025-11-25","io.modelcontextprotocol/logLevel":"warning","io.modelcontextprotocol/clientCapabilities":{}}`,
 	`{"claudecode/toolUseId":"toolu_01ABCDEFGHJKMNPQRSTUVWXYZ","progressToken":"p-1"}`,

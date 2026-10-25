@@ -406,7 +406,7 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 	if err != nil {
 		return nil, fmt.Errorf("decode tool %q input schema: %w", toolName, err)
 	}
-	resourceURL := fmt.Sprintf("mem:///mcp-go/tools/%s/input-schema.json", toolName)
+	resourceURL := fmt.Sprintf("mem:///flexmcp/tools/%s/input-schema.json", toolName)
 	c := jsonschema.NewCompiler()
 	if err := c.AddResource(resourceURL, doc); err != nil {
 		return nil, fmt.Errorf("register tool %q input schema: %w", toolName, err)

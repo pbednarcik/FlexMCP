@@ -21,7 +21,7 @@ func main() {
 	}
 
 	mcpServer := server.NewMCPServer(
-		"mcp-go-conformance",
+		"flexmcp-conformance",
 		"1.0.0",
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),

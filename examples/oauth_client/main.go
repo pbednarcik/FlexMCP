@@ -61,7 +61,7 @@ func main() {
 		}{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo: mcp.Implementation{
-				Name:    "mcp-go-oauth-example",
+				Name:    "flexmcp-oauth-example",
 				Version: "0.1.0",
 			},
 		},
@@ -77,7 +77,7 @@ func main() {
 			}{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 				ClientInfo: mcp.Implementation{
-					Name:    "mcp-go-oauth-example",
+					Name:    "flexmcp-oauth-example",
 					Version: "0.1.0",
 				},
 			},
@@ -131,7 +131,7 @@ func maybeAuthorize(err error) {
 		}
 
 		if oauthHandler.GetClientID() == "" {
-			err = oauthHandler.RegisterClient(context.Background(), "mcp-go-oauth-example")
+			err = oauthHandler.RegisterClient(context.Background(), "flexmcp-oauth-example")
 			if err != nil {
 				log.Fatalf("Failed to register client: %v", err)
 			}

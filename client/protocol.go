@@ -149,7 +149,7 @@ func defaultClientInfo() mcp.Implementation {
 // for it: a replaced dependency carries the replacement's version, and a
 // replacement without one (a local checkout) is "(devel)".
 func clientInfoFrom(info *debug.BuildInfo) mcp.Implementation {
-	result := mcp.Implementation{Name: "mcp-go", Version: "(devel)"}
+	result := mcp.Implementation{Name: "flexmcp", Version: "(devel)"}
 	if info == nil {
 		return result
 	}

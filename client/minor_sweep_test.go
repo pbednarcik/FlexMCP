@@ -91,7 +91,7 @@ func TestClientInfoIsSentByDefault(t *testing.T) {
 	require.NoError(t, err)
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, "mcp-go", seen.Name)
+	assert.Equal(t, "flexmcp", seen.Name)
 	assert.NotEmpty(t, seen.Version)
 }
 
@@ -364,7 +364,7 @@ func TestDefaultClientInfoReadsTheBuildInfo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			info := clientInfoFrom(tt.info)
-			assert.Equal(t, "mcp-go", info.Name)
+			assert.Equal(t, "flexmcp", info.Name)
 			assert.Equal(t, tt.want, info.Version)
 		})
 	}
