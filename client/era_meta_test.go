@@ -99,7 +99,7 @@ func TestRequestMetaKeepsTheRequestsOwnMembers(t *testing.T) {
 		want(t, c, sentMeta(t, fields))
 	})
 	t.Run("own _meta", func(t *testing.T) {
-		fields := sentParams(t, c, c.currentEra(), map[string]any{"name": "tool", "_meta": map[string]any{"progressToken": 12345678901234567}})
+		fields := sentParams(t, c, c.currentEra(), map[string]any{"name": "tool", "_meta": map[string]any{"progressToken": int64(12345678901234567)}})
 		assert.JSONEq(t, `"tool"`, string(fields["name"]))
 		meta := sentMeta(t, fields)
 		want(t, c, meta)

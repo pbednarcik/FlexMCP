@@ -10,14 +10,16 @@ import (
 
 // coerceWant is what spf13/cast v1.7.1 returned for one input, recorded in
 // coerce_golden_test.go; the coercion helpers must keep answering the same.
+// Int and Uint hold toInt and toUint widened to 64 bits, so the amd64
+// recording's values above 32 bits still compile where int is 32 bits wide.
 type coerceWant struct {
 	Bool        bool
 	Int64       int64
 	Int32       int32
 	Int16       int16
 	Int8        int8
-	Int         int
-	Uint        uint
+	Int         int64
+	Uint        uint64
 	Uint64      uint64
 	Uint32      uint32
 	Uint16      uint16
@@ -94,8 +96,8 @@ func TestCoerceParityWithCast(t *testing.T) {
 			f64, f64err := toFloat64E(in.v)
 			i64, i64err := toInt64E(in.v)
 			got := coerceWant{
-				Bool: toBool(in.v), Int64: toInt64(in.v), Int32: toInt32(in.v), Int16: toInt16(in.v), Int8: toInt8(in.v), Int: toInt(in.v),
-				Uint: toUint(in.v), Uint64: toUint64(in.v), Uint32: toUint32(in.v), Uint16: toUint16(in.v), Uint8: toUint8(in.v),
+				Bool: toBool(in.v), Int64: toInt64(in.v), Int32: toInt32(in.v), Int16: toInt16(in.v), Int8: toInt8(in.v), Int: int64(toInt(in.v)),
+				Uint: uint64(toUint(in.v)), Uint64: toUint64(in.v), Uint32: toUint32(in.v), Uint16: toUint16(in.v), Uint8: toUint8(in.v),
 				Float32: toFloat32(in.v), Float64: toFloat64(in.v), String: toString(in.v),
 				Float64E: f64, Float64OK: f64err == nil, Int64E: i64, Int64OK: i64err == nil,
 				StringSlice: toStringSlice(in.v), StringMap: toStringMap(in.v),
