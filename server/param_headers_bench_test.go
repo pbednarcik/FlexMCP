@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -52,6 +54,60 @@ func BenchmarkParamHeadersValidation(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				_ = srv.validateStandardHeadersForMessage(ctx, headers, mcp.ProtocolVersion20260728, mcp.MethodToolsCall, message)
+			}
+		})
+	}
+}
+
+// BenchmarkStreamableHTTPToolCallHeaders drives ServeHTTP with one modern
+// tools/call per iteration to a tool that binds 0, 1 or 3 of its three
+// arguments to Mcp-Param headers, each header sent with its argument's value.
+func BenchmarkStreamableHTTPToolCallHeaders(b *testing.B) {
+	names := []string{"region", "zone", "rack"}
+	headers := []string{"Region", "Zone", "Rack"}
+	for _, bound := range []int{0, 1, 3} {
+		b.Run(fmt.Sprintf("bindings=%d", bound), func(b *testing.B) {
+			var properties strings.Builder
+			arguments := make(map[string]any, len(names))
+			for i, name := range names {
+				if i > 0 {
+					properties.WriteByte(',')
+				}
+				annotation := ""
+				if i < bound {
+					annotation = `,"x-mcp-header":"` + headers[i] + `"`
+				}
+				fmt.Fprintf(&properties, `"%s":{"type":"string"%s}`, name, annotation)
+				arguments[name] = "us-east-1"
+			}
+			schema := json.RawMessage(`{"type":"object","properties":{` + properties.String() + `},"required":["region"]}`)
+			srv := NewMCPServer("bench", "1.0.0", WithToolCapabilities(false))
+			srv.AddTool(mcp.NewToolWithRawSchema("echo", "echoes region", schema),
+				func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return mcp.NewToolResultText(request.GetString("region", "")), nil
+				})
+			httpSrv := NewStreamableHTTPServer(srv)
+			body, header := modernToolCall(b, arguments)
+			for _, name := range headers[:bound] {
+				header.Set(mcp.HeaderParamPrefix+name, "us-east-1")
+			}
+
+			// One call outside the loop proves the leg answers the region, and
+			// a bound header that does not match its argument is refused.
+			if w := serveOne(httpSrv, body, header); w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"text":"us-east-1"`)) {
+				b.Fatalf("bindings %d: status %d body %.300s", bound, w.Code, w.Body.String())
+			}
+			if bound > 0 {
+				mismatched := header.Clone()
+				mismatched.Set(mcp.HeaderParamPrefix+headers[0], "eu-west-1")
+				if w := serveOne(httpSrv, body, mismatched); !bytes.Contains(w.Body.Bytes(), []byte("does not match")) {
+					b.Fatalf("bindings %d: mismatched header not refused: status %d body %.300s", bound, w.Code, w.Body.String())
+				}
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				serveOne(httpSrv, body, header)
 			}
 		})
 	}

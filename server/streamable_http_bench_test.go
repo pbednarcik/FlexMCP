@@ -40,6 +40,34 @@ func toolCallRequest(b *testing.B, legacy bool) (body []byte, header http.Header
 	return body, header
 }
 
+// modernToolCall is a 2026-07-28 tools/call of echo with arguments, the way
+// bench/compare's harness sends one: modern _meta, the protocol version,
+// method and name headers. Unlike toolCallRequest(b, false), it sends no
+// progressToken and sets the name header without EncodeHeaderValue.
+func modernToolCall(tb testing.TB, arguments any) (body []byte, header http.Header) {
+	tb.Helper()
+	header = http.Header{"Content-Type": {"application/json"}, "Accept": {"application/json, text/event-stream"}}
+	header.Set(mcp.HeaderProtocolVersion, mcp.ProtocolVersion20260728)
+	header.Set(mcp.HeaderMethod, string(mcp.MethodToolsCall))
+	header.Set(mcp.HeaderName, "echo")
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": mcp.MethodToolsCall, "params": map[string]any{
+		"name": "echo", "arguments": arguments, "_meta": modernMeta(),
+	}})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return body, header
+}
+
+// serveOne posts body with header to h, no network, and returns what h wrote.
+func serveOne(h http.Handler, body []byte, header http.Header) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	r.Header = header
+	h.ServeHTTP(w, r)
+	return w
+}
+
 // BenchmarkStreamableHTTPToolCall drives ServeHTTP with one tools/call per
 // iteration, no network: the whole per-request cost of the transport and the
 // core. Legs: the modern request against a small schema; the same with

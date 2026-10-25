@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -384,37 +383,15 @@ func TestArgumentsOnDemandTaskToolSwappedDuringTheCall(t *testing.T) {
 // to it.
 func complexTypedCall(t testing.TB, onDemand bool) (*MCPServer, json.RawMessage) {
 	t.Helper()
-	var args strings.Builder
-	args.WriteString(`{"items":[`)
-	for i := range 20 {
-		if i > 0 {
-			args.WriteByte(',')
-		}
-		fmt.Fprintf(&args, `{"id":%d,"name":"item-%02d","tags":["alpha","beta","gamma"]}`, i, i)
-	}
-	args.WriteByte(']')
-	for i := range 40 {
-		fmt.Fprintf(&args, `,"p%03d":"value %03d"`, i, i)
-	}
-	args.WriteString(`,"region":"us-east-1"}`)
-	type item struct {
-		ID   int      `json:"id"`
-		Name string   `json:"name"`
-		Tags []string `json:"tags"`
-	}
-	type complexArgs struct {
-		Region string `json:"region"`
-		Items  []item `json:"items"`
-	}
 	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false))
 	srv.AddTools(ServerTool{
 		Tool: mcp.NewTool("complex"),
-		Handler: mcp.NewTypedToolHandler(func(_ context.Context, _ mcp.CallToolRequest, a complexArgs) (*mcp.CallToolResult, error) {
+		Handler: mcp.NewTypedToolHandler(func(_ context.Context, _ mcp.CallToolRequest, a complexTypedArgs) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultText(a.Region), nil
 		}),
 		ArgumentsOnDemand: onDemand,
 	})
-	return srv, json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"complex","arguments":` + args.String() + `}}`)
+	return srv, json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"complex","arguments":` + string(complexArguments()) + `}}`)
 }
 
 // A typed complex call to a tool that opted in builds no arguments map: 259
