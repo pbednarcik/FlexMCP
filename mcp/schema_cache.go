@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -251,12 +255,242 @@ func LoadSchemaCache(path string) (*SchemaCache, error) {
 }
 
 // TypeKey returns the canonical cache key for the Go type T as derived from
-// reflection. The key is the package-qualified type name (e.g.
-// "main.WeatherInput"). Renaming or moving the type will change this key, so
-// callers that need a stable identifier across refactors should pass an
-// explicit key to [SchemaCache.Warm] and [WithCachedInputSchemaKey].
+// reflection: the type's name, then '#' and a fingerprint of its structure,
+// e.g. "example.com/app/tools.WeatherInput#1f3a5c7e9b0d2f41".
+//
+// The name spells named types with their full import path, inside pointers,
+// slices, arrays, maps and anonymous structs too, so two packages with the
+// same name never share a key. The fingerprint is a hash of everything schema
+// generation reads from the type: kinds, the names, tags, embedding and types
+// of exported and embedded struct fields, element and key types, array
+// lengths, and the same for every type T refers to. So two types declared
+// with one name in different functions of a package get different keys, and
+// stay apart however often T refers to each of them. Two types with the same
+// name and structure may share a key, which is safe because their schemas are
+// equal. The key holds no addresses and depends on no map order, so it is the
+// same in every process and on every platform: a cache saved after [WarmFor]
+// still hits in another process for the same type.
+//
+// Renaming, moving or changing the type changes this key, so callers that
+// need a stable identifier across refactors should pass an explicit key to
+// [SchemaCache.Warm] and [WithCachedInputSchemaKey]. A cache saved under older
+// keys, which named the package alone or carried no fingerprint, still loads;
+// a lookup by the new key misses and regenerates the schema.
+//
+// TypeKey reflects over the whole type on every call; it is meant for tool
+// construction, not for a request path.
 func TypeKey[T any]() string {
-	return reflect.TypeFor[T]().String()
+	t := reflect.TypeFor[T]()
+	var key strings.Builder
+	// The name is t.String() with import paths for package names: sized from
+	// it, the builder rarely grows twice.
+	key.Grow(len(t.String()) + 64 + 1 + fingerprintDigits)
+	writeTypeKey(&key, t)
+	key.WriteByte('#')
+	writeFingerprint(&key, t)
+	return key.String()
+}
+
+// fingerprintDigits is the length of a TypeKey fingerprint: a 64-bit hash in
+// hexadecimal.
+const fingerprintDigits = 16
+
+// writeFingerprint writes the fingerprint TypeKey gives t to key: the FNV-1a
+// 64-bit hash of t's structural spelling, as fingerprintDigits lowercase
+// hexadecimal digits.
+func writeFingerprint(key *strings.Builder, t reflect.Type) {
+	hash := fnv.New64a()
+	_, _ = hash.Write(typeSpelling(t))
+	sum := hash.Sum64()
+	const digits = "0123456789abcdef"
+	for shift := 4 * (fingerprintDigits - 1); shift >= 0; shift -= 4 {
+		key.WriteByte(digits[(sum>>shift)&0xf])
+	}
+}
+
+// typeSpelling is the structural spelling of t that TypeKey's fingerprint
+// hashes.
+func typeSpelling(t reflect.Type) []byte {
+	speller := typeSpeller{spelling: make([]byte, 0, 256)}
+	speller.spell(t)
+	return speller.spelling
+}
+
+// typeSpeller spells a type's structure: what schema generation reads from
+// it, and nothing that differs between processes or platforms.
+//
+// A named type is spelled by its import path and name, then '=' and its
+// underlying structure. The walk numbers named types from 1 in the order it
+// first meets them, an order that is fixed: fields in declaration order, a
+// map's key before its element. A named type met again, as in a recursive
+// type or in a second field of one type, is spelled '@' and its number:
+//
+//	example.com/app.Node=struct{Kids []@1 "";}
+//
+// So the spelling terminates and stays linear in the number of types, two
+// distinct types with one name stay apart wherever they recur, and two types
+// of one structure, numbered in one order, spell the same. Unexported fields
+// that are not embedded are left out, as schema generation leaves them out.
+// That keeps a standard type such as time.Time, whose schema is given by its
+// identity, spelled the same whatever unexported fields a Go release gives
+// it. Channels, functions and interfaces, which schema generation ignores or
+// leaves unrestricted, are spelled in full all the same, so their keys name
+// the types they hold.
+type typeSpeller struct {
+	spelling []byte
+	// seen holds the named types met so far, in the order met: a type's
+	// number is its index plus one.
+	seen []reflect.Type
+}
+
+// spell appends the spelling of t.
+func (s *typeSpeller) spell(t reflect.Type) {
+	if name := t.Name(); name != "" {
+		pkg := t.PkgPath()
+		if pkg == "" {
+			// A predeclared type: its name is its structure.
+			s.spelling = append(s.spelling, name...)
+			return
+		}
+		if number := slices.Index(s.seen, t); number >= 0 {
+			s.spelling = append(s.spelling, '@')
+			s.spelling = strconv.AppendInt(s.spelling, int64(number+1), 10)
+			return
+		}
+		s.seen = append(s.seen, t)
+		s.spelling = append(s.spelling, pkg...)
+		s.spelling = append(s.spelling, '.')
+		s.spelling = append(s.spelling, name...)
+		s.spelling = append(s.spelling, '=')
+	}
+	switch t.Kind() {
+	case reflect.Pointer:
+		s.spelling = append(s.spelling, '*')
+		s.spell(t.Elem())
+	case reflect.Slice:
+		s.spelling = append(s.spelling, "[]"...)
+		s.spell(t.Elem())
+	case reflect.Array:
+		s.spelling = append(s.spelling, '[')
+		s.spelling = strconv.AppendInt(s.spelling, int64(t.Len()), 10)
+		s.spelling = append(s.spelling, ']')
+		s.spell(t.Elem())
+	case reflect.Map:
+		s.spelling = append(s.spelling, "map["...)
+		s.spell(t.Key())
+		s.spelling = append(s.spelling, ']')
+		s.spell(t.Elem())
+	case reflect.Chan:
+		s.spelling = append(s.spelling, t.ChanDir().String()...)
+		s.spelling = append(s.spelling, ' ')
+		s.spell(t.Elem())
+	case reflect.Func:
+		s.spelling = append(s.spelling, "func("...)
+		for in := range t.Ins() {
+			s.spell(in)
+			s.spelling = append(s.spelling, ',')
+		}
+		if t.IsVariadic() {
+			s.spelling = append(s.spelling, "..."...)
+		}
+		s.spelling = append(s.spelling, ")("...)
+		for out := range t.Outs() {
+			s.spell(out)
+			s.spelling = append(s.spelling, ',')
+		}
+		s.spelling = append(s.spelling, ')')
+	case reflect.Interface:
+		s.spelling = append(s.spelling, "interface{"...)
+		for method := range t.Methods() {
+			if method.PkgPath != "" {
+				s.spelling = append(s.spelling, method.PkgPath...)
+				s.spelling = append(s.spelling, '.')
+			}
+			s.spelling = append(s.spelling, method.Name...)
+			s.spelling = append(s.spelling, ' ')
+			s.spell(method.Type)
+			s.spelling = append(s.spelling, ';')
+		}
+		s.spelling = append(s.spelling, '}')
+	case reflect.Struct:
+		s.spelling = append(s.spelling, "struct{"...)
+		for field := range t.Fields() {
+			if !field.Anonymous && !field.IsExported() {
+				continue
+			}
+			if field.Anonymous {
+				s.spelling = append(s.spelling, "embed "...)
+			}
+			if field.PkgPath != "" {
+				s.spelling = append(s.spelling, field.PkgPath...)
+				s.spelling = append(s.spelling, '.')
+			}
+			s.spelling = append(s.spelling, field.Name...)
+			s.spelling = append(s.spelling, ' ')
+			s.spell(field.Type)
+			s.spelling = append(s.spelling, ' ')
+			s.spelling = strconv.AppendQuote(s.spelling, string(field.Tag))
+			s.spelling = append(s.spelling, ';')
+		}
+		s.spelling = append(s.spelling, '}')
+	default:
+		s.spelling = append(s.spelling, t.Kind().String()...)
+	}
+}
+
+// writeTypeKey writes the name part of t's TypeKey to key.
+func writeTypeKey(key *strings.Builder, t reflect.Type) {
+	if name := t.Name(); name != "" {
+		if pkg := t.PkgPath(); pkg != "" {
+			key.WriteString(pkg)
+			key.WriteByte('.')
+		}
+		key.WriteString(name)
+		return
+	}
+	switch t.Kind() {
+	case reflect.Pointer:
+		key.WriteByte('*')
+		writeTypeKey(key, t.Elem())
+	case reflect.Slice:
+		key.WriteString("[]")
+		writeTypeKey(key, t.Elem())
+	case reflect.Array:
+		key.WriteByte('[')
+		key.WriteString(strconv.Itoa(t.Len()))
+		key.WriteByte(']')
+		writeTypeKey(key, t.Elem())
+	case reflect.Map:
+		key.WriteString("map[")
+		writeTypeKey(key, t.Key())
+		key.WriteByte(']')
+		writeTypeKey(key, t.Elem())
+	case reflect.Struct:
+		key.WriteString("struct {")
+		for i := range t.NumField() {
+			field := t.Field(i)
+			if i > 0 {
+				key.WriteByte(';')
+			}
+			key.WriteByte(' ')
+			if !field.Anonymous {
+				if field.PkgPath != "" {
+					key.WriteString(field.PkgPath)
+					key.WriteByte('.')
+				}
+				key.WriteString(field.Name)
+				key.WriteByte(' ')
+			}
+			writeTypeKey(key, field.Type)
+			if field.Tag != "" {
+				key.WriteByte(' ')
+				key.WriteString(strconv.Quote(string(field.Tag)))
+			}
+		}
+		key.WriteString(" }")
+	default:
+		key.WriteString(t.String())
+	}
 }
 
 // SchemaFor returns the JSON schema generated for the Go type T, formatted as
