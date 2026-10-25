@@ -5,7 +5,7 @@ go 1.27.2
 toolchain go1.27.3
 
 require (
-	github.com/mark3labs/mcp-go v1.2.1
+	github.com/mark3labs/mcp-go v1.3.0
 	github.com/pbednarcik/flexmcp/bench/compare/harness v0.0.0
 )
 

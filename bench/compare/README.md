@@ -6,7 +6,7 @@ The same tools/call, served by each library's Streamable HTTP handler, timed by 
 |---|---|
 | `harness/` | The shared requests (`testdata/`, written by `go run ./gen`), the checks and the timing legs |
 | `flexmcp/` | FlexMCP, the working tree of this repository |
-| `mcpgo/` | `github.com/mark3labs/mcp-go` v1.2.1, upstream |
+| `mcpgo/` | `github.com/mark3labs/mcp-go` v1.3.0, upstream |
 | `gosdk/` | `github.com/modelcontextprotocol/go-sdk` v1.8.0, the official SDK |
 | `run/` | Runs the three and compares them with benchstat |
 
