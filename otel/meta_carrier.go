@@ -29,10 +29,16 @@ type otelMetaPropagator struct {
 }
 
 func (o otelMetaPropagator) InjectMeta(ctx context.Context, meta *mcp.Meta) *mcp.Meta {
-	if meta == nil {
+	created := meta == nil
+	if created {
 		meta = &mcp.Meta{}
 	}
 	o.p.Inject(ctx, &metaCarrier{meta: meta})
+	if created && len(meta.AdditionalFields) == 0 {
+		// Nothing was injected: a nil meta stays nil, as the
+		// MetaPropagator contract says, rather than going out as an empty _meta.
+		return nil
+	}
 	return meta
 }
 

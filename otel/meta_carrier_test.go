@@ -284,3 +284,16 @@ func splitTraceparent(s string) []string {
 	parts = append(parts, s[start:])
 	return parts
 }
+
+// TestMetaPropagator_InjectWithoutSpanLeavesNilMeta pins the MetaPropagator
+// contract that InjectMeta returns nil when meta would remain empty: with no
+// span there is nothing to inject, so a nil meta stays nil.
+func TestMetaPropagator_InjectWithoutSpanLeavesNilMeta(t *testing.T) {
+	p := otelmcp.WrapMetaPropagator(propagation.TraceContext{})
+
+	assert.Nil(t, p.InjectMeta(t.Context(), nil))
+
+	// A caller-supplied meta comes back as it is.
+	supplied := &mcp.Meta{ProgressToken: "tok"}
+	assert.Same(t, supplied, p.InjectMeta(t.Context(), supplied))
+}
