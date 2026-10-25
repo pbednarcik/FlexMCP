@@ -70,8 +70,8 @@ func TestListenStreamsTheSubscribedNotificationsUntilStopped(t *testing.T) {
 }
 
 // A handler that writes a notification's _meta changes no other notification
-// the client receives: two list changes delivered back to back each carry
-// the stream's tag alone.
+// the client receives: two list changes delivered one after the other each
+// carry the stream's tag alone.
 func TestListenNotificationsDoNotShareTheirMeta(t *testing.T) {
 	s, _ := newListenServer(server.WithToolCapabilities(true))
 	c := connectInProcess(t, s, "")
@@ -93,14 +93,22 @@ func TestListenNotificationsDoNotShareTheirMeta(t *testing.T) {
 	ack := receive(t, received)
 	id := ack[mcp.MetaKeySubscriptionID]
 	require.NotNil(t, id)
+	want := map[string]any{mcp.MetaKeySubscriptionID: id}
 
+	// The server queues the acknowledgement before it records the stream, and
+	// replays at most one change of a type broadcast in between, so two
+	// changes sent at once may arrive as one. A change received proves the
+	// stream recorded; only then is the second sent. A change both broadcast
+	// and replayed arrives twice, and every copy must carry the tag alone.
 	s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
+	assert.Equal(t, want, receive(t, received), "first change")
 	s.SendNotificationToAllClients(mcp.MethodNotificationToolsListChanged, nil)
-	for i := range 2 {
-		assert.Equal(t, map[string]any{mcp.MetaKeySubscriptionID: id}, receive(t, received), "change %d", i)
-	}
+	assert.Equal(t, want, receive(t, received), "second change")
 	stop()
 	require.NoError(t, receive(t, done))
+	for len(received) > 0 {
+		assert.Equal(t, want, <-received, "a later copy")
+	}
 }
 
 func TestListenReturnsAtOnceWhenNothingWasEstablished(t *testing.T) {
