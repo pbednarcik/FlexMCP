@@ -480,8 +480,12 @@ func legacyMetadataCandidates(baseURL string) []legacyCandidate {
 	origin := base.Scheme + "://" + base.Host
 	var candidates []legacyCandidate
 	if strings.Trim(base.Path, "/") != "" {
+		// An issuer has no query or fragment (RFC 8414 §2), so the one
+		// expected under the path is the URL without them.
+		base.RawQuery, base.ForceQuery, base.Fragment, base.RawFragment = "", false, "", ""
+		issuer := strings.TrimSuffix(base.String(), "/")
 		for _, u := range authorizationServerMetadataURLs(baseURL) {
-			candidates = append(candidates, legacyCandidate{url: u, issuer: strings.TrimSuffix(baseURL, "/"), underPath: true})
+			candidates = append(candidates, legacyCandidate{url: u, issuer: issuer, underPath: true})
 		}
 	}
 	for _, u := range authorizationServerMetadataURLs(origin) {
@@ -654,14 +658,13 @@ func (h *OAuthHandler) getDefaultEndpoints(baseURL string) (*AuthServerMetadata,
 		return nil, fmt.Errorf("failed to parse base URL: %w", err)
 	}
 
-	// Discard any path component to get the authorization base URL
-	parsedURL.Path = ""
-	authBaseURL := parsedURL.String()
-
 	// Validate that the URL has a scheme and host
 	if parsedURL.Scheme == "" || parsedURL.Host == "" {
 		return nil, fmt.Errorf("invalid base URL: missing scheme or host in %q", baseURL)
 	}
+	// The endpoints hang off the origin alone: a path, query or fragment of
+	// the MCP URL would otherwise end up inside them.
+	authBaseURL := (&url.URL{Scheme: parsedURL.Scheme, Host: parsedURL.Host}).String()
 
 	return &AuthServerMetadata{
 		Issuer:                authBaseURL,
