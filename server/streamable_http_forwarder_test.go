@@ -5,24 +5,31 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pbednarcik/flexmcp/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// forwardersRunning counts the goroutines handlePost started that are still
-// running: the notification forwarders. These tests are not parallel, so the
-// count is theirs (parallel tests run after every sequential one); each
+// forwarderCreator is the line a goroutine dump gives a notification
+// forwarder: (*postExchange).forward starts it, in this package whatever the
+// module is called.
+var forwarderCreator = "created by " + reflect.TypeFor[postExchange]().PkgPath() + ".(*postExchange).forward in goroutine "
+
+// forwardersRunning counts the notification forwarders still running: the
+// goroutines (*postExchange).forward started. These tests are not parallel, so
+// the count is theirs (parallel tests run after every sequential one); each
 // compares against the count taken just before its request, so a goroutine an
 // earlier test left behind does not count.
 func forwardersRunning() int {
 	buf := make([]byte, 1<<22)
 	n := runtime.Stack(buf, true)
-	return strings.Count(string(buf[:n]), "created by github.com/pbednarcik/flexmcp/server.(*StreamableHTTPServer).handlePost")
+	return strings.Count(string(buf[:n]), forwarderCreator)
 }
 
 // postToolCall sends one legacy tools/call of name and returns the response.
@@ -59,24 +66,30 @@ func TestStreamableHTTPCallWithoutNotificationsStartsNoForwarder(t *testing.T) {
 // request.
 func TestStreamableHTTPForwarderEndsWithItsRequest(t *testing.T) {
 	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false))
+	var before, during int
 	srv.AddTool(mcp.NewTool("chatty"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		for range 3 {
 			if err := srv.SendNotificationToClient(ctx, "notifications/message", map[string]any{"level": "info", "data": "x"}); err != nil {
 				return nil, err
 			}
 		}
+		during = forwardersRunning()
 		return mcp.NewToolResultText("done"), nil
 	})
 	h := NewStreamableHTTPServer(srv)
 
-	before := forwardersRunning()
+	before = forwardersRunning()
 	w := postToolCall(t, h, "chatty")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	body := w.Body.String()
 	assert.Equal(t, 3, strings.Count(body, `"method":"notifications/message"`), body)
 	assert.Less(t, strings.LastIndex(body, "notifications/message"), strings.Index(body, `"result"`),
 		"every notification comes before the response")
-	assert.LessOrEqual(t, forwardersRunning(), before, "the forwarder outlived its request")
+	assert.Equal(t, before+1, during, "the call's notifications ran one forwarder")
+	// The forwarder says it has exited as it returns, so it may stay in the
+	// dump for a moment after the response; one that lingers on never leaves.
+	assert.Eventually(t, func() bool { return forwardersRunning() <= before }, time.Second, time.Millisecond,
+		"the forwarder outlived its request")
 }
 
 // A notification sent after the request stopped forwarding still finds a
