@@ -9,6 +9,16 @@ import (
 	"strings"
 )
 
+var (
+	// ErrAuthorizationParameterRepeated is returned when an authorization
+	// response repeats code, state, iss or error, which RFC 6749 §3.1 forbids.
+	// The error names the parameter.
+	ErrAuthorizationParameterRepeated = errors.New("authorization response repeats a parameter")
+	// ErrAuthorizationCodeMissing is returned when an authorization response
+	// carries neither a code nor an error.
+	ErrAuthorizationCodeMissing = errors.New("authorization response has no code")
+)
+
 // ProcessAuthorizationResponse processes an authorization response that
 // carries no iss, and exchanges the code for a token.
 //
@@ -24,14 +34,24 @@ func (h *OAuthHandler) ProcessAuthorizationResponse(ctx context.Context, code, s
 // user agent brought to the redirect URI, given as the callback's query
 // parameters, and exchanges the code for a token.
 //
-// The state is checked first and consumed, with the issuer recorded beside
+// The checks run in this order. A response that repeats code, state, iss or
+// error (RFC 6749 §3.1) is refused with ErrAuthorizationParameterRepeated
+// before the state is consumed, so the genuine callback can still follow.
+// Then the state is checked and consumed, with the issuer recorded beside
 // it. Then the issuer (RFC 9207, as the MCP authorization rules apply it):
 // an iss that is present must equal, as a plain string, the issuer the user
 // was sent to; an iss that is absent is rejected when that authorization
-// server advertises authorization_response_iss_parameter_supported. Only
-// then is an error response acted on, returned as an OAuthError, and the
-// code exchanged.
+// server advertises authorization_response_iss_parameter_supported. Then an
+// error response is returned as an OAuthError. Last, a response with no code
+// is refused with ErrAuthorizationCodeMissing, the state already consumed,
+// as upstream does; any other code is exchanged.
 func (h *OAuthHandler) ProcessAuthorizationCallback(ctx context.Context, params url.Values, codeVerifier string) error {
+	// A second value could pass the checks while another one is used.
+	for _, name := range []string{"code", "state", "iss", "error"} {
+		if len(params[name]) > 1 {
+			return fmt.Errorf("%w: %s", ErrAuthorizationParameterRepeated, name)
+		}
+	}
 	expectedIssuer, issuerRequired, expectedResource, err := h.consumeExpectedState(params.Get("state"))
 	if err != nil {
 		return err
@@ -47,7 +67,11 @@ func (h *OAuthHandler) ProcessAuthorizationCallback(ctx context.Context, params 
 			ErrorURI:         params.Get("error_uri"),
 		}
 	}
-	return h.exchangeAuthorizationCode(ctx, params.Get("code"), codeVerifier, issuer, expectedResource)
+	code := params.Get("code")
+	if code == "" {
+		return ErrAuthorizationCodeMissing
+	}
+	return h.exchangeAuthorizationCode(ctx, code, codeVerifier, issuer, expectedResource)
 }
 
 // consumeExpectedState checks state against the expected one and clears the
