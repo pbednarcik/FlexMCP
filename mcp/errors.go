@@ -116,10 +116,19 @@ func (e HeaderMismatchError) Error() string {
 	return fmt.Sprintf("header mismatch: %s: %s", e.Header, e.Reason)
 }
 
-// Is implements the errors.Is interface for better error handling.
+// Is reports whether target is a HeaderMismatchError, as a value or a
+// non-nil pointer, so errors.Is finds the type whatever its fields.
+//
+// A nil *HeaderMismatchError in a chain makes errors.Is panic: the method
+// has a value receiver, and Go dereferences the pointer before it runs.
 func (e HeaderMismatchError) Is(target error) bool {
-	_, ok := target.(HeaderMismatchError)
-	return ok
+	switch target := target.(type) {
+	case HeaderMismatchError:
+		return true
+	case *HeaderMismatchError:
+		return target != nil
+	}
+	return false
 }
 
 // HeaderMismatchData is the data member of a [HEADER_MISMATCH] error: the
@@ -210,41 +219,68 @@ func (e MissingRequiredClientCapabilityError) JSONRPCError() JSONRPCError {
 	}
 }
 
-// Is implements the errors.Is interface for better error handling.
+// Is reports whether target is a MissingRequiredClientCapabilityError, as a
+// value or a non-nil pointer, so errors.Is finds the type whatever its
+// fields. As for [HeaderMismatchError.Is], a nil pointer to the type in a
+// chain makes errors.Is panic.
 func (e MissingRequiredClientCapabilityError) Is(target error) bool {
-	_, ok := target.(MissingRequiredClientCapabilityError)
-	return ok
+	switch target := target.(type) {
+	case MissingRequiredClientCapabilityError:
+		return true
+	case *MissingRequiredClientCapabilityError:
+		return target != nil
+	}
+	return false
 }
 
-// Is implements the errors.Is interface for better error handling
+// Is reports whether target is a URLElicitationRequiredError, as a value or
+// a non-nil pointer, so errors.Is finds the type whatever its fields. As for
+// [HeaderMismatchError.Is], a nil pointer to the type in a chain makes
+// errors.Is panic.
 func (e URLElicitationRequiredError) Is(target error) bool {
-	_, ok := target.(URLElicitationRequiredError)
-	return ok
+	switch target := target.(type) {
+	case URLElicitationRequiredError:
+		return true
+	case *URLElicitationRequiredError:
+		return target != nil
+	}
+	return false
 }
 
-// Is implements the errors.Is interface for better error handling
+// Is reports whether target is an UnsupportedProtocolVersionError, as a
+// value or a non-nil pointer, so errors.Is finds the type whatever its
+// fields. As for [HeaderMismatchError.Is], a nil pointer to the type in a
+// chain makes errors.Is panic.
 func (e UnsupportedProtocolVersionError) Is(target error) bool {
-	_, ok := target.(UnsupportedProtocolVersionError)
-	return ok
+	switch target := target.(type) {
+	case UnsupportedProtocolVersionError:
+		return true
+	case *UnsupportedProtocolVersionError:
+		return target != nil
+	}
+	return false
 }
 
 // IsUnsupportedProtocolVersion checks if an error is an UnsupportedProtocolVersionError
 func IsUnsupportedProtocolVersion(err error) bool {
 	var target UnsupportedProtocolVersionError
-	return errors.As(err, &target)
+	var pointer *UnsupportedProtocolVersionError
+	return errors.As(err, &target) || errors.As(err, &pointer)
 }
 
 // IsHeaderMismatch checks if an error is a [HeaderMismatchError].
 func IsHeaderMismatch(err error) bool {
 	var target HeaderMismatchError
-	return errors.As(err, &target)
+	var pointer *HeaderMismatchError
+	return errors.As(err, &target) || errors.As(err, &pointer)
 }
 
 // IsMissingRequiredClientCapability checks if an error is a
 // [MissingRequiredClientCapabilityError].
 func IsMissingRequiredClientCapability(err error) bool {
 	var target MissingRequiredClientCapabilityError
-	return errors.As(err, &target)
+	var pointer *MissingRequiredClientCapabilityError
+	return errors.As(err, &target) || errors.As(err, &pointer)
 }
 
 // AsError maps JSONRPCErrorDetails to a Go error.
