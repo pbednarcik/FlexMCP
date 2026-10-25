@@ -93,15 +93,15 @@ func BenchmarkStreamableHTTPToolCallHeaders(b *testing.B) {
 			}
 
 			// One call outside the loop proves the leg answers the region, and
-			// a bound header that does not match its argument is refused.
+			// each bound header that does not match its argument is refused.
 			if w := serveOne(httpSrv, body, header); w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"text":"us-east-1"`)) {
 				b.Fatalf("bindings %d: status %d body %.300s", bound, w.Code, w.Body.String())
 			}
-			if bound > 0 {
+			for _, name := range headers[:bound] {
 				mismatched := header.Clone()
-				mismatched.Set(mcp.HeaderParamPrefix+headers[0], "eu-west-1")
+				mismatched.Set(mcp.HeaderParamPrefix+name, "eu-west-1")
 				if w := serveOne(httpSrv, body, mismatched); !bytes.Contains(w.Body.Bytes(), []byte("does not match")) {
-					b.Fatalf("bindings %d: mismatched header not refused: status %d body %.300s", bound, w.Code, w.Body.String())
+					b.Fatalf("bindings %d: mismatched %s header not refused: status %d body %.300s", bound, name, w.Code, w.Body.String())
 				}
 			}
 

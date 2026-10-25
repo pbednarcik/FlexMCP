@@ -85,14 +85,21 @@ func BenchmarkInputValidationArrayHook(b *testing.B) {
 			hooks := &Hooks{}
 			hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) {})
 			srv := NewMCPServer("bench", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation(), WithHooks(hooks))
+			// argumentsNil is what the handler last saw of Params.Arguments.
+			var argumentsNil bool
 			srv.AddTools(ServerTool{
-				Tool:              mcp.NewToolWithRawSchema("echo", "", json.RawMessage(`{"type":["array","object"],"items":{"type":"integer"}}`)),
-				Handler:           okHandler,
+				Tool: mcp.NewToolWithRawSchema("echo", "", json.RawMessage(`{"type":["array","object"],"items":{"type":"integer"}}`)),
+				Handler: func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					argumentsNil = request.Params.Arguments == nil
+					return mcp.NewToolResultText("ok"), nil
+				},
 				ArgumentsOnDemand: onDemand,
 			})
+			// One call outside the loop proves the leg is validated, and its
+			// handler is given Params.Arguments nil under the opt-in alone.
 			const arguments = `[1,2,3,4,5,6,7,8]`
-			if out := onDemandCall(b, srv, arguments); !strings.Contains(out, `"text":"ok"`) || strings.Contains(out, `"isError":true`) {
-				b.Fatalf("%s: %s", name, out)
+			if out := onDemandCall(b, srv, arguments); !strings.Contains(out, `"text":"ok"`) || strings.Contains(out, `"isError":true`) || argumentsNil != onDemand {
+				b.Fatalf("%s: Params.Arguments nil %v, %s", name, argumentsNil, out)
 			}
 			if out := onDemandCall(b, srv, `[1,"x"]`); !strings.Contains(out, `"isError":true`) {
 				b.Fatalf("%s: invalid arguments not refused: %s", name, out)
