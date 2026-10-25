@@ -685,8 +685,7 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string, next *er
 		// result of a type the request may not be answered with, is a modern
 		// server's answer (Transports.md rows 10 and 41): it is the caller's
 		// to see.
-		var mismatch mcp.HeaderMismatchError
-		if errors.As(err, &mismatch) || mcp.IsMissingRequiredClientCapability(err) || errors.Is(err, errUnacceptedResultType) {
+		if mcp.IsHeaderMismatch(err) || mcp.IsMissingRequiredClientCapability(err) || errors.Is(err, errUnacceptedResultType) {
 			modern = true
 			break
 		}
@@ -694,8 +693,8 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string, next *er
 		// A rejection naming a modern version both sides support identifies a
 		// modern server: renegotiate rather than fall back. The retry stays
 		// bounded even when that version is the one just rejected.
-		var unsupported mcp.UnsupportedProtocolVersionError
-		if !errors.As(err, &unsupported) || unsupported.Supported == nil || attempt > 0 {
+		unsupported, ok := asUnsupportedProtocolVersion(err)
+		if !ok || unsupported.Supported == nil || attempt > 0 {
 			break
 		}
 		negotiated := mcp.NegotiateMutuallySupportedVersion(unsupported.Supported)
@@ -713,6 +712,18 @@ func (c *Client) negotiateModern(ctx context.Context, preferred string, next *er
 
 	c.setTransportVersion(previous)
 	return nil, modern, err
+}
+
+// asUnsupportedProtocolVersion finds the version rejection in err, given as a
+// value or, by a transport of the caller's, as a pointer.
+func asUnsupportedProtocolVersion(err error) (mcp.UnsupportedProtocolVersionError, bool) {
+	if unsupported, ok := errors.AsType[mcp.UnsupportedProtocolVersionError](err); ok {
+		return unsupported, true
+	}
+	if pointer, ok := errors.AsType[*mcp.UnsupportedProtocolVersionError](err); ok && pointer != nil {
+		return *pointer, true
+	}
+	return mcp.UnsupportedProtocolVersionError{}, false
 }
 
 // summarizeVersions names the first few of a server's versions and the

@@ -292,7 +292,7 @@ func (c *Client) callToolOnce(
 	params.MultiRoundTripParams = roundTrip
 
 	response, err := c.sendRequest(ctx, string(mcp.MethodToolsCall), params, header)
-	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok && isParamHeader(mismatch.Header) {
+	if mismatch, ok := asHeaderMismatch(err); ok && isParamHeader(mismatch.Header) {
 		c.forgetTool(params.Name)
 		if _, listErr := c.ListTools(ctx, mcp.ListToolsRequest{}); listErr != nil {
 			return nil, fmt.Errorf("%w (listing the tools again failed: %w)", err, listErr)
@@ -307,6 +307,18 @@ func (c *Client) callToolOnce(
 		return nil, err
 	}
 	return result, c.checkToolResultType(result.ResultType)
+}
+
+// asHeaderMismatch finds the header mismatch in err, given as a value or, by
+// a transport of the caller's, as a pointer.
+func asHeaderMismatch(err error) (mcp.HeaderMismatchError, bool) {
+	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok {
+		return mismatch, true
+	}
+	if pointer, ok := errors.AsType[*mcp.HeaderMismatchError](err); ok && pointer != nil {
+		return *pointer, true
+	}
+	return mcp.HeaderMismatchError{}, false
 }
 
 // getPromptOnce issues a single prompts/get request.

@@ -85,7 +85,8 @@ func NewHandlerError(provider JSONRPCErrorProvider) error {
 // chosen per request, as for resourceNotFoundCode.
 //
 // mcp.MissingRequiredClientCapabilityError, from resolveMultiRoundTrip or
-// from a handler itself, is -32021 carrying the required capabilities.
+// from a handler itself, as a value or a pointer, is -32021 carrying the
+// required capabilities.
 //
 // An error marked with NewHandlerError is sent in its own JSON-RPC form,
 // unless its code is one reservedHandlerErrorCode keeps for the server.
@@ -99,7 +100,7 @@ func handlerError(ctx context.Context, id any, err error) *requestError {
 		// modern client can act on.
 		return internalError(id, err)
 	}
-	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
+	if missing, ok := asMissingRequiredClientCapability(err); ok {
 		details := missing.JSONRPCError().Error
 		return &requestError{id: id, code: details.Code, err: err, message: &details.Message, data: details.Data}
 	}
@@ -140,11 +141,20 @@ func internalError(id any, err error) *requestError {
 // the message of its JSON-RPC form when it is an error the server
 // recognises or one marked with NewHandlerError not claiming a reserved
 // code, the text of a known error in it, and otherwise internalErrorMessage.
-func clientMessage(err error) string {
+//
+// A handler may wrap a nil pointer to an error type by mistake; errors.Is
+// and errors.As panic calling a value-receiver method through it. Such an
+// error tells the client nothing, so it gets internalErrorMessage.
+func clientMessage(err error) (message string) {
+	defer func() {
+		if recover() != nil {
+			message = internalErrorMessage
+		}
+	}()
 	if required, ok := asURLElicitationRequired(err); ok {
 		return required.Error()
 	}
-	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
+	if missing, ok := asMissingRequiredClientCapability(err); ok {
 		return missing.Error()
 	}
 	if exposed, ok := errors.AsType[*exposedHandlerError](err); ok {
@@ -185,4 +195,17 @@ func asURLElicitationRequired(err error) (mcp.URLElicitationRequiredError, bool)
 		return *pointer, true
 	}
 	return required, false
+}
+
+// asMissingRequiredClientCapability finds a
+// MissingRequiredClientCapabilityError in err's chain, whether the handler
+// returned the value or a pointer to it.
+func asMissingRequiredClientCapability(err error) (mcp.MissingRequiredClientCapabilityError, bool) {
+	if missing, ok := errors.AsType[mcp.MissingRequiredClientCapabilityError](err); ok {
+		return missing, true
+	}
+	if pointer, ok := errors.AsType[*mcp.MissingRequiredClientCapabilityError](err); ok && pointer != nil {
+		return *pointer, true
+	}
+	return mcp.MissingRequiredClientCapabilityError{}, false
 }
