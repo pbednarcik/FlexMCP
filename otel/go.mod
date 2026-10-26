@@ -5,7 +5,7 @@ go 1.27.2
 toolchain go1.27.3
 
 require (
-	github.com/pbednarcik/flexmcp v0.1.0
+	github.com/pbednarcik/flexmcp v0.2.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/bridges/otelslog v0.18.0
 	go.opentelemetry.io/otel v1.45.0
