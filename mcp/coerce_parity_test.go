@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -109,6 +110,17 @@ func TestCoerceParityWithCast(t *testing.T) {
 			if f, ok := in.v.(float64); ok && (f > math.MaxInt32 || f < math.MinInt32) {
 				want.Int32, want.Int16, want.Int8, want.Uint32, want.Uint16, want.Uint8 = 0, 0, 0, 0, 0, 0
 				got.Int32, got.Int16, got.Int8, got.Uint32, got.Uint16, got.Uint8 = 0, 0, 0, 0, 0, 0
+			}
+			// Where int is 32 bits wide, Int and Uint cannot hold a recorded
+			// value past 32 bits; what they answer instead is the platform's,
+			// so those two fields are not compared there.
+			if strconv.IntSize == 32 {
+				if want.Int > math.MaxInt32 || want.Int < math.MinInt32 {
+					want.Int, got.Int = 0, 0
+				}
+				if want.Uint > math.MaxUint32 {
+					want.Uint, got.Uint = 0, 0
+				}
 			}
 			assert.Equal(t, want, got)
 		})
