@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Every library's results get one pkg line, so benchstat lines them up as
 // columns of one table instead of printing a table per library.
@@ -9,6 +12,30 @@ func TestNormalizePkg(t *testing.T) {
 	want := "goos: darwin\npkg: compare\nBenchmarkCompare/modern/small/serial-18 \t 1 \t 100 ns/op\n"
 	if got := string(normalizePkg([]byte(raw))); got != want {
 		t.Errorf("normalizePkg:\n got %q\nwant %q", got, want)
+	}
+}
+
+// The legs are read from a run's benchmark lines, without the GOMAXPROCS
+// suffix, each once, in the order they ran.
+func TestParseLegs(t *testing.T) {
+	out := "goos: windows\npkg: x\n" +
+		"BenchmarkCompare/modern/small/serial-16   \t1\t100 ns/op\n" +
+		"BenchmarkCompare/modern/small/parallel-16 \t1\t100 ns/op\n" +
+		"BenchmarkCompare/modern/small/serial-16   \t1\t100 ns/op\n" +
+		"BenchmarkCompare/legacy/complex/serial    \t1\t100 ns/op\n" +
+		"PASS\n"
+	got := parseLegs([]byte(out))
+	want := []string{"BenchmarkCompare/modern/small/serial", "BenchmarkCompare/modern/small/parallel", "BenchmarkCompare/legacy/complex/serial"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("parseLegs:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A leg's pattern matches that leg alone: go test splits -bench on '/' and
+// matches each part against one level of the name, so every part is anchored.
+func TestLegPattern(t *testing.T) {
+	if got, want := legPattern("BenchmarkCompare/modern/small/serial"), "^BenchmarkCompare$/^modern$/^small$/^serial$"; got != want {
+		t.Errorf("legPattern: got %q, want %q", got, want)
 	}
 }
 

@@ -32,4 +32,4 @@ From the repository root:
 
     go run -C bench/compare/run .
 
-It builds each library's benchmarks once, then runs ten rounds, each running every library once in an order that rotates per round, so a machine that drifts slows every library alike (about 25 minutes). It writes the raw results and the benchstat comparison under `results/<date>/`. Timings need a quiet machine: close other work first.
+It builds each library's benchmarks once, then runs ten rounds, each running every library once in an order that rotates per round, so a machine that drifts slows every library alike. Each leg runs in a process of its own: on Windows, a Go program that has just run in parallel can stall its next garbage collections for milliseconds, more often the more a library collects, so a serial leg after a parallel one would measure the runtime rather than the library. It writes the raw results and the benchstat comparison under `results/<date>/`. Timings need a quiet machine: close other work first.

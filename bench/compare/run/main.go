@@ -5,8 +5,11 @@
 //
 // Each library's test binary is built once; then each of count rounds runs
 // every library once, in an order that rotates each round, so a machine that
-// drifts during the run slows every library alike. Timings need a quiet
-// machine: close other work first.
+// drifts during the run slows every library alike. Each leg runs in a process
+// of its own: a leg run after a parallel one in the same process can pay for
+// the garbage collector's stop on Windows, more for a library that collects
+// more often, and so would measure the runtime rather than the library.
+// Timings need a quiet machine: close other work first.
 package main
 
 import (
@@ -15,7 +18,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -57,18 +62,28 @@ func main() {
 		binaries[lib] = binary
 	}
 
+	// The legs are listed by running each once; every library serves the
+	// same harness, so the first library's list is every library's.
+	listed, err := runLeg(binaries[libraries[0]], libraries[0], *bench, "1x")
+	if err != nil {
+		fatal(fmt.Errorf("listing the legs: %w", err))
+	}
+	legs := parseLegs(listed)
+	if len(legs) == 0 {
+		fatal(fmt.Errorf("no leg matches -bench %q", *bench))
+	}
+
 	raw := make(map[string][]byte, len(libraries))
 	for round := range *count {
 		for _, lib := range roundOrder(libraries, round) {
 			fmt.Fprintf(os.Stderr, "round %d of %d: %s\n", round+1, *count, lib)
-			cmd := exec.Command(binaries[lib], "-test.run", "^$", "-test.bench", *bench, "-test.benchmem", "-test.count", "1")
-			cmd.Dir = filepath.Join("..", lib)
-			cmd.Stderr = os.Stderr
-			results, err := cmd.Output()
-			if err != nil {
-				fatal(fmt.Errorf("%s, round %d: %w", lib, round+1, err))
+			for _, leg := range legs {
+				results, err := runLeg(binaries[lib], lib, legPattern(leg), "")
+				if err != nil {
+					fatal(fmt.Errorf("%s, %s, round %d: %w", lib, leg, round+1, err))
+				}
+				raw[lib] = append(raw[lib], results...)
 			}
-			raw[lib] = append(raw[lib], results...)
 		}
 	}
 
@@ -95,6 +110,55 @@ func main() {
 		fatal(err)
 	}
 	os.Stdout.Write(table)
+}
+
+// runLeg runs the benchmarks of lib's binary that pattern matches, once, in
+// a process of their own, and returns its output. benchtime, when set, is
+// passed on.
+func runLeg(binary, lib, pattern, benchtime string) ([]byte, error) {
+	args := []string{"-test.run", "^$", "-test.bench", pattern, "-test.benchmem", "-test.count", "1"}
+	if benchtime != "" {
+		args = append(args, "-test.benchtime", benchtime)
+	}
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = filepath.Join("..", lib)
+	cmd.Stderr = os.Stderr
+	return cmd.Output()
+}
+
+// parseLegs returns the benchmark names in out, a go test run's output,
+// without their GOMAXPROCS suffix, each once, in the order they ran.
+func parseLegs(out []byte) []string {
+	var legs []string
+	seen := map[string]bool{}
+	for line := range strings.Lines(string(out)) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "Benchmark") {
+			continue
+		}
+		name := fields[0]
+		if i := strings.LastIndexByte(name, '-'); i > strings.LastIndexByte(name, '/') {
+			if _, err := strconv.Atoi(name[i+1:]); err == nil {
+				name = name[:i]
+			}
+		}
+		if !seen[name] {
+			seen[name] = true
+			legs = append(legs, name)
+		}
+	}
+	return legs
+}
+
+// legPattern is the -test.bench pattern that matches leg alone: go test
+// splits the pattern on '/' and matches each part against one level of a
+// benchmark's name, so every part is quoted and anchored.
+func legPattern(leg string) string {
+	parts := strings.Split(leg, "/")
+	for i, part := range parts {
+		parts[i] = "^" + regexp.QuoteMeta(part) + "$"
+	}
+	return strings.Join(parts, "/")
 }
 
 // roundOrder is the order the libraries run in during round: libs rotated by
