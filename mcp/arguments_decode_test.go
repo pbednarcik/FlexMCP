@@ -304,7 +304,10 @@ func TestArgumentsUnmarshalLargeInvalidAllocations(t *testing.T) {
 		_ = p.UnmarshalJSON(data)
 	})
 	slow := testing.AllocsPerRun(20, func() { _, _ = callToolParamsBefore(data) })
-	assert.LessOrEqual(t, fast, slow, "allocations per tools/call params of large arguments that fail at their end, against json.Unmarshal")
+	// Within a thousandth: a pass that built every value would add one
+	// allocation per element, while a runtime allocation during a run moves
+	// AllocsPerRun's average by one.
+	assert.LessOrEqual(t, fast, slow*1.001, "allocations per tools/call params of large arguments that fail at their end, against json.Unmarshal")
 }
 
 // The arguments of bench/compare's payloads are read in one pass: 18 and 580
