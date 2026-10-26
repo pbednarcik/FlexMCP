@@ -7,35 +7,82 @@ comparison yourself.
 
 ## Results
 
-Measured on 2026-10-13: Apple M5 Max, macOS 27, Go 1.27.2; FlexMCP at `28d957a`, mcp-go v1.2.1, go-sdk v1.8.0.
-Each figure is the median of ten runs. Lower is better.
+The comparison was run on two machines. Each table compares the three libraries on one machine; compare the
+libraries within a table, not the figures across the two. Both measure FlexMCP v0.2.0, mcp-go v1.3.0 and go-sdk
+v1.8.0. Each figure is the median of ten runs. Lower is better.
 
-### Time per call
+### MacBook
 
-| Call | FlexMCP | mcp-go | go-sdk |
-| --- | --- | --- | --- |
-| Small, modern (2026-07-28) | **7.7 µs** | 22.3 µs | 85.9 µs |
-| Small, legacy (2025-11-25) | **5.5 µs** | 10.4 µs | 69.2 µs |
-| Complex, modern | **121 µs** | 252 µs | 336 µs |
-| Complex, legacy | **122 µs** | 155 µs | 227 µs |
-| Small, modern, parallel | **6.2 µs** | 18.1 µs | 94.1 µs |
-| Small, legacy, parallel | **5.1 µs** | 11.1 µs | 69.3 µs |
-| Complex, modern, parallel | **63.5 µs** | 116 µs | 197 µs |
-| Complex, legacy, parallel | **57.7 µs** | 72.1 µs | 137 µs |
-| Small, modern, over loopback HTTP | **30.2 µs** | 41.7 µs | 127 µs |
-| Small, legacy, over loopback HTTP | **25.7 µs** | 33.5 µs | 97.7 µs |
+Measured on 2026-10-26: Apple M5 Max, macOS 27.0.1, Go 1.27.3.
 
-### Allocations and memory per call
+#### Time per call
 
 | Call | FlexMCP | mcp-go | go-sdk |
 | --- | --- | --- | --- |
-| Small, modern | **111** · 11.8 KiB | 252 · 27.8 KiB | 340 · 529 KiB |
-| Small, legacy | **79** · 9.8 KiB | 114 · 20.6 KiB | 209 · 374 KiB |
-| Complex, modern | **2,084** · 164 KiB | 3,427 · 268 KiB | 4,310 · 830 KiB |
-| Complex, legacy | **2,049** · 162 KiB | 2,170 · 177 KiB | 2,538 · 581 KiB |
+| Small, modern (2026-07-28) | **6.6 µs** | 20.6 µs | 80.9 µs |
+| Small, legacy (2025-11-25) | **4.0 µs** | 9.4 µs | 55.6 µs |
+| Complex, modern | **66.9 µs** | 165 µs | 302 µs |
+| Complex, legacy | **62.5 µs** | 144 µs | 200 µs |
+| Small, modern, parallel | **5.3 µs** | 15.3 µs | 167 µs |
+| Small, legacy, parallel | **4.1 µs** | 10.7 µs | 115 µs |
+| Complex, modern, parallel | **40.9 µs** | 72.8 µs | 260 µs |
+| Complex, legacy, parallel | **36.9 µs** | 65.1 µs | 173 µs |
+| Small, modern, over loopback HTTP | **18.3 µs** | 39.6 µs | 187 µs |
+| Small, legacy, over loopback HTTP | **19.6 µs** | 34.0 µs | 136 µs |
 
-FlexMCP is fastest and allocates least on every leg. The closest result is a complex legacy call, where it
-allocates 6% less than mcp-go and is about 20% faster.
+#### Allocations and memory per call
+
+| Call | FlexMCP | mcp-go | go-sdk |
+| --- | --- | --- | --- |
+| Small, modern | **60** · 11.1 KiB | 233 · 25.8 KiB | 340 · 529 KiB |
+| Small, legacy | **43** · 8.7 KiB | 114 · 20.6 KiB | 208 · 374 KiB |
+| Complex, modern | **1,027** · 111 KiB | 2,291 · 184 KiB | 4,307 · 826 KiB |
+| Complex, legacy | **1,007** · 106 KiB | 2,168 · 175 KiB | 2,536 · 578 KiB |
+
+FlexMCP is fastest and allocates least on every leg, over loopback HTTP too. The closest result is a complex
+legacy call in parallel, where it is about 1.8 times as fast as mcp-go.
+
+### Windows PC
+
+Measured on 2026-10-26: AMD Ryzen 9 9950X, Windows 11, Go 1.27.3, pinned to one of the processor's two core
+complexes (16 threads).
+
+#### Time per call
+
+| Call | FlexMCP | mcp-go | go-sdk |
+| --- | --- | --- | --- |
+| Small, modern (2026-07-28) | **8.2 µs** | 28.4 µs | 108 µs |
+| Small, legacy (2025-11-25) | **5.1 µs** | 16.4 µs | 77.6 µs |
+| Complex, modern | **73.8 µs** | 191 µs | 346 µs |
+| Complex, legacy | **69.2 µs** | 167 µs | 233 µs |
+| Small, modern, parallel | **4.2 µs** | 9.0 µs | 168 µs |
+| Small, legacy, parallel | **4.8 µs** | 13.4 µs | 113 µs |
+| Complex, modern, parallel | **53.4 µs** | 72.1 µs | 279 µs |
+| Complex, legacy, parallel | **42.6 µs** | 61.5 µs | 183 µs |
+| Small, modern, over loopback HTTP | **84.8 µs** | 89.2 µs | 197 µs |
+| Small, legacy, over loopback HTTP | 84.7 µs | 87.3 µs | 148 µs |
+
+#### Allocations and memory per call
+
+| Call | FlexMCP | mcp-go | go-sdk |
+| --- | --- | --- | --- |
+| Small, modern | **60** · 11.0 KiB | 234 · 25.8 KiB | 340 · 529 KiB |
+| Small, legacy | **43** · 8.7 KiB | 114 · 20.6 KiB | 209 · 374 KiB |
+| Complex, modern | **1,026** · 111 KiB | 2,291 · 184 KiB | 4,307 · 826 KiB |
+| Complex, legacy | **1,008** · 106 KiB | 2,169 · 176 KiB | 2,536 · 578 KiB |
+
+FlexMCP allocates least on every leg and is fastest on every leg served in-process. The closest of those is a
+complex modern call in parallel, where it is about a quarter faster than mcp-go. Over loopback HTTP the network
+stack takes most of the time: FlexMCP is about 5% faster on a modern call, and a legacy call is a tie (the
+difference is within the noise).
+
+### Go on Windows after a burst of parallel calls
+
+On Windows, a Go program that has just served calls in parallel can stall its next garbage collections for
+milliseconds: the runtime's wait for every thread to reach a safe point rounds up to the system's timer tick of
+about 15.6 ms. Every Go library pays it, and the more often a library collects garbage, the more it pays. The
+benchmark runs each leg in a process of its own, so that it measures the library rather than this effect. The
+nearest open Go issue is [golang/go#81657](https://github.com/golang/go/issues/81657).
 
 ## What is measured
 
@@ -68,6 +115,8 @@ From a checkout of FlexMCP:
 go run -C bench/compare/run .
 ```
 
-It runs every leg ten times for each library (about 25 minutes) and prints the comparison. Run it on a quiet
-machine. Figures from another machine will differ; the ranking is what to compare. The harness and the requests
+It builds each library's benchmarks once, then runs ten rounds; each round runs every library once, in an order
+that rotates from round to round, and every leg in a process of its own. It takes about ten minutes and prints
+the comparison. Run it on a quiet machine, with a laptop plugged in. Figures from another machine will differ;
+the ranking is what to compare. The harness and the requests
 are in [`bench/compare`](https://github.com/pbednarcik/FlexMCP/tree/master/bench/compare).
