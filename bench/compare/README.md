@@ -32,4 +32,4 @@ From the repository root:
 
     go run -C bench/compare/run .
 
-It runs every leg ten times per library (about 25 minutes) and writes the raw results and the benchstat comparison under `results/<date>/`. Timings need a quiet machine: close other work first.
+It builds each library's benchmarks once, then runs ten rounds, each running every library once in an order that rotates per round, so a machine that drifts slows every library alike (about 25 minutes). It writes the raw results and the benchstat comparison under `results/<date>/`. Timings need a quiet machine: close other work first.
