@@ -18,8 +18,8 @@
 FlexMCP began as a fork of [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go), the Go library for building MCP servers and clients, and has since been largely reworked: the server is stateless, the request path is rewritten for speed and allocations, and the code is checked against the MCP specification requirement by requirement. It is aimed at projects on the newer protocol revisions that want closer compliance with the MCP specification and fewer allocations per call: complex clients, and busy servers that answer many complex calls. It speaks the 2026-07-28 revision first and the earlier ones a client may still ask for, and where mcp-go was lenient it keeps the specification's MUSTs, from request ids to OAuth (HTTPS-only authorization servers, PKCE on by default, a token sent only to its own server). FlexMCP is optimized for speed and low allocations, so a busy server spends its time on its tools, not on the protocol. In our benchmarks a single in-process tool call is served up to 3 times faster than with mcp-go and up to 14 times faster than with the official Go SDK, with less than half of mcp-go's allocations ([benchmarks on two machines](www/docs/pages/performance.mdx)). Long-running tool calls through the Tasks extension come next.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/benchmark-dark.svg">
-  <img alt="Time per tools/call on an Apple M5 Max, lower is better. Small call, modern: FlexMCP 6.6 µs, mcp-go 21 µs, go-sdk 81 µs. Small, legacy: 4.0, 9.4, 56 µs. Complex call, modern: 67, 165, 302 µs. Complex, legacy: 63, 144, 200 µs." src=".github/assets/benchmark-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/benchmark-mac-dark.svg">
+  <img alt="Time per tools/call on an Apple M5 Max, lower is better. Small call, modern: FlexMCP 6.6 µs, mcp-go 21 µs, go-sdk 81 µs. Small, legacy: 4.0, 9.4, 56 µs. Complex call, modern: 67, 165, 302 µs. Complex, legacy: 63, 144, 200 µs." src=".github/assets/benchmark-mac-light.svg">
 </picture>
 
 ## Coming from mcp-go
