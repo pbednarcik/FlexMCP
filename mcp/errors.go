@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -156,7 +158,7 @@ func (e HeaderMismatchError) JSONRPCError() JSONRPCError {
 type MissingRequiredClientCapabilityError struct {
 	// Required holds the capabilities the request would have to declare,
 	// as a ClientCapabilities object: elicitation (with url for URL mode),
-	// sampling (with tools), roots.
+	// sampling (with tools), roots, extensions.
 	Required ClientCapabilities
 }
 
@@ -169,7 +171,7 @@ func (e MissingRequiredClientCapabilityError) Error() string {
 }
 
 // requiredCapabilityNames spells the capabilities a ClientCapabilities value
-// declares, as dotted paths, for an error message.
+// declares, as dotted paths and "extension <id>", for an error message.
 func requiredCapabilityNames(c ClientCapabilities) []string {
 	var names []string
 	if c.Elicitation != nil {
@@ -196,6 +198,9 @@ func requiredCapabilityNames(c ClientCapabilities) []string {
 	}
 	if c.Roots != nil {
 		names = append(names, "roots")
+	}
+	for _, id := range slices.Sorted(maps.Keys(c.Extensions)) {
+		names = append(names, "extension "+id)
 	}
 	return names
 }

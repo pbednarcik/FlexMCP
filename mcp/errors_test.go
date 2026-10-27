@@ -300,3 +300,20 @@ func TestAsErrorURLElicitationRequiredWithoutData(t *testing.T) {
 	require.True(t, errors.As(err, &typed))
 	assert.Empty(t, typed.Elicitations)
 }
+
+// TestMissingRequiredClientCapabilityErrorNamesExtensions pins that a
+// required extension is named in the message, in id order, and carried as
+// data.requiredCapabilities.extensions.
+func TestMissingRequiredClientCapabilityErrorNamesExtensions(t *testing.T) {
+	err := MissingRequiredClientCapabilityError{Required: ClientCapabilities{
+		Roots: &struct {
+			ListChanged bool `json:"listChanged,omitempty"`
+		}{},
+		Extensions: map[string]any{ExtensionTasks: map[string]any{}, "example.com/ext": map[string]any{}},
+	}}
+	assert.EqualError(t, err, "missing required client capability: roots, extension example.com/ext, extension io.modelcontextprotocol/tasks")
+
+	wire, marshalErr := json.Marshal(err.JSONRPCError().Error)
+	require.NoError(t, marshalErr)
+	assert.Contains(t, string(wire), `"extensions":{"example.com/ext":{},"io.modelcontextprotocol/tasks":{}}`)
+}

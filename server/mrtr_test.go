@@ -337,3 +337,20 @@ var (
 	_ ClientSession         = (*mrtrSession)(nil)
 	_ SessionWithClientInfo = (*mrtrSession)(nil)
 )
+
+// TestClientLacksAnUndeclaredExtension pins the extension half of the
+// capability check: every extension in the required set must be declared
+// under the request's own capabilities.extensions (Lifecycle.md rows 8 and
+// 10), whatever settings object it carries.
+func TestClientLacksAnUndeclaredExtension(t *testing.T) {
+	required := mcp.ClientCapabilities{Extensions: map[string]any{"example.com/a": map[string]any{}, "example.com/b": map[string]any{}}}
+	declared := func(extensions map[string]any) *RequestProtocolInfo {
+		return &RequestProtocolInfo{Modern: true, ClientCapabilities: &mcp.ClientCapabilities{Extensions: extensions}}
+	}
+
+	assert.False(t, clientLacks(declared(map[string]any{"example.com/a": map[string]any{}, "example.com/b": map[string]any{"setting": true}}), required), "both declared")
+	assert.True(t, clientLacks(declared(map[string]any{"example.com/a": map[string]any{}}), required), "one missing")
+	assert.True(t, clientLacks(declared(nil), required), "none declared")
+	assert.True(t, clientLacks(nil, required), "no protocol info")
+	assert.False(t, clientLacks(declared(nil), mcp.ClientCapabilities{}), "nothing required")
+}

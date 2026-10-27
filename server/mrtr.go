@@ -236,7 +236,8 @@ func requiredClientCapabilities(requests mcp.InputRequests) mcp.ClientCapabiliti
 // clientLacks reports whether the capabilities a request declared fall short
 // of required. A declared elicitation with no modes means form mode only
 // (ClientFeatures.md row 1); one with url only is not asked for a form (row
-// 2).
+// 2). Every required extension must be declared, with any settings object
+// (Lifecycle.md row 9).
 func clientLacks(info *RequestProtocolInfo, required mcp.ClientCapabilities) bool {
 	declared := &mcp.ClientCapabilities{}
 	if info != nil && info.ClientCapabilities != nil {
@@ -256,6 +257,11 @@ func clientLacks(info *RequestProtocolInfo, required mcp.ClientCapabilities) boo
 	}
 	if required.Sampling != nil {
 		if declared.Sampling == nil || (required.Sampling.Tools != nil && declared.Sampling.Tools == nil) {
+			return true
+		}
+	}
+	for id := range required.Extensions {
+		if _, ok := declared.Extensions[id]; !ok {
 			return true
 		}
 	}
