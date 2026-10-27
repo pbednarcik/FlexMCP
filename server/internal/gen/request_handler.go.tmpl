@@ -24,6 +24,49 @@ func (s *MCPServer) dispatchRequest(
 	switch baseMessage.Method {
 	{{- range .}}
 	case mcp.{{.MethodName}}:
+		{{- if .ModernHandler }}
+		if protocolInfo.Modern {
+			var request mcp.{{.ModernParamType}}
+			var result *mcp.{{.ModernResultType}}
+			if !s.{{.ModernGate}}() {
+				err = &requestError{
+					id:   baseMessage.ID,
+					code: mcp.METHOD_NOT_FOUND,
+					err:  fmt.Errorf("%q %w", baseMessage.Method, ErrUnsupported),
+				}
+			} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
+				err = &requestError{
+					id:      baseMessage.ID,
+					code:    mcp.INVALID_PARAMS,
+					err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+					message: undecodableParamsMessage(baseMessage.Method),
+				}
+			} else {
+				request.Header = headers
+				s.hooks.beforeAny(ctx, baseMessage.ID, mcp.{{.MethodName}}, &request)
+				result, err = s.{{.ModernHandler}}(ctx, baseMessage.ID, request)
+			}
+			if err != nil {
+				s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &request, err)
+				return err.ToJSONRPCError()
+			}
+			s.hooks.onSuccess(ctx, baseMessage.ID, mcp.{{.MethodName}}, &request, result){{ if .Final }}
+			if err = s.{{.Final}}(ctx, baseMessage.ID, result); err != nil {
+				return err.ToJSONRPCError()
+			}{{ end }}
+			return createResponse(baseMessage.ID, *result)
+		}
+		{{- if not .HandlerFunc }}
+		err = &requestError{
+			id:   baseMessage.ID,
+			code: mcp.METHOD_NOT_FOUND,
+			err:  fmt.Errorf("%q %w", baseMessage.Method, ErrRequiresModernProtocol),
+		}
+		s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &mcp.{{.ModernParamType}}{}, err)
+		return err.ToJSONRPCError()
+		{{- end }}
+		{{- end }}
+		{{- if .HandlerFunc }}
 		var request mcp.{{.ParamType}}
 		{{ if .ResultIsAny }}var result any{{ else }}var result *mcp.{{.ResultType}}{{ end }}
 		{{ if .RemovedInModern }}if protocolInfo.Modern {
@@ -66,6 +109,7 @@ func (s *MCPServer) dispatchRequest(
 			return err.ToJSONRPCError()
 		}{{ end }}
 		{{ if .ResultIsAny }}return createResponse(baseMessage.ID, result){{ else }}return createResponse(baseMessage.ID, *result){{ end }}
+		{{- end }}
 	{{- end }}
 	default:
 		return createErrorResponse(

@@ -22,5 +22,6 @@ var dispatchGates = []dispatchGate{
 	{method: mcp.MethodTasksList, capability: "tasks.list", removedInModern: true},
 	{method: mcp.MethodTasksResult, capability: "tasks", removedInModern: true},
 	{method: mcp.MethodTasksCancel, capability: "tasks.cancel"},
+	{method: mcp.MethodTasksUpdate, requiresModern: true},
 	{method: mcp.MethodCompletionComplete, capability: "completions"},
 }

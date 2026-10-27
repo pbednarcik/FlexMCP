@@ -26,6 +26,18 @@ type MCPRequestType struct {
 	// RequiresModern marks methods introduced by protocol version 2026-07-28.
 	// They are rejected with METHOD_NOT_FOUND on legacy requests.
 	RequiresModern bool
+	// ModernHandler, when set, is the server method that serves modern
+	// requests, with ModernParamType and ModernResultType. Those fire only the
+	// untyped hooks, OnBeforeAny, OnSuccess and OnError; legacy requests keep
+	// HandlerFunc and the typed hooks. ModernGate is the server method that
+	// reports whether modern requests are served at all; when it does not,
+	// they get METHOD_NOT_FOUND. An entry without a HandlerFunc has no legacy
+	// branch: a legacy request gets METHOD_NOT_FOUND. An entry without a
+	// HookName has no typed hooks.
+	ModernHandler    string
+	ModernParamType  string
+	ModernResultType string
+	ModernGate       string
 }
 
 var MCPRequestTypes = []MCPRequestType{
@@ -134,6 +146,11 @@ var MCPRequestTypes = []MCPRequestType{
 		GroupName:   "Tasks",
 		HookName:    "GetTask",
 		HandlerFunc: "handleGetTask",
+
+		ModernHandler:    "handleExtensionGetTask",
+		ModernParamType:  "ExtensionTaskRequest",
+		ModernResultType: "ExtensionTaskStateResult",
+		ModernGate:       "servesTaskExtension",
 	}, {
 		MethodName:      "MethodTasksList",
 		ParamType:       "ListTasksRequest",
@@ -160,6 +177,18 @@ var MCPRequestTypes = []MCPRequestType{
 		GroupName:   "tasks.cancel",
 		HookName:    "CancelTask",
 		HandlerFunc: "handleCancelTask",
+
+		ModernHandler:    "handleExtensionCancelTask",
+		ModernParamType:  "ExtensionTaskRequest",
+		ModernResultType: "Result",
+		ModernGate:       "servesTaskExtension",
+	}, {
+		MethodName:       "MethodTasksUpdate",
+		RequiresModern:   true,
+		ModernHandler:    "handleExtensionUpdateTask",
+		ModernParamType:  "UpdateExtensionTaskRequest",
+		ModernResultType: "Result",
+		ModernGate:       "servesTaskExtension",
 	}, {
 		MethodName:  "MethodCompletionComplete",
 		ParamType:   "CompleteRequest",

@@ -632,15 +632,21 @@ func (s *MCPServer) handleToolCall(
 // not sent or stored. CreateTaskResult hides Content behind json:"-", so
 // callers that store one must measure a CallToolResult view of the same fields.
 func (s *MCPServer) limitToolResult(result *mcp.CallToolResult) *mcp.CallToolResult {
-	if result == nil || s.toolResultSizeLimit <= 0 {
+	return limitToolResultTo(result, s.toolResultSizeLimit)
+}
+
+// limitToolResultTo is limitToolResult for the limit given, zero or less for
+// none.
+func limitToolResultTo(result *mcp.CallToolResult, limit int) *mcp.CallToolResult {
+	if result == nil || limit <= 0 {
 		return result
 	}
 	// The encoding is counted, not kept; Encode adds a newline Marshal does not.
 	var size byteCounter
-	if err := json.NewEncoder(&size).Encode(result); err != nil || int(size)-1 <= s.toolResultSizeLimit {
+	if err := json.NewEncoder(&size).Encode(result); err != nil || int(size)-1 <= limit {
 		return result
 	}
-	return mcp.NewToolResultError(fmt.Sprintf("tool result exceeds %d bytes", s.toolResultSizeLimit))
+	return mcp.NewToolResultError(fmt.Sprintf("tool result exceeds %d bytes", limit))
 }
 
 // byteCounter counts the bytes written to it and keeps none.

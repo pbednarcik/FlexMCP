@@ -226,6 +226,7 @@ type MCPServer struct {
 	taskNamespace            string                       // The namespace of WithTaskNamespace; "" for the server's name
 	taskSealer               *taskSealer                  // Mints and checks task ids; built once the options ran
 	taskHandler              TaskHandler                  // The Tasks extension's handler; nil without WithTaskHandler
+	unboundCallerWarned      sync.Once                    // Logs once that task ids are unbound on an authenticated request
 	discoverExtensions       map[string]any               // The extensions server/discover advertises, the tasks entry included; nil to advertise capabilities.extensions as is
 	activeTasks              int                          // Tasks whose handler may still be running
 	inflightCancels          sync.Map                     // inflightID -> *inflightRequest, the requests in flight

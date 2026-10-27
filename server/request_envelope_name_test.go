@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/pbednarcik/flexmcp/mcp"
@@ -13,17 +14,24 @@ import (
 
 // TestModernProtocol_TaskMethodsNameTheTaskInMcpName: a 2026-07-28 HTTP
 // request of a Tasks extension method whose Mcp-Name is its task id passes
-// the header check, whatever answer the method then gets.
+// the header check and reaches the task handler; another id in Mcp-Name is a
+// header mismatch.
 func TestModernProtocol_TaskMethodsNameTheTaskInMcpName(t *testing.T) {
-	srv := newModernTestServer(t)
+	tasks := &fakeInputTasks{fakeTasks: newFakeTasks()}
+	tasks.set("job-1", func(*TaskState) {})
+	mcpServer := NewMCPServer("modern-test", "1.0.0", WithTaskHandler(tasks))
+	taskID, err := mcpServer.taskSealer.seal("job-1", "")
+	require.NoError(t, err)
+	srv := httptest.NewServer(NewStreamableHTTPServer(mcpServer))
+	t.Cleanup(srv.Close)
+	meta := modernMeta()
+	meta[mcp.MetaKeyClientCapabilities] = declaringTasks()
+	want := []TaskRef{{TaskID: taskID, HandlerID: "job-1"}}
 
 	for _, method := range []mcp.MCPMethod{mcp.MethodTasksGet, mcp.MethodTasksCancel, mcp.MethodTasksUpdate} {
 		t.Run(string(method), func(t *testing.T) {
-			resp := postModern(t, srv.URL, method, map[string]any{"taskId": "abc"})
-			if errDetails, ok := decodeJSONRPC(t, resp)["error"].(map[string]any); ok {
-				assert.NotEqual(t, float64(mcp.HEADER_MISMATCH), errDetails["code"],
-					"a matching Mcp-Name is no header mismatch: %v", errDetails)
-			}
+			resp := postModernWithMeta(t, srv.URL, method, taskMethodParams(method, taskID), meta)
+			completeResult(t, decodeJSONRPC(t, resp))
 		})
 
 		t.Run(string(method)+" with another task id in Mcp-Name", func(t *testing.T) {
@@ -47,6 +55,11 @@ func TestModernProtocol_TaskMethodsNameTheTaskInMcpName(t *testing.T) {
 			assert.Equal(t, float64(mcp.HEADER_MISMATCH), errDetails["code"])
 		})
 	}
+	tasks.mu.Lock()
+	defer tasks.mu.Unlock()
+	assert.Equal(t, want, tasks.stateRefs, "tasks/get")
+	assert.Equal(t, want, tasks.cancelled, "tasks/cancel")
+	assert.Equal(t, want, tasks.updated, "tasks/update")
 }
 
 // TestParamsPeekHeaderNameAgreesWithExtractHeaderName keeps the server's read

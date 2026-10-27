@@ -357,6 +357,34 @@ func (s *MCPServer) dispatchRequest(
 		}
 		return createResponse(baseMessage.ID, result)
 	case mcp.MethodTasksGet:
+		if protocolInfo.Modern {
+			var request mcp.ExtensionTaskRequest
+			var result *mcp.ExtensionTaskStateResult
+			if !s.servesTaskExtension() {
+				err = &requestError{
+					id:   baseMessage.ID,
+					code: mcp.METHOD_NOT_FOUND,
+					err:  fmt.Errorf("%q %w", baseMessage.Method, ErrUnsupported),
+				}
+			} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
+				err = &requestError{
+					id:      baseMessage.ID,
+					code:    mcp.INVALID_PARAMS,
+					err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+					message: undecodableParamsMessage(baseMessage.Method),
+				}
+			} else {
+				request.Header = headers
+				s.hooks.beforeAny(ctx, baseMessage.ID, mcp.MethodTasksGet, &request)
+				result, err = s.handleExtensionGetTask(ctx, baseMessage.ID, request)
+			}
+			if err != nil {
+				s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &request, err)
+				return err.ToJSONRPCError()
+			}
+			s.hooks.onSuccess(ctx, baseMessage.ID, mcp.MethodTasksGet, &request, result)
+			return createResponse(baseMessage.ID, *result)
+		}
 		var request mcp.GetTaskRequest
 		var result *mcp.GetTaskResult
 		if !s.serves(servesTasks) {
@@ -450,6 +478,34 @@ func (s *MCPServer) dispatchRequest(
 		s.hooks.afterTaskResult(ctx, baseMessage.ID, &request, result)
 		return createResponse(baseMessage.ID, *result)
 	case mcp.MethodTasksCancel:
+		if protocolInfo.Modern {
+			var request mcp.ExtensionTaskRequest
+			var result *mcp.Result
+			if !s.servesTaskExtension() {
+				err = &requestError{
+					id:   baseMessage.ID,
+					code: mcp.METHOD_NOT_FOUND,
+					err:  fmt.Errorf("%q %w", baseMessage.Method, ErrUnsupported),
+				}
+			} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
+				err = &requestError{
+					id:      baseMessage.ID,
+					code:    mcp.INVALID_PARAMS,
+					err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+					message: undecodableParamsMessage(baseMessage.Method),
+				}
+			} else {
+				request.Header = headers
+				s.hooks.beforeAny(ctx, baseMessage.ID, mcp.MethodTasksCancel, &request)
+				result, err = s.handleExtensionCancelTask(ctx, baseMessage.ID, request)
+			}
+			if err != nil {
+				s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &request, err)
+				return err.ToJSONRPCError()
+			}
+			s.hooks.onSuccess(ctx, baseMessage.ID, mcp.MethodTasksCancel, &request, result)
+			return createResponse(baseMessage.ID, *result)
+		}
 		var request mcp.CancelTaskRequest
 		var result *mcp.CancelTaskResult
 		if !s.serves(servesTasksCancel) {
@@ -476,6 +532,42 @@ func (s *MCPServer) dispatchRequest(
 		}
 		s.hooks.afterCancelTask(ctx, baseMessage.ID, &request, result)
 		return createResponse(baseMessage.ID, *result)
+	case mcp.MethodTasksUpdate:
+		if protocolInfo.Modern {
+			var request mcp.UpdateExtensionTaskRequest
+			var result *mcp.Result
+			if !s.servesTaskExtension() {
+				err = &requestError{
+					id:   baseMessage.ID,
+					code: mcp.METHOD_NOT_FOUND,
+					err:  fmt.Errorf("%q %w", baseMessage.Method, ErrUnsupported),
+				}
+			} else if unmarshalErr := json.Unmarshal(message, &request); unmarshalErr != nil {
+				err = &requestError{
+					id:      baseMessage.ID,
+					code:    mcp.INVALID_PARAMS,
+					err:     &UnparsableMessageError{message: message, err: unmarshalErr, method: baseMessage.Method},
+					message: undecodableParamsMessage(baseMessage.Method),
+				}
+			} else {
+				request.Header = headers
+				s.hooks.beforeAny(ctx, baseMessage.ID, mcp.MethodTasksUpdate, &request)
+				result, err = s.handleExtensionUpdateTask(ctx, baseMessage.ID, request)
+			}
+			if err != nil {
+				s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &request, err)
+				return err.ToJSONRPCError()
+			}
+			s.hooks.onSuccess(ctx, baseMessage.ID, mcp.MethodTasksUpdate, &request, result)
+			return createResponse(baseMessage.ID, *result)
+		}
+		err = &requestError{
+			id:   baseMessage.ID,
+			code: mcp.METHOD_NOT_FOUND,
+			err:  fmt.Errorf("%q %w", baseMessage.Method, ErrRequiresModernProtocol),
+		}
+		s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &mcp.UpdateExtensionTaskRequest{}, err)
+		return err.ToJSONRPCError()
 	case mcp.MethodCompletionComplete:
 		var request mcp.CompleteRequest
 		var result *mcp.CompleteResult
