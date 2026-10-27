@@ -59,6 +59,20 @@ func IsModernRequest(ctx context.Context) bool {
 	return info != nil && info.Modern
 }
 
+// ClientDeclaresExtension reports whether the request being handled declared
+// the extension id under capabilities.extensions in its _meta. Capabilities
+// are declared per request, so this is the answer for this request alone. A
+// legacy request never declares one: extensions arrived with protocol version
+// 2026-07-28, and the initialize handshake is not consulted.
+func ClientDeclaresExtension(ctx context.Context, id string) bool {
+	info := RequestProtocolInfoFromContext(ctx)
+	if info == nil || !info.Modern || info.ClientCapabilities == nil {
+		return false
+	}
+	_, ok := info.ClientCapabilities.Extensions[id]
+	return ok
+}
+
 // RequestProtocolVersion returns the protocol version in effect for the
 // request being handled.
 //

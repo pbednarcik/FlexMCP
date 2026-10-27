@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -64,4 +67,61 @@ func TestRequestProtocolInfoReadsMetaByItsKeys(t *testing.T) {
 			assert.Equal(t, tt.want, info)
 		})
 	}
+}
+
+// TestClientDeclaresExtension pins the per-request extension check: a modern
+// request declares an extension under clientCapabilities.extensions, on its
+// own and for itself (Lifecycle.md rows 8 and 9); a legacy request never
+// does, as extensions arrived with protocol version 2026-07-28.
+func TestClientDeclaresExtension(t *testing.T) {
+	const id = "example.com/ext"
+	declaring := &mcp.ClientCapabilities{Extensions: map[string]any{id: map[string]any{}}}
+
+	tests := []struct {
+		name string
+		info *RequestProtocolInfo
+		want bool
+	}{
+		{"no protocol info", nil, false},
+		{"a modern request that declares it", &RequestProtocolInfo{Modern: true, ClientCapabilities: declaring}, true},
+		{"a modern request that declares another", &RequestProtocolInfo{Modern: true, ClientCapabilities: &mcp.ClientCapabilities{Extensions: map[string]any{"example.com/other": map[string]any{}}}}, false},
+		{"a modern request with no extensions", &RequestProtocolInfo{Modern: true, ClientCapabilities: &mcp.ClientCapabilities{}}, false},
+		{"a modern request with no capabilities", &RequestProtocolInfo{Modern: true}, false},
+		{"a legacy request carrying the key", &RequestProtocolInfo{ClientCapabilities: declaring}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			if tt.info != nil {
+				ctx = WithRequestProtocolInfo(ctx, tt.info)
+			}
+			assert.Equal(t, tt.want, ClientDeclaresExtension(ctx, id))
+		})
+	}
+
+	t.Run("a tool handler sees the request's own declaration", func(t *testing.T) {
+		mcpServer := NewMCPServer("extension-test", "1.0.0", WithToolCapabilities(true))
+		mcpServer.AddTool(mcp.NewTool("declared"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(strconv.FormatBool(ClientDeclaresExtension(ctx, id))), nil
+		})
+		httpServer := httptest.NewServer(NewStreamableHTTPServer(mcpServer))
+		t.Cleanup(httpServer.Close)
+
+		call := func(t *testing.T, capabilities map[string]any) string {
+			t.Helper()
+			meta := modernMeta()
+			meta[mcp.MetaKeyClientCapabilities] = capabilities
+			message := decodeJSONRPC(t, postModernWithMeta(t, httpServer.URL, mcp.MethodToolsCall, map[string]any{"name": "declared"}, meta))
+			result, ok := message["result"].(map[string]any)
+			require.True(t, ok, "expected a result, got %v", message)
+			content, ok := result["content"].([]any)
+			require.True(t, ok, "expected content, got %v", result)
+			require.Len(t, content, 1)
+			text, ok := content[0].(map[string]any)
+			require.True(t, ok)
+			return text["text"].(string)
+		}
+		assert.Equal(t, "true", call(t, map[string]any{"extensions": map[string]any{id: map[string]any{}}}))
+		assert.Equal(t, "false", call(t, map[string]any{}))
+	})
 }
