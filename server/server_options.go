@@ -382,7 +382,10 @@ func WithLogging() ServerOption {
 	}
 }
 
-// WithTaskCapabilities configures task-related server capabilities
+// WithTaskCapabilities configures task-related server capabilities: the
+// 2025-11-25 tasks capability, advertised in the answer to initialize.
+// server/discover leaves it out, because protocol version 2026-07-28 moved
+// tasks into the Tasks extension (see mcp.ExtensionTasks).
 func WithTaskCapabilities(list, cancel, toolCallTasks bool) ServerOption {
 	return func(s *MCPServer) {
 		// Always create a non-nil capability object

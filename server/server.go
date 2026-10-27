@@ -416,9 +416,9 @@ func (s *MCPServer) AddNotificationHandler(
 	s.notificationHandlers[method] = handler
 }
 
-// serverCapabilities builds the capability set advertised by this server.
+// serverCapabilitiesSnapshot builds the capability set advertised by this server.
 // It is shared by the legacy initialize handshake and the modern
-// server/discover RPC.
+// server/discover RPC, which leaves the tasks capability out.
 func (s *MCPServer) serverCapabilitiesSnapshot() mcp.ServerCapabilities {
 	// Capabilities are registered at runtime - AddTool implicitly enables the
 	// tools capability, for example - so reads must be synchronized against

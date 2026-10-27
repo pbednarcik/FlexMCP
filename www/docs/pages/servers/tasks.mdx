@@ -43,6 +43,8 @@ s := server.NewMCPServer("Task Server", "1.0.0",
 )
 ```
 
+This is the 2025-11-25 `tasks` capability, advertised in the answer to `initialize`. `server/discover` leaves it out: protocol version 2026-07-28 moved tasks into the Tasks extension (`io.modelcontextprotocol/tasks`), which FlexMCP does not serve yet.
+
 ## Registering Task Tools
 
 ### AddTaskTool

@@ -96,6 +96,38 @@ func TestMCPServer_TaskCapabilities(t *testing.T) {
 	}
 }
 
+// server/discover answers in the 2026-07-28 shape, whose ServerCapabilities
+// has no tasks member: that revision moved tasks into an extension, declared
+// under capabilities.extensions (Tasks.md rows 1 and 26). initialize keeps
+// the 2025-11-25 tasks capability, and both carry the extensions map.
+func TestDiscoverLeavesTheLegacyTasksCapabilityOut(t *testing.T) {
+	srv := newModernTestServer(t,
+		WithTaskCapabilities(true, true, true),
+		WithExtensions(map[string]any{"example.com/ext": map[string]any{}}),
+	)
+
+	message := decodeJSONRPC(t, postModern(t, srv.URL, mcp.MethodServerDiscover, nil))
+	result, ok := message["result"].(map[string]any)
+	require.True(t, ok, "expected a result, got %v", message)
+	capabilities, ok := result["capabilities"].(map[string]any)
+	require.True(t, ok, "expected capabilities, got %v", result)
+	assert.NotContains(t, capabilities, "tasks")
+	assert.Contains(t, capabilities, "tools")
+	assert.Equal(t, map[string]any{"example.com/ext": map[string]any{}}, capabilities["extensions"])
+
+	server := NewMCPServer("test-server", "1.0.0",
+		WithTaskCapabilities(true, true, true),
+		WithExtensions(map[string]any{"example.com/ext": map[string]any{}}),
+	)
+	response := server.HandleMessage(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test-client","version":"1.0.0"}}}`))
+	resp, ok := response.(mcp.JSONRPCResponse)
+	require.True(t, ok, "Expected JSONRPCResponse, got %T", response)
+	initialized, ok := resp.Result.(mcp.InitializeResult)
+	require.True(t, ok, "Expected InitializeResult, got %T", resp.Result)
+	assert.NotNil(t, initialized.Capabilities.Tasks)
+	assert.Contains(t, initialized.Capabilities.Extensions, "example.com/ext")
+}
+
 func TestMCPServer_TaskLifecycle(t *testing.T) {
 	server := NewMCPServer(
 		"test-server",
