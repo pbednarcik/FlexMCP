@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/pbednarcik/flexmcp/mcp"
 )
@@ -217,6 +218,20 @@ func readProtocolInfo(meta requestMeta, info *RequestProtocolInfo) error {
 		return errors.New("missing or invalid _meta field " + mcp.MetaKeyClientCapabilities)
 	}
 	info.ClientCapabilities = meta.ClientCapabilities
+
+	// Each extension maps to a settings object, {} for none (Lifecycle.md
+	// row 9). Of several malformed ones, the first by id is named, so the
+	// answer does not depend on map order.
+	var malformed string
+	found := false
+	for id, settings := range info.ClientCapabilities.Extensions {
+		if _, ok := settings.(map[string]any); !ok && (!found || id < malformed) {
+			malformed, found = id, true
+		}
+	}
+	if found {
+		return errors.New("invalid _meta field " + mcp.MetaKeyClientCapabilities + ": extension " + strconv.Quote(malformed) + " settings are not an object")
+	}
 
 	return nil
 }

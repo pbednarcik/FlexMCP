@@ -85,6 +85,22 @@ func TestHandleMessageModernToolCallAllocations(t *testing.T) {
 	assert.LessOrEqual(t, allocs, 30.0, "allocations per modern tools/call through HandleMessage")
 }
 
+// A declared extension costs only its decoding: the check that its settings
+// are an object allocates nothing. 39 allocations with one extension, 39
+// without the check.
+func TestHandleMessageModernToolCallWithAnExtensionAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	srv, ctx := readOnceServer(t)
+	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},"io.modelcontextprotocol/clientCapabilities":{"extensions":{"example.com/ext":{}}}}}}`)
+	out, err := json.Marshal(srv.HandleMessage(ctx, msg))
+	require.NoError(t, err)
+	require.Contains(t, string(out), `"text":"ok"`)
+	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
+	assert.LessOrEqual(t, allocs, 39.0, "allocations per modern tools/call declaring an extension through HandleMessage")
+}
+
 // A tools/call's arguments are read in one pass, the strings a client repeats
 // kept by the decoder: on bench/compare's payloads, 38 allocations through
 // json.Unmarshal into a map on the small one, 31 in one pass; 602 on the
@@ -130,6 +146,9 @@ func TestProtocolInfoReadOnceMatchesEachKeyOnItsOwn(t *testing.T) {
 		`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/logLevel":null,"io.modelcontextprotocol/clientCapabilities":{}}`,
 		`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/logLevel":"loud","io.modelcontextprotocol/clientCapabilities":{}}`,
 		`{"IO.MODELCONTEXTPROTOCOL/PROTOCOLVERSION":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`,
+		`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"extensions":{"example.com/ext":{"mode":"x"}}}}`,
+		`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"extensions":{"example.com/ext":null}}}`,
+		`{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{"extensions":{"example.com/z":[],"example.com/ok":{},"example.com/b":1}}}`,
 	} {
 		t.Run(meta, func(t *testing.T) {
 			message := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":` + meta + `}}`)
