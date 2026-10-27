@@ -74,14 +74,25 @@ func MethodRequiresNameHeader(method MCPMethod) bool {
 	case MethodToolsCall, MethodResourcesRead, MethodPromptsGet:
 		return true
 	default:
+		return methodNamesATask(method)
+	}
+}
+
+// methodNamesATask reports whether method is one of the Tasks extension's
+// requests that name a task; a header mismatch on one never echoes the id.
+func methodNamesATask(method MCPMethod) bool {
+	switch method {
+	case MethodTasksGet, MethodTasksCancel, MethodTasksUpdate:
+		return true
+	default:
 		return false
 	}
 }
 
 // ExtractHeaderName returns the value that belongs in the Mcp-Name header for
 // the given method and raw params: params.name for tools/call and prompts/get,
-// params.uri for resources/read. It reports false when the method does not
-// carry a name.
+// params.uri for resources/read, params.taskId for tasks/get, tasks/cancel and
+// tasks/update. It reports false when the method does not carry a name.
 func ExtractHeaderName(method MCPMethod, params json.RawMessage) (string, bool) {
 	switch method {
 	case MethodToolsCall:
@@ -104,6 +115,13 @@ func ExtractHeaderName(method MCPMethod, params json.RawMessage) (string, bool) 
 		}
 		if json.Unmarshal(params, &p) == nil {
 			return p.URI, true
+		}
+	case MethodTasksGet, MethodTasksCancel, MethodTasksUpdate:
+		var p struct {
+			TaskId string `json:"taskId"`
+		}
+		if json.Unmarshal(params, &p) == nil {
+			return p.TaskId, true
 		}
 	}
 	return "", false
@@ -724,6 +742,12 @@ func ValidateStandardHeadersWithName(getHeader func(string) string, protocolVers
 		}
 	}
 	if decoded != name {
+		if methodNamesATask(method) {
+			return HeaderMismatchError{
+				Header: HeaderName,
+				Reason: "header value does not match the task id in the body",
+			}
+		}
 		return HeaderMismatchError{
 			Header: HeaderName,
 			Reason: fmt.Sprintf("header value %q does not match body value %q", decoded, name),

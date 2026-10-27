@@ -550,6 +550,20 @@ func ParseTaskResultResult(rawMessage *json.RawMessage) (*TaskResultResult, erro
 	return &resultResult, nil
 }
 
+// ParseExtensionTaskStateResult parses a JSON message and converts it to an
+// ExtensionTaskStateResult. An inner result without a resultType is accepted,
+// as the Tasks extension's own examples omit it; see ParseCancelTaskResult.
+func ParseExtensionTaskStateResult(rawMessage *json.RawMessage) (*ExtensionTaskStateResult, error) {
+	if rawMessage == nil {
+		return nil, errors.New("response is nil")
+	}
+	var result ExtensionTaskStateResult
+	if err := json.Unmarshal(*rawMessage, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	return &result, nil
+}
+
 // ParseGetTaskResult parses a JSON message and converts it to a
 // GetTaskResult; see ParseCancelTaskResult.
 func ParseGetTaskResult(rawMessage *json.RawMessage) (*GetTaskResult, error) {

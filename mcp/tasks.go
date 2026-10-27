@@ -436,6 +436,51 @@ type CancelTaskResult struct {
 	Task
 }
 
+// ExtensionTaskRequest is the request of tasks/get and tasks/cancel in the
+// Tasks extension of protocol version 2026-07-28.
+type ExtensionTaskRequest struct {
+	Request
+	Header http.Header         `json:"-"`
+	Params ExtensionTaskParams `json:"params"`
+}
+
+// ExtensionTaskParams are the params of an [ExtensionTaskRequest].
+type ExtensionTaskParams struct {
+	// TaskId names the task.
+	TaskId string `json:"taskId"`
+}
+
+// UpdateExtensionTaskRequest is the tasks/update request of the Tasks
+// extension: the client's answers to the input requests of a task.
+type UpdateExtensionTaskRequest struct {
+	Request
+	Header http.Header               `json:"-"`
+	Params UpdateExtensionTaskParams `json:"params"`
+}
+
+// UpdateExtensionTaskParams are the params of an [UpdateExtensionTaskRequest].
+type UpdateExtensionTaskParams struct {
+	// TaskId names the task.
+	TaskId string `json:"taskId"`
+	// InputResponses answers the task's input requests, by their keys.
+	InputResponses InputResponses `json:"inputResponses"`
+}
+
+// ExtensionTaskStateResult is the answer to tasks/get in the Tasks extension:
+// the task, and as its state requires the outcome of the call (TaskResult,
+// when completed), the error it failed with (Error, when failed) or the input
+// it waits for (InputRequests, when input_required).
+type ExtensionTaskStateResult struct {
+	Result
+	ExtensionTask
+	// TaskResult is the tool call's result, for a completed task.
+	TaskResult *CallToolResult `json:"result,omitempty"`
+	// Error is why the call failed, for a failed task.
+	Error *JSONRPCErrorDetails `json:"error,omitempty"`
+	// InputRequests are what an input_required task waits for.
+	InputRequests InputRequests `json:"inputRequests,omitempty"`
+}
+
 // TaskStatusNotification is sent when a task's status changes.
 type TaskStatusNotification struct {
 	Notification

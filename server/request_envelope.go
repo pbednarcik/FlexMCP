@@ -37,24 +37,37 @@ type requestEnvelope struct {
 }
 
 // paramsPeek is what the checks before dispatch read from params: the
-// protocol keys of _meta, the name or uri the Mcp-Name header carries, and
-// the request a cancellation names, which the stdio transport acts on.
+// protocol keys of _meta, the name, uri or task id the Mcp-Name header
+// carries, and the request a cancellation names, which the stdio transport
+// acts on.
 type paramsPeek struct {
-	Meta      requestMeta     `json:"_meta"`
-	Name      string          `json:"name"`
-	URI       string          `json:"uri"`
+	Meta requestMeta `json:"_meta"`
+	Name string      `json:"name"`
+	URI  string      `json:"uri"`
+	// TaskId stays raw so that a task id of another type fails only the
+	// Mcp-Name check, as it does in [mcp.ExtractHeaderName], and not the read.
+	TaskId    json.RawMessage `json:"taskId"`
 	RequestID json.RawMessage `json:"requestId"`
 }
 
 // headerName reports what [mcp.ExtractHeaderName] finds in params for
 // method: the name of a tools/call or prompts/get, the uri of a
-// resources/read.
+// resources/read, the task id of a tasks/get, tasks/cancel or tasks/update.
 func (p *paramsPeek) headerName(method mcp.MCPMethod) (string, bool) {
 	switch method {
 	case mcp.MethodToolsCall, mcp.MethodPromptsGet:
 		return p.Name, true
 	case mcp.MethodResourcesRead:
 		return p.URI, true
+	case mcp.MethodTasksGet, mcp.MethodTasksCancel, mcp.MethodTasksUpdate:
+		if len(p.TaskId) == 0 {
+			return "", true
+		}
+		var id string
+		if json.Unmarshal(p.TaskId, &id) != nil {
+			return "", false
+		}
+		return id, true
 	}
 	return "", false
 }

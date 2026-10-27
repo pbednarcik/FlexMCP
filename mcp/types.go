@@ -103,6 +103,10 @@ const (
 	// https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks
 	MethodTasksCancel MCPMethod = "tasks/cancel"
 
+	// MethodTasksUpdate delivers the client's answers to the input requests of
+	// a task of the Tasks extension of protocol version 2026-07-28.
+	MethodTasksUpdate MCPMethod = "tasks/update"
+
 	// MethodNotificationInitialized indicates that the client completed initialization.
 	// https://modelcontextprotocol.io/specification/2024-11-05/basic/lifecycle/#initialization
 	MethodNotificationInitialized MCPMethod = "notifications/initialized"

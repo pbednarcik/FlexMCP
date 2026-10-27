@@ -66,6 +66,10 @@ func TestExtractHeaderName(t *testing.T) {
 		{"tools/call uses the tool name", MethodToolsCall, `{"name":"search"}`, "search", true},
 		{"prompts/get uses the prompt name", MethodPromptsGet, `{"name":"summarize"}`, "summarize", true},
 		{"resources/read uses the uri", MethodResourcesRead, `{"uri":"file:///a"}`, "file:///a", true},
+		{"tasks/get uses the task id", MethodTasksGet, `{"taskId":"abc"}`, "abc", true},
+		{"an absent task id is an empty name", MethodTasksCancel, `{}`, "", true},
+		{"a null task id is an empty name", MethodTasksUpdate, `{"taskId":null}`, "", true},
+		{"a non-string task id carries no name", MethodTasksGet, `{"taskId":5}`, "", false},
 		{"other methods carry no name", MethodToolsList, `{}`, "", false},
 	}
 
@@ -159,6 +163,28 @@ func TestValidateStandardHeaders(t *testing.T) {
 			method:  MethodToolsCall,
 			params:  callParams,
 			wantErr: true,
+		},
+		{
+			name:    "a task method with a matching task id passes",
+			headers: map[string]string{HeaderMethod: "tasks/get", HeaderName: "abc"},
+			version: ProtocolVersion20260728,
+			method:  MethodTasksGet,
+			params:  json.RawMessage(`{"taskId":"abc"}`),
+		},
+		{
+			name:    "a task method without a name header is rejected",
+			headers: map[string]string{HeaderMethod: "tasks/get"},
+			version: ProtocolVersion20260728,
+			method:  MethodTasksGet,
+			params:  json.RawMessage(`{"taskId":"abc"}`),
+			wantErr: true,
+		},
+		{
+			name:    "an earlier revision's task method needs no name header",
+			headers: nil,
+			version: ProtocolVersion20251125,
+			method:  MethodTasksGet,
+			params:  json.RawMessage(`{"taskId":"abc"}`),
 		},
 	}
 
