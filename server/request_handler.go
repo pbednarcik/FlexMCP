@@ -352,6 +352,9 @@ func (s *MCPServer) dispatchRequest(
 			return err.ToJSONRPCError()
 		}
 		s.hooks.afterCallTool(ctx, baseMessage.ID, &request, result)
+		if err = s.guardToolCallResult(ctx, baseMessage.ID, result); err != nil {
+			return err.ToJSONRPCError()
+		}
 		return createResponse(baseMessage.ID, result)
 	case mcp.MethodTasksGet:
 		var request mcp.GetTaskRequest

@@ -589,7 +589,7 @@ func (s *MCPServer) handleToolCall(
 		finalHandler = m(finalHandler)
 	}
 
-	result, err := finalHandler(ctx, request)
+	result, err := finalHandler(s.withTaskOrigin(ctx, tool.Tool, outputSchema, outputSchemaKept), request)
 	if err != nil {
 		return nil, handlerError(ctx, id, err)
 	}

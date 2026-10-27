@@ -220,7 +220,7 @@ type OnAfterCompleteFunc func(ctx context.Context, id any, message *mcp.Complete
 // such as latency histograms, distributed tracing spans, or slow-request
 // logging.
 //
-// Two caveats apply:
+// Three caveats apply:
 //
 //  1. OnError may fire without a prior OnBeforeAny when the dispatcher rejects
 //     a request before invoking the per-method handler. This happens for
@@ -243,6 +243,10 @@ type OnAfterCompleteFunc func(ctx context.Context, id any, message *mcp.Complete
 //     but only after the hooks were skipped. Bookkeeping consumers that must
 //     survive such panics should install the recovery middleware and run a
 //     periodic sweeper.
+//
+//  3. A tools/call whose answer, after every success hook, carries a task
+//     this server may not answer is refused with an internal error after
+//     OnSuccess has fired; OnError does not fire for it.
 //
 // Hooks fire synchronously in the request goroutine, in the order they were
 // registered with the corresponding Add* method. A long-running hook will

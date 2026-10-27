@@ -378,6 +378,11 @@ func WithTaskKey(key []byte) ServerOption {
 // Ids travel in the Mcp-Name header, so proxies and access logs see them.
 // Never bind a connection or session key, which changes on reconnect, or
 // clientInfo, which the client sets itself.
+//
+// caller sees the request's context as the transport built it, with what
+// [WithHTTPContextFunc] and the like put there, before any tool middleware:
+// a principal that tool middleware sets is not seen. It is resolved on that
+// context once for a tool call and for every tasks/* method alike.
 func WithTaskCaller(caller func(ctx context.Context) string) ServerOption {
 	return func(s *MCPServer) {
 		s.taskCaller = caller

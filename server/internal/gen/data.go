@@ -15,6 +15,10 @@ type MCPRequestType struct {
 	// Settle, when set, is the server method run on the request once the
 	// handler returns, before the hooks after the request see it.
 	Settle string
+	// Final, when set, is the server method run on the result last, after
+	// the hooks after the request, which may answer an error instead. Its
+	// signature is (ctx context.Context, id any, result any) *requestError.
+	Final string
 	// RemovedInModern marks methods removed by protocol version 2026-07-28.
 	// They are rejected with METHOD_NOT_FOUND on requests declaring that
 	// version or later.
@@ -121,6 +125,7 @@ var MCPRequestTypes = []MCPRequestType{
 		ResultIsAny: true, // Returns 'any' to support both CallToolResult and CreateTaskResult
 		Decode:      "decodeToolCall",
 		Settle:      "settleToolCall",
+		Final:       "guardToolCallResult",
 	}, {
 		MethodName:  "MethodTasksGet",
 		ParamType:   "GetTaskRequest",

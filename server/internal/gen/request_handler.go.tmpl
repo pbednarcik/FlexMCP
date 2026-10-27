@@ -61,7 +61,10 @@ func (s *MCPServer) dispatchRequest(
 			s.hooks.onError(ctx, baseMessage.ID, baseMessage.Method, &request, err)
 			return err.ToJSONRPCError()
 		}
-		s.hooks.after{{.HookName}}(ctx, baseMessage.ID, &request, result)
+		s.hooks.after{{.HookName}}(ctx, baseMessage.ID, &request, result){{ if .Final }}
+		if err = s.{{.Final}}(ctx, baseMessage.ID, result); err != nil {
+			return err.ToJSONRPCError()
+		}{{ end }}
 		{{ if .ResultIsAny }}return createResponse(baseMessage.ID, result){{ else }}return createResponse(baseMessage.ID, *result){{ end }}
 	{{- end }}
 	default:
