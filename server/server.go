@@ -218,11 +218,15 @@ type MCPServer struct {
 	hooks                    *Hooks
 	taskHooks                *TaskHooks
 	tasks                    map[string]*taskEntry
-	expiredTasks             map[string]string // Recently expired task IDs, each with its session
-	maxConcurrentTasks       *int              // Optional limit on concurrent running tasks
-	taskTTL                  time.Duration     // The longest a task is kept; see WithTaskTTL
-	activeTasks              int               // Tasks whose handler may still be running
-	inflightCancels          sync.Map          // inflightID -> *inflightRequest, the requests in flight
+	expiredTasks             map[string]string            // Recently expired task IDs, each with its session
+	maxConcurrentTasks       *int                         // Optional limit on concurrent running tasks
+	taskTTL                  time.Duration                // The longest a task is kept; see WithTaskTTL
+	taskKey                  []byte                       // The secret of WithTaskKey; nil for a random one
+	taskCaller               func(context.Context) string // The caller binding of WithTaskCaller; nil binds no one
+	taskNamespace            string                       // The namespace of WithTaskNamespace; "" for the server's name
+	taskSealer               *taskSealer                  // Mints and checks task ids; built once the options ran
+	activeTasks              int                          // Tasks whose handler may still be running
+	inflightCancels          sync.Map                     // inflightID -> *inflightRequest, the requests in flight
 	inputValidator           *inputSchemaValidator
 	outputValidator          *outputSchemaValidator
 	strictInputSchemaDefault bool
@@ -349,6 +353,11 @@ func NewMCPServer(
 	// result carries it without boxing its own copy: a boxed struct is copied
 	// to the heap.
 	s.serverInfo = s.serverImplementation()
+	namespace := s.taskNamespace
+	if namespace == "" {
+		namespace = s.name
+	}
+	s.taskSealer = newTaskSealer(s.taskKey, namespace)
 
 	return s
 }

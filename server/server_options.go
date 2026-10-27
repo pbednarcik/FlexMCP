@@ -352,6 +352,45 @@ func WithTaskTTL(d time.Duration) ServerOption {
 	}
 }
 
+// WithTaskKey sets the secret that authenticates the Tasks extension's task
+// ids: a strong random secret of at least 32 bytes, or the option panics.
+// Servers sharing the key and the namespace open each other's ids.
+//
+// Without the option, the server makes a random key when it is built, so
+// rebuilding it, or building a second one, turns its live ids "gone".
+func WithTaskKey(key []byte) ServerOption {
+	if len(key) < taskKeyMinLen {
+		panic(fmt.Sprintf("server.WithTaskKey: the key has %d bytes and needs at least %d", len(key), taskKeyMinLen))
+	}
+	key = append([]byte(nil), key...)
+	return func(s *MCPServer) {
+		s.taskKey = key
+	}
+}
+
+// WithTaskCaller binds each Tasks extension task id to the identity caller
+// returns for the request's context, typically the authenticated principal;
+// any other caller is told no such task exists.
+//
+// Without it, ids are bound to no one: in an authenticated deployment anyone
+// holding an id can read the task, cancel it and answer its input requests.
+// Ids travel in the Mcp-Name header, so proxies and access logs see them.
+// Never bind a connection or session key, which changes on reconnect, or
+// clientInfo, which the client sets itself.
+func WithTaskCaller(caller func(ctx context.Context) string) ServerOption {
+	return func(s *MCPServer) {
+		s.taskCaller = caller
+	}
+}
+
+// WithTaskNamespace sets the namespace the Tasks extension's task ids are
+// authenticated under; "" keeps the default, the server's name.
+func WithTaskNamespace(namespace string) ServerOption {
+	return func(s *MCPServer) {
+		s.taskNamespace = namespace
+	}
+}
+
 // WithPromptCapabilities configures prompt-related server capabilities
 func WithPromptCapabilities(listChanged bool) ServerOption {
 	return func(s *MCPServer) {
