@@ -225,6 +225,8 @@ type MCPServer struct {
 	taskCaller               func(context.Context) string // The caller binding of WithTaskCaller; nil binds no one
 	taskNamespace            string                       // The namespace of WithTaskNamespace; "" for the server's name
 	taskSealer               *taskSealer                  // Mints and checks task ids; built once the options ran
+	taskHandler              TaskHandler                  // The Tasks extension's handler; nil without WithTaskHandler
+	discoverExtensions       map[string]any               // The extensions server/discover advertises, the tasks entry included; nil to advertise capabilities.extensions as is
 	activeTasks              int                          // Tasks whose handler may still be running
 	inflightCancels          sync.Map                     // inflightID -> *inflightRequest, the requests in flight
 	inputValidator           *inputSchemaValidator
@@ -358,6 +360,7 @@ func NewMCPServer(
 		namespace = s.name
 	}
 	s.taskSealer = newTaskSealer(s.taskKey, namespace)
+	s.deriveTaskAdvertisement()
 
 	return s
 }

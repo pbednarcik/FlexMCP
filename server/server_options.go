@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/pbednarcik/flexmcp/mcp"
@@ -467,15 +468,19 @@ func WithExperimental(experimental map[string]any) ServerOption {
 // settings.
 //
 // Extension identifiers follow the _meta key naming rules, so they carry a
-// mandatory prefix - for example "io.modelcontextprotocol/tasks" for the Tasks
-// extension, or "io.modelcontextprotocol/ui" for MCP Apps.
+// mandatory prefix - for example "io.modelcontextprotocol/ui" for MCP Apps.
+// The Tasks extension is not advertised this way: [WithTaskHandler] does it.
+// A Tasks entry given here is replaced by the advertised one when a handler
+// is set, and panics at construction without one.
+//
+// The map is copied, so later changes to it do not reach the server.
 //
 // Extensions were formalized in protocol version 2026-07-28. When one party
 // supports an extension and the other does not, the supporting party must
 // either fall back to core protocol behaviour or reject the request.
 func WithExtensions(extensions map[string]any) ServerOption {
 	return func(s *MCPServer) {
-		s.capabilities.extensions = extensions
+		s.capabilities.extensions = maps.Clone(extensions)
 	}
 }
 

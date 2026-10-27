@@ -80,6 +80,9 @@ func (s *MCPServer) handleDiscover(
 	// The tasks capability left the core in 2026-07-28 (Tasks.md row 26).
 	capabilities := s.serverCapabilitiesSnapshot()
 	capabilities.Tasks = nil
+	if s.discoverExtensions != nil {
+		capabilities.Extensions = s.discoverExtensions
+	}
 
 	result := &mcp.DiscoverResult{
 		SupportedVersions: SupportedProtocolVersionsFromContext(ctx),
