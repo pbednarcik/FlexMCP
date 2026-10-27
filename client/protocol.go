@@ -191,9 +191,10 @@ func (c *Client) ProtocolVersion() string {
 	return c.currentEra().version
 }
 
-// effectiveCapabilities returns the client capabilities to declare in era e,
-// merging the configured set with the capabilities implied by the registered
-// handlers.
+// effectiveCapabilities returns the client capabilities to declare in era e:
+// the configured set, merged with the capabilities implied by the registered
+// handlers, less what protocol version 2026-07-28 removed (roots listChanged
+// and tasks).
 func (c *Client) effectiveCapabilities(e *era) mcp.ClientCapabilities {
 	modern := mcp.IsModernProtocol(e.version)
 	capabilities := e.clientCapabilities
@@ -215,6 +216,10 @@ func (c *Client) effectiveCapabilities(e *era) mcp.ClientCapabilities {
 	}
 	if c.elicitationHandler != nil && capabilities.Elicitation == nil {
 		capabilities.Elicitation = &mcp.ElicitationCapability{}
+	}
+	// The tasks capability left the core in 2026-07-28 (Lifecycle.md row 8).
+	if modern {
+		capabilities.Tasks = nil
 	}
 	return capabilities
 }

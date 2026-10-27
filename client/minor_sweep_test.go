@@ -341,6 +341,36 @@ func TestSuppliedRootsCapabilityLosesListChangedOnTheModernEra(t *testing.T) {
 	assert.True(t, c.GetClientCapabilities().Roots.ListChanged, "the configuration is untouched")
 }
 
+// A 2025-11-25 tasks capability the caller supplied is not sent on the
+// modern era, whose ClientCapabilities has no tasks member (Lifecycle.md row
+// 8); what the caller configured is left as it is, so a handshake-era
+// connection still sends it.
+func TestSuppliedTasksCapabilityIsLeftOutOnTheModernEra(t *testing.T) {
+	var declared map[string]json.RawMessage
+	var mu sync.Mutex
+	tr := &scriptedTransport{respond: modernScript(func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+		var capabilities map[string]json.RawMessage
+		_ = json.Unmarshal(requestMeta(t, request)[mcp.MetaKeyClientCapabilities], &capabilities)
+		mu.Lock()
+		declared = capabilities
+		mu.Unlock()
+		return resultResponse(request, `{"tools":[]}`), nil
+	})}
+	supplied := mcp.ClientCapabilities{
+		Tasks:      &mcp.TasksCapability{List: &struct{}{}},
+		Extensions: map[string]any{mcp.ExtensionTasks: map[string]any{}},
+	}
+	c := connectScripted(t, tr, WithClientCapabilities(supplied))
+
+	_, err := c.ListTools(t.Context(), mcp.ListToolsRequest{})
+	require.NoError(t, err)
+	mu.Lock()
+	assert.NotContains(t, declared, "tasks")
+	assert.Contains(t, declared, "extensions")
+	mu.Unlock()
+	assert.NotNil(t, c.GetClientCapabilities().Tasks, "the configuration is untouched")
+}
+
 // The default clientInfo names this SDK at the version the binary was built
 // against: the dependency's version, the replacement's when the module is
 // replaced (a local replacement has none), the main module's when this is

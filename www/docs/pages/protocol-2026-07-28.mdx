@@ -329,6 +329,8 @@ need code are marked **(code)**.
   version it was built with.
 - Roots must be `file://` URIs. On this revision `listChanged` is not declared
   and `RootListChanges` sends nothing.
+- The 2025-11-25 `tasks` capability is not declared on this revision;
+  `GetClientCapabilities` still returns it as configured.
 - A tool call refused for a stale `Mcp-Param-*` header lists the tools again
   and retries once. A complete `IterTools` walk replaces the tool cache, as
   `ListTools` does; one stopped early merges what it read.
