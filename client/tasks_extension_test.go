@@ -310,6 +310,90 @@ func TestGetExtensionTaskReturnsTheTaskWithItsStatusMember(t *testing.T) {
 	})
 }
 
+// A tasks/get answer that breaks the extension's rules is refused, by
+// GetExtensionTask and by WaitForExtensionTask, with an error naming what is
+// wrong and neither task id: another task than the one asked for, a
+// completed task without its result or with one that is a task or not
+// complete, a failed task without its error.
+func TestGetExtensionTaskRefusesAnInvalidState(t *testing.T) {
+	const task = `"createdAt":"2026-01-01T00:00:00Z","lastUpdatedAt":"2026-01-01T00:00:01Z","ttlMs":null`
+	nestedTask := `,"result":{"resultType":"task","taskId":"nested","status":"working",` + task + `}`
+	tests := map[string]string{
+		"another task":                       `{"resultType":"complete","taskId":"different","status":"working",` + task + `}`,
+		"completed without its result":       stateJSON("completed", nil, ""),
+		"completed with a task":              stateJSON("completed", nil, nestedTask),
+		"completed with input_required":      stateJSON("completed", nil, `,"result":{"resultType":"input_required","content":[],"inputRequests":{"k":{"method":"roots/list"}}}`),
+		"completed with another result type": stateJSON("completed", nil, `,"result":{"resultType":"partial","content":[]}`),
+		"failed without its error":           stateJSON("failed", nil, ""),
+	}
+	for name, answer := range tests {
+		for _, wait := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wait=%v", name, wait), func(t *testing.T) {
+				tr := &scriptedTransport{respond: modernScript(func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+					return resultResponse(request, answer), nil
+				})}
+				c := connectScripted(t, tr, withTasksExtension())
+
+				var state *mcp.ExtensionTaskStateResult
+				var err error
+				if wait {
+					// A wait that took the state for a working task would poll on.
+					ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+					defer cancel()
+					state, err = c.WaitForExtensionTask(ctx, extensionTaskID, time.Millisecond)
+				} else {
+					state, err = c.GetExtensionTask(t.Context(), extensionTaskID)
+				}
+
+				require.ErrorIs(t, err, ErrInvalidTaskState)
+				assert.Nil(t, state)
+				assert.NotContains(t, err.Error(), extensionTaskID)
+				assert.NotContains(t, err.Error(), "different")
+				assert.NotContains(t, err.Error(), "nested")
+			})
+		}
+	}
+}
+
+// An answer without resultType is complete (a client MUST read a missing one
+// so): GetExtensionTask and WaitForExtensionTask take a tasks/get answer
+// without one, and CancelExtensionTask and UpdateExtensionTask an
+// acknowledgement without one.
+func TestExtensionTaskMethodsTakeAnAnswerWithoutResultType(t *testing.T) {
+	state := `{"taskId":"` + extensionTaskID + `","status":"completed","createdAt":"2026-01-01T00:00:00Z","lastUpdatedAt":"2026-01-01T00:00:01Z","ttlMs":null,"result":{"content":[]}}`
+	calls := map[string]func(c *Client) error{
+		"get": func(c *Client) error {
+			got, err := c.GetExtensionTask(t.Context(), extensionTaskID)
+			if err == nil {
+				assert.Equal(t, mcp.TaskStatusCompleted, got.Status)
+			}
+			return err
+		},
+		"wait": func(c *Client) error {
+			got, err := c.WaitForExtensionTask(t.Context(), extensionTaskID, time.Millisecond)
+			if err == nil {
+				assert.Equal(t, mcp.TaskStatusCompleted, got.Status)
+			}
+			return err
+		},
+		"cancel": func(c *Client) error { return c.CancelExtensionTask(t.Context(), extensionTaskID) },
+		"update": func(c *Client) error { return c.UpdateExtensionTask(t.Context(), extensionTaskID, nil) },
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			tr := &scriptedTransport{respond: modernScript(func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+				if request.Method == string(mcp.MethodTasksGet) {
+					return resultResponse(request, state), nil
+				}
+				return resultResponse(request, `{}`), nil
+			})}
+			c := connectScripted(t, tr, withTasksExtension())
+
+			require.NoError(t, call(c))
+		})
+	}
+}
+
 // The server's -32602, for an id it does not know or one that is gone, reaches
 // the caller as an mcp.TaskRefusedError with the server's reason, which is
 // still an mcp.ErrInvalidParams. A -32602 without a reason stays an ordinary
@@ -427,6 +511,13 @@ func TestWaitForExtensionTaskWaitsTheServersIntervalWithAFloor(t *testing.T) {
 	}
 }
 
+// terminalMembers are the members a tasks/get answer carries for a status
+// that needs one.
+var terminalMembers = map[string]string{
+	"completed": `,"result":{"content":[]}`,
+	"failed":    `,"error":{"code":-32603,"message":"boom"}`,
+}
+
 // A terminal status ends the wait, and so does input_required, which only
 // the caller can move on: the state is returned and nothing is polled again.
 func TestWaitForExtensionTaskReturnsOnTerminalAndInputRequired(t *testing.T) {
@@ -437,7 +528,7 @@ func TestWaitForExtensionTaskReturnsOnTerminalAndInputRequired(t *testing.T) {
 					if n == 0 {
 						return stateJSON("working", new(int64(1)), "")
 					}
-					return stateJSON(status, nil, "")
+					return stateJSON(status, nil, terminalMembers[status])
 				}}
 				tr := &scriptedTransport{respond: modernScript(rec.respond)}
 				c := connectScripted(t, tr, withTasksExtension())

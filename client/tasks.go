@@ -33,6 +33,10 @@ var (
 	// when a server answers a status outside the five the extension defines:
 	// no later poll would make it terminal.
 	ErrUnknownTaskStatus = errors.New("the server answered an unknown task status")
+	// ErrInvalidTaskState is returned, wrapped with what is wrong, by
+	// GetExtensionTask and WaitForExtensionTask when a server's tasks/get
+	// answer breaks the extension's rules.
+	ErrInvalidTaskState = errors.New("the server answered an invalid task state")
 )
 
 // refuseLegacyTaskMethod returns ErrLegacyTaskMethod on a 2026-07-28
@@ -59,6 +63,11 @@ const minExtensionPollInterval = 250 * time.Millisecond
 // mcp.TaskRefusedError carrying the server's reason (mcp.IsTaskGone tells a
 // gone task, whose call is to be made again), which is still an
 // mcp.ErrInvalidParams.
+//
+// An answer that breaks the extension's rules returns an error wrapping
+// ErrInvalidTaskState: the state of another task than taskID, a completed
+// task without its result or with one that is a task or not complete, a
+// failed task without its error. An answer without resultType is complete.
 func (c *Client) GetExtensionTask(ctx context.Context, taskID string) (*mcp.ExtensionTaskStateResult, error) {
 	response, err := c.sendExtensionTask(ctx, mcp.MethodTasksGet, mcp.ExtensionTaskParams{TaskId: taskID})
 	if err != nil {
@@ -71,7 +80,33 @@ func (c *Client) GetExtensionTask(ctx context.Context, taskID string) (*mcp.Exte
 	if err := c.checkResultType(state.ResultType); err != nil {
 		return nil, err
 	}
+	if err := checkTaskState(state, taskID); err != nil {
+		return nil, err
+	}
 	return state, nil
+}
+
+// checkTaskState refuses state, the tasks/get answer for taskID, when it
+// breaks the extension's rules, naming the problem and neither id.
+func checkTaskState(state *mcp.ExtensionTaskStateResult, taskID string) error {
+	var problem string
+	completed := state.Status == mcp.TaskStatusCompleted
+	switch {
+	case state.TaskId != taskID:
+		problem = "it is the state of another task than the one asked for"
+	case completed && state.TaskResult == nil:
+		problem = "a completed task carries no result"
+	case completed && (state.TaskResult.Task != nil || state.TaskResult.ResultType == mcp.ResultTypeTask):
+		problem = "a completed task's result is itself a task"
+	case completed && state.TaskResult.ResultType != "" && state.TaskResult.ResultType != mcp.ResultTypeComplete:
+		// The extension's own examples leave the inner resultType out.
+		problem = "a completed task's result is not complete"
+	case state.Status == mcp.TaskStatusFailed && state.Error == nil:
+		problem = "a failed task carries no error"
+	default:
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrInvalidTaskState, problem)
 }
 
 // CancelExtensionTask asks the server to cancel a task of the Tasks
@@ -117,6 +152,7 @@ func (c *Client) UpdateExtensionTask(ctx context.Context, taskID string, respons
 //
 // A status outside the five the extension defines returns the state with an
 // error wrapping ErrUnknownTaskStatus that names the status, not the task.
+// An answer GetExtensionTask refuses as ErrInvalidTaskState ends the wait.
 // See GetExtensionTask for the declaration and the errors.
 func (c *Client) WaitForExtensionTask(ctx context.Context, taskID string, fallback time.Duration) (*mcp.ExtensionTaskStateResult, error) {
 	if fallback <= 0 {
