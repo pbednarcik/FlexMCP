@@ -230,6 +230,15 @@ func WithTaskResultCreatedAt(t time.Time) TaskResultOption {
 // The request's context ends when the handler returns: run the handed-over
 // work under [DetachTaskContext].
 func NewTaskResult(ctx context.Context, handlerID string, opts ...TaskResultOption) (*mcp.CallToolResult, error) {
+	var cfg taskResultConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return newTaskResult(ctx, handlerID, cfg)
+}
+
+// newTaskResult is [NewTaskResult] with its options applied to cfg.
+func newTaskResult(ctx context.Context, handlerID string, cfg taskResultConfig) (*mcp.CallToolResult, error) {
 	if handlerID == "" {
 		return nil, ErrEmptyHandlerID
 	}
@@ -240,10 +249,6 @@ func NewTaskResult(ctx context.Context, handlerID string, opts ...TaskResultOpti
 	taskID, err := call.srv.taskSealer.seal(handlerID, call.srv.taskCallerOf(call.Context))
 	if err != nil {
 		return nil, err
-	}
-	var cfg taskResultConfig
-	for _, opt := range opts {
-		opt(&cfg)
 	}
 	now := time.Now()
 	if cfg.createdAt.IsZero() {

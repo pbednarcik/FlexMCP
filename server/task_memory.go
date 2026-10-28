@@ -184,8 +184,8 @@ func (m *MemoryTasks) Run(ctx context.Context, fn func(ctx context.Context, stat
 	}
 	// One source for the TTL and the creation time: what is reported at the
 	// hand-over is what every state reports.
-	reported := make([]TaskResultOption, 0, len(opts)+2)
-	reported = append(append(reported, opts...), WithTaskResultTTL(ttl), WithTaskResultCreatedAt(createdAt))
+	reported := cfg
+	reported.ttl, reported.createdAt = &ttl, createdAt
 
 	var raw [16]byte
 	_, _ = rand.Read(raw[:])
@@ -221,7 +221,7 @@ func (m *MemoryTasks) Run(ctx context.Context, fn func(ctx context.Context, stat
 	m.workers.Add(1)
 	m.mu.Unlock()
 
-	res, err := NewTaskResult(ctx, job.id, reported...)
+	res, err := newTaskResult(ctx, job.id, reported)
 	if err != nil {
 		m.mu.Lock()
 		delete(m.jobs, job.id)
