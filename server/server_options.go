@@ -381,8 +381,10 @@ func WithTaskKey(key []byte) ServerOption {
 //
 // caller sees the request's context as the transport built it, with what
 // [WithHTTPContextFunc] and the like put there, before any tool middleware:
-// a principal that tool middleware sets is not seen. It is resolved on that
-// context once for a tool call and for every tasks/* method alike.
+// a principal that tool middleware sets is not seen. It runs in each tasks/*
+// request, and twice for a call that hands over: when [NewTaskResult] seals
+// the id and when the answer is checked. It must be cheap, and stable for a
+// request, or the check refuses the hand-over.
 func WithTaskCaller(caller func(ctx context.Context) string) ServerOption {
 	return func(s *MCPServer) {
 		s.taskCaller = caller
