@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"time"
 
 	"github.com/pbednarcik/flexmcp/mcp"
@@ -33,8 +34,14 @@ var (
 )
 
 var (
-	errTaskNotSealed   = errors.New("its id was not minted by NewTaskResult for this caller")
-	errTaskWithoutTask = errors.New("its resultType is task but it carries no task")
+	errTaskNotSealed        = errors.New("its id was not minted by NewTaskResult for this caller")
+	errTaskWithoutTask      = errors.New("its resultType is task but it carries no task")
+	errLegacyTaskOnModern   = errors.New("it is a 2025-11-25 task, on a 2026-07-28 request")
+	errLegacyTaskResultType = errors.New("it is a 2025-11-25 task, which carries no resultType")
+	errTaskAnswerIsTask     = errors.New("only tools/call is answered with a task")
+	errTaskAnswerIncomplete = errors.New("its resultType is not complete")
+	errTaskResultIsTask     = errors.New("the result it carries is itself a task")
+	errTaskResultAsksInput  = errors.New("the result it carries asks for input")
 )
 
 // TaskHandler owns a server's tasks under the Tasks extension
@@ -277,11 +284,21 @@ func taskTTLMs(d *time.Duration) *int64 {
 	return &ms
 }
 
+// maxPollIntervalMs is the longest pollIntervalMs sent: the most whole
+// milliseconds a time.Duration holds.
+const maxPollIntervalMs = math.MaxInt64 / int64(time.Millisecond)
+
 func taskPollIntervalMs(d *time.Duration) *int64 {
 	if d == nil || *d <= 0 {
 		return nil
 	}
-	ms := int64((*d + time.Millisecond - 1) / time.Millisecond)
+	// Divided first, so the longest duration does not overflow, and rounded
+	// up no further than the longest interval a client can turn back into a
+	// time.Duration.
+	ms := int64(*d / time.Millisecond)
+	if *d%time.Millisecond != 0 && ms < maxPollIntervalMs {
+		ms++
+	}
 	return &ms
 }
 
@@ -363,34 +380,117 @@ func (s *MCPServer) withTaskOrigin(ctx context.Context, tool mcp.Tool, outputSch
 }
 
 // guardToolCallResult is the last check on a tools/call answer, after the
-// middleware and every hook: a task reaches the wire only with an id this
-// server minted for ctx's caller, on a 2026-07-28 request that declared the
-// extension. Anything else is an internal error, after OnSuccess, not OnError.
+// middleware and every hook, for each shape the call answers with: a task of
+// the extension reaches the wire only with an id this server minted for ctx's
+// caller, on a 2026-07-28 request that declared the extension; a 2025-11-25
+// task only on a legacy request, without the resultType that revision does
+// not have. Anything else is an internal error, after OnSuccess, not OnError.
 func (s *MCPServer) guardToolCallResult(ctx context.Context, id any, result any) *requestError {
-	res, ok := result.(*mcp.CallToolResult)
-	if !ok || res == nil || (res.Task == nil && res.ResultType != mcp.ResultTypeTask) {
-		return nil
-	}
-	info := RequestProtocolInfoFromContext(ctx)
-	declared := false
-	if info != nil && info.ClientCapabilities != nil {
-		_, declared = info.ClientCapabilities.Extensions[mcp.ExtensionTasks]
-	}
 	var reason error
-	switch {
-	case res.Task == nil:
-		reason = errTaskWithoutTask
-	case info == nil || !info.Modern:
-		reason = ErrNotModernRequest
-	case !declared:
-		reason = ErrTasksNotDeclared
-	default:
-		if _, err := s.taskSealer.open(res.Task.TaskId, s.taskCallerOf(ctx)); err != nil {
-			reason = errTaskNotSealed
+	switch res := result.(type) {
+	case *mcp.CallToolResult:
+		if res == nil || (res.Task == nil && res.ResultType != mcp.ResultTypeTask) {
+			return nil
+		}
+		reason = s.extensionTaskRefusal(ctx, res.Task)
+	case *mcp.CreateTaskResult:
+		if res == nil {
+			return nil
+		}
+		switch {
+		case IsModernRequest(ctx):
+			reason = errLegacyTaskOnModern
+		case res.ResultType != "":
+			reason = errLegacyTaskResultType
 		}
 	}
 	if reason == nil {
 		return nil
 	}
 	return &requestError{id: id, code: mcp.INTERNAL_ERROR, err: fmt.Errorf("tools/call refused a task answer: %w", reason)}
+}
+
+// extensionTaskRefusal is why task, a tools/call answer's, may not reach the
+// wire, nil when it may.
+func (s *MCPServer) extensionTaskRefusal(ctx context.Context, task *mcp.ExtensionTask) error {
+	info := RequestProtocolInfoFromContext(ctx)
+	declared := false
+	if info != nil && info.ClientCapabilities != nil {
+		_, declared = info.ClientCapabilities.Extensions[mcp.ExtensionTasks]
+	}
+	switch {
+	case task == nil:
+		return errTaskWithoutTask
+	case info == nil || !info.Modern:
+		return ErrNotModernRequest
+	case !declared:
+		return ErrTasksNotDeclared
+	}
+	if _, err := s.taskSealer.open(task.TaskId, s.taskCallerOf(ctx)); err != nil {
+		return errTaskNotSealed
+	}
+	return nil
+}
+
+// guardTaskMethodResult is the last check on the answer to tasks/get,
+// tasks/cancel and tasks/update, after every hook, in each era: only tools/call
+// is answered with a task, so the answer is complete, or left to be stamped
+// complete, and the result a tasks/get answer carries is neither a task nor a
+// request for input. Anything else is an internal error, after OnSuccess, not
+// OnError.
+func (*MCPServer) guardTaskMethodResult(_ context.Context, id any, result any) *requestError {
+	var reason error
+	switch res := result.(type) {
+	case *mcp.ExtensionTaskStateResult:
+		if res != nil {
+			reason = taskStateRefusal(res)
+		}
+	case *mcp.Result:
+		if res != nil {
+			reason = taskAnswerRefusal(res.ResultType)
+		}
+	case *mcp.GetTaskResult:
+		if res != nil {
+			reason = taskAnswerRefusal(res.ResultType)
+		}
+	case *mcp.CancelTaskResult:
+		if res != nil {
+			reason = taskAnswerRefusal(res.ResultType)
+		}
+	}
+	if reason == nil {
+		return nil
+	}
+	return &requestError{id: id, code: mcp.INTERNAL_ERROR, err: fmt.Errorf("a task method refused its answer: %w", reason)}
+}
+
+// taskAnswerRefusal is why a task method's answer of resultType may not reach
+// the wire, nil when it may: it is complete, or unset, which a modern answer
+// is stamped complete from and a legacy one leaves out.
+func taskAnswerRefusal(resultType mcp.ResultType) error {
+	switch resultType {
+	case "", mcp.ResultTypeComplete:
+		return nil
+	case mcp.ResultTypeTask:
+		return errTaskAnswerIsTask
+	default:
+		return errTaskAnswerIncomplete
+	}
+}
+
+// taskStateRefusal is why state, a tasks/get answer, may not reach the wire,
+// nil when it may.
+func taskStateRefusal(state *mcp.ExtensionTaskStateResult) error {
+	if err := taskAnswerRefusal(state.ResultType); err != nil {
+		return err
+	}
+	switch inner := state.TaskResult; {
+	case inner == nil:
+		return nil
+	case inner.Task != nil || inner.ResultType == mcp.ResultTypeTask:
+		return errTaskResultIsTask
+	case inner.NeedsInput():
+		return errTaskResultAsksInput
+	}
+	return nil
 }

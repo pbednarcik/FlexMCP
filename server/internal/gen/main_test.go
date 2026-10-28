@@ -99,3 +99,17 @@ func TestAModernHandlerKeepsTheFinalCheck(t *testing.T) {
 	assert.Equal(t, 1, callsOf(modern, "guardToolCallResult"), "the Final check, in the modern branch")
 	assert.Equal(t, 2, callsOf(clause, "guardToolCallResult"), "the Final check, in the modern and the legacy branch")
 }
+
+// The task methods run their Final check after their hooks in every branch
+// they have: tasks/get and tasks/cancel in the modern and the legacy one,
+// tasks/update in its modern one alone.
+func TestTheTaskMethodsKeepTheirFinalCheck(t *testing.T) {
+	file := renderDispatcher(t, MCPRequestTypes)
+	for method, branches := range map[string]int{"MethodTasksGet": 2, "MethodTasksCancel": 2, "MethodTasksUpdate": 1} {
+		clause := caseOf(t, file, method)
+		modern := modernBranchOf(clause)
+		require.NotNil(t, modern, "%s: a modern branch", method)
+		assert.Equal(t, 1, callsOf(modern, "guardTaskMethodResult"), "%s: the Final check, in the modern branch", method)
+		assert.Equal(t, branches, callsOf(clause, "guardTaskMethodResult"), "%s: the Final check, in every branch", method)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -350,6 +351,30 @@ func TestNewTaskResultOptions(t *testing.T) {
 			})
 			tt.check(t, taskResultOf(t, callToolIn(t, t.Context(), srv, "slow", declaredCall)))
 		})
+	}
+}
+
+// A poll interval goes out in whole milliseconds rounded up, and a TTL in
+// whole milliseconds truncated, over the whole range of time.Duration: the
+// longest one does not wrap around to a negative interval, and the rounding
+// stops at the longest interval a client can turn back into a duration.
+func TestTaskDurationsInMilliseconds(t *testing.T) {
+	const longest = time.Duration(math.MaxInt64)
+	for _, tt := range []struct {
+		d         time.Duration
+		poll, ttl int64
+	}{
+		{time.Nanosecond, 1, 0},
+		{time.Millisecond, 1, 1},
+		{time.Millisecond + time.Nanosecond, 2, 1},
+		{1500 * time.Millisecond, 1500, 1500},
+		{longest - longest%time.Millisecond, int64(longest / time.Millisecond), int64(longest / time.Millisecond)},
+		{longest, int64(longest / time.Millisecond), int64(longest / time.Millisecond)},
+	} {
+		poll := taskPollIntervalMs(&tt.d)
+		require.NotNil(t, poll, "%d", tt.d)
+		assert.Equal(t, tt.poll, *poll, "pollIntervalMs of %d ns", int64(tt.d))
+		assert.Equal(t, tt.ttl, *taskTTLMs(&tt.d), "ttlMs of %d ns", int64(tt.d))
 	}
 }
 

@@ -146,6 +146,7 @@ var MCPRequestTypes = []MCPRequestType{
 		GroupName:   "Tasks",
 		HookName:    "GetTask",
 		HandlerFunc: "handleGetTask",
+		Final:       "guardTaskMethodResult",
 
 		ModernHandler:    "handleExtensionGetTask",
 		ModernParamType:  "ExtensionTaskRequest",
@@ -177,6 +178,7 @@ var MCPRequestTypes = []MCPRequestType{
 		GroupName:   "tasks.cancel",
 		HookName:    "CancelTask",
 		HandlerFunc: "handleCancelTask",
+		Final:       "guardTaskMethodResult",
 
 		ModernHandler:    "handleExtensionCancelTask",
 		ModernParamType:  "ExtensionTaskRequest",
@@ -185,6 +187,7 @@ var MCPRequestTypes = []MCPRequestType{
 	}, {
 		MethodName:       "MethodTasksUpdate",
 		RequiresModern:   true,
+		Final:            "guardTaskMethodResult",
 		ModernHandler:    "handleExtensionUpdateTask",
 		ModernParamType:  "UpdateExtensionTaskRequest",
 		ModernResultType: "Result",

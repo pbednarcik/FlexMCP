@@ -383,6 +383,9 @@ func (s *MCPServer) dispatchRequest(
 				return err.ToJSONRPCError()
 			}
 			s.hooks.onSuccess(ctx, baseMessage.ID, mcp.MethodTasksGet, &request, result)
+			if err = s.guardTaskMethodResult(ctx, baseMessage.ID, result); err != nil {
+				return err.ToJSONRPCError()
+			}
 			return createResponse(baseMessage.ID, *result)
 		}
 		var request mcp.GetTaskRequest
@@ -410,6 +413,9 @@ func (s *MCPServer) dispatchRequest(
 			return err.ToJSONRPCError()
 		}
 		s.hooks.afterGetTask(ctx, baseMessage.ID, &request, result)
+		if err = s.guardTaskMethodResult(ctx, baseMessage.ID, result); err != nil {
+			return err.ToJSONRPCError()
+		}
 		return createResponse(baseMessage.ID, *result)
 	case mcp.MethodTasksList:
 		var request mcp.ListTasksRequest
@@ -504,6 +510,9 @@ func (s *MCPServer) dispatchRequest(
 				return err.ToJSONRPCError()
 			}
 			s.hooks.onSuccess(ctx, baseMessage.ID, mcp.MethodTasksCancel, &request, result)
+			if err = s.guardTaskMethodResult(ctx, baseMessage.ID, result); err != nil {
+				return err.ToJSONRPCError()
+			}
 			return createResponse(baseMessage.ID, *result)
 		}
 		var request mcp.CancelTaskRequest
@@ -531,6 +540,9 @@ func (s *MCPServer) dispatchRequest(
 			return err.ToJSONRPCError()
 		}
 		s.hooks.afterCancelTask(ctx, baseMessage.ID, &request, result)
+		if err = s.guardTaskMethodResult(ctx, baseMessage.ID, result); err != nil {
+			return err.ToJSONRPCError()
+		}
 		return createResponse(baseMessage.ID, *result)
 	case mcp.MethodTasksUpdate:
 		if protocolInfo.Modern {
@@ -559,6 +571,9 @@ func (s *MCPServer) dispatchRequest(
 				return err.ToJSONRPCError()
 			}
 			s.hooks.onSuccess(ctx, baseMessage.ID, mcp.MethodTasksUpdate, &request, result)
+			if err = s.guardTaskMethodResult(ctx, baseMessage.ID, result); err != nil {
+				return err.ToJSONRPCError()
+			}
 			return createResponse(baseMessage.ID, *result)
 		}
 		err = &requestError{
