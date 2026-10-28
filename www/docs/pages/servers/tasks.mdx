@@ -1,18 +1,283 @@
 # Task-Augmented Tools
 
-Task-augmented tools allow long-running operations to execute asynchronously. Instead of blocking until completion, the server creates a task and the client can poll for status updates. This is ideal for operations like batch processing, data analysis, or any work that may take more than a few seconds.
+A tool that runs for a long time can answer a call with a task instead of holding the request open. The client then polls the task for its outcome, cancels it, or supplies input it asks for. This suits batch jobs, builds, analyses, and any work that may take more than a few seconds.
+
+Protocol version `2026-07-28` serves tasks through the **Tasks extension** (`io.modelcontextprotocol/tasks`), described first. The [2025-11-25 tasks](#the-2025-11-25-tasks) keep working for clients of that revision.
 
 ## Overview
 
-With regular tools, the handler runs synchronously — the client waits for the full result before continuing. Task-augmented tools change this by returning a `CreateTaskResult` immediately, while the actual work continues in the background. The client can then:
+With the extension, the server decides per call whether to hand the work over:
 
-- **Poll** for the task's current status
-- **List** all active tasks
-- **Cancel** a running task
+1. The client declares the extension on a `tools/call`. A request that does not declare it is never given a task.
+2. The tool handler starts its work and returns a task, made by `server.NewTaskResult`, instead of a result.
+3. The client polls `tasks/get` until the task is `completed`, `failed` or `cancelled`. It may send `tasks/cancel`, or `tasks/update` to answer input the task asks for.
 
-## Task Support Modes
+FlexMCP routes and authenticates these requests and stores nothing about a task. Your **task handler** owns the work and its state, and renders it whenever `tasks/get` asks. A server with no job registry of its own uses `server.MemoryTasks`.
 
-Every tool declares how it interacts with the task system via `mcp.TaskSupport`. There are three modes:
+The full runnable code of this page is in [`examples/tasks_extension`](https://github.com/pbednarcik/FlexMCP/tree/master/examples/tasks_extension).
+
+## Enabling the Extension
+
+`WithTaskHandler` sets the server's task handler and advertises the extension on `server/discover`:
+
+```go
+tasks := server.NewMemoryTasks()
+defer tasks.Close()
+
+srv := server.NewMCPServer("report-server", "1.0.0",
+    server.WithToolCapabilities(true),
+    server.WithTaskHandler(tasks),
+)
+```
+
+- The advertisement is derived from the handler after every option has run, so option order cannot drop it. The `initialize` answer of earlier revisions never carries it.
+- Without a handler, task methods on a `2026-07-28` request answer `-32601`.
+- `server.WithExtensions` replaces a tasks entry when a handler is set, and panics without one: pass the handler instead.
+
+## Handing a Call Over
+
+### With MemoryTasks
+
+`MemoryTasks` is a ready-made, in-memory task handler. Run the long work through `Run` in the tool handler:
+
+```go
+return tasks.Run(ctx, func(ctx context.Context, status func(string)) (*mcp.CallToolResult, error) {
+    for step := 1; step <= 3; step++ {
+        status(fmt.Sprintf("step %d of 3", step))
+        select {
+        case <-time.After(300 * time.Millisecond):
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        }
+    }
+    return mcp.NewToolResultText("report " + name + " is ready"), nil
+},
+    server.WithTaskResultPollInterval(time.Second),
+    server.WithTaskResultTTL(10*time.Minute),
+)
+```
+
+- **A call that can become a task:** `Run` starts the function on its own goroutine and returns the task. The function's result becomes the task's result; an error, a panic or a nil result fails the task. `status` sets the message `tasks/get` reports while the task works.
+- **Any other call** (the client did not declare the extension, an earlier revision, no handler): `Run` runs the function at once and returns its result, so one handler serves every client.
+- The function runs under a context that keeps the request's values but not its cancellation. It ends through `tasks/cancel`, the task's TTL or `Close`, and must return when it does.
+- Progress and notifications sent through the original request after the hand-over are dropped.
+- Tasks live in one process. Behind a load balancer, or after a restart, a poll that cannot find a task answers "gone".
+- `WithMemoryTasksMaxRunning` (default 100) bounds the tasks running at once, and `Run` returns `ErrTooManyRunningTasks` at the limit. `WithMemoryTasksMaxEnded` (default 1,000) bounds the ended tasks kept, oldest evicted first. The TTL is one hour unless you pass `WithTaskResultTTL`.
+- `MemoryTasks` does not implement `TaskInputHandler`, so a task it keeps is never `input_required`.
+- After `Close`, `Run` returns `ErrMemoryTasksClosed` for a call that could have become a task.
+
+Whoever builds the store owns it: `Close` cancels the running work and waits for it. A server does not close it.
+
+### With Your Own Task Handler
+
+A server that already runs jobs implements `server.TaskHandler`: two methods that render and cancel a task by the id your code gave it.
+
+```go
+type TaskHandler interface {
+    TaskState(ctx context.Context, ref TaskRef) (TaskState, error)
+    CancelTask(ctx context.Context, ref TaskRef) error
+}
+```
+
+`ref.HandlerID` is the id you passed to `NewTaskResult`. A task handler returns `server.ErrTaskGone` for an id it no longer knows, and its methods may run concurrently:
+
+```go
+// pollEvery is how long a client waits between polls of a job. The hand-over
+// suggests it, and every state reports it again.
+const pollEvery = 2 * time.Second
+
+func (r *registry) TaskState(_ context.Context, ref server.TaskRef) (server.TaskState, error) {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+
+    job, ok := r.jobs[ref.HandlerID]
+    if !ok {
+        return server.TaskState{}, server.ErrTaskGone
+    }
+    poll := pollEvery
+    return server.TaskState{
+        Origin:       job.origin,
+        CreatedAt:    job.created,
+        Status:       job.status,
+        PollInterval: &poll,
+        Result:       job.result,
+        Err:          job.err,
+    }, nil
+}
+```
+
+The tool handler registers the job, then returns the task from `NewTaskResult`:
+
+```go
+func (r *registry) start(ctx context.Context, work func(context.Context) (*mcp.CallToolResult, error)) (*mcp.CallToolResult, error) {
+    id := rand.Text()
+    created := time.Now()
+
+    // The request's context ends once the response is out, so the work runs
+    // under one that keeps its values but not its cancellation.
+    workCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+
+    // The registry knows the job before NewTaskResult returns, so the client's
+    // first tasks/get finds it.
+    r.mu.Lock()
+    r.jobs[id] = &job{
+        origin:  server.TaskOriginFromContext(ctx),
+        created: created,
+        cancel:  cancel,
+        status:  mcp.TaskStatusWorking,
+    }
+    r.mu.Unlock()
+
+    handedOver, err := server.NewTaskResult(ctx, id,
+        server.WithTaskResultCreatedAt(created),
+        server.WithTaskResultPollInterval(pollEvery),
+    )
+    if err != nil {
+        r.mu.Lock()
+        delete(r.jobs, id)
+        r.mu.Unlock()
+        cancel()
+
+        if errors.Is(err, server.ErrTasksNotDeclared) {
+            return work(ctx)
+        }
+        return nil, err
+    }
+
+    go r.run(workCtx, id, work)
+    return handedOver, nil
+}
+```
+
+`NewTaskResult` options:
+
+| Option | Effect |
+|--------|--------|
+| `WithTaskResultPollInterval` | How long the client waits between polls. A `time.Duration`, sent in whole milliseconds and rounded up, so one under 1 ms goes out as 1 ms; zero or less sends none. |
+| `WithTaskResultTTL` | How long, from creation, the task is kept. Truncated to whole milliseconds; a negative TTL goes out as 0, expired at once. Without it the TTL is unlimited (`null`). |
+| `WithTaskResultStatusMessage` | The task's first status message. |
+| `WithTaskResultCreatedAt` | Report when the job started, for a handler that hands over after working a while. |
+
+These are not `WithTaskTTL` or `WithTaskPollInterval`: those names belong to the [2025-11-25 options](#task-options).
+
+`NewTaskResult` returns an error, and the handler answers another way, when:
+
+| Error | Cause |
+|-------|-------|
+| `ErrTasksNotDeclared` | The request did not declare the extension. Answer synchronously. |
+| `ErrNotModernRequest` | The request is not a `2026-07-28` one. It wraps `ErrTasksNotDeclared`, so the same check catches both. |
+| `ErrNoTaskHandler` | The server has no task handler. |
+| `ErrEmptyHandlerID` | The handler id is empty. |
+| `ErrTaskIDTooLong` | The handler id is longer than 54 bytes. |
+| `ErrNotToolCall` | The context is not a tool handler's. |
+
+Only a task made by `NewTaskResult` reaches the wire. A task that carries any other id, or that is answered to a request that did not declare the extension, becomes `-32603`.
+
+### Rules for a Task Handler
+
+FlexMCP cannot check these, so the handler keeps them:
+
+- **Terminal statuses never change.**
+- **Know the id first.** The registry knows the handler id before `NewTaskResult` returns, so an immediate `tasks/get` succeeds.
+- **One source for `CreatedAt` and the TTL.** Every `TaskState` reports what the hand-over reported. The TTL counts from the reported `createdAt`.
+- **Never reuse a handler id** for another job while an id that can verify it is in use, across restarts and instances included.
+- **Hand-over work outlives the request.** The request's context is cancelled once the response is written, on every transport. Run handed-over work under `context.WithoutCancel(ctx)`, as above; `MemoryTasks.Run` does this for you.
+- **Return the origin.** `server.TaskOriginFromContext(ctx)` snapshots the tool, its output schema and its result-size limit at the call. Keep it with the job and return it in every `TaskState`: a completed result is validated and size-limited against it, even if the tool was re-registered meanwhile. A completed state without an origin answers `-32603`.
+- **Panics and errors.** A panic in a method answers `-32603` on every transport. Any error but `ErrTaskGone` answers `-32603` too, with its message kept on the server unless it is a `NewHandlerError`.
+
+A task handler that also implements `server.TaskInputHandler` receives `tasks/update`:
+
+```go
+type TaskInputHandler interface {
+    UpdateTask(ctx context.Context, ref TaskRef, responses mcp.InputResponses) error
+}
+```
+
+`UpdateTask` trusts nothing, since the answers come from the client: it accepts answers only for input requests still open on the task, decodes each with `InputResponses.DecodeFor`, and ignores keys never issued or already answered. A task handler that renders `input_required` without implementing it answers `-32603`.
+
+## Task Ids and Callers
+
+FlexMCP mints the task id: unguessable, at most 128 characters, and not stored. It carries your handler id, a random nonce and a key epoch, and is authenticated with an HMAC over those and the caller. A poll with an id that fails authentication answers `-32602` with `error.data.reason` of `"unknown"`; one from an earlier epoch answers `"gone"`.
+
+```go
+// newGuardedServer serves an "export" tool whose tasks live in a registry. Its
+// task ids are authenticated with key, which comes from configuration and is
+// the same on every instance and after every restart, so each opens the ids the
+// others minted. The registry lives in memory, so a restarted server still
+// answers "gone": ids survive a restart only if the jobs do. The ids are bound
+// to the caller, so only the caller that made a task can poll it.
+func newGuardedServer(key []byte) *server.MCPServer {
+    reg := newRegistry()
+
+    srv := server.NewMCPServer("export-server", "1.0.0",
+        server.WithToolCapabilities(true),
+        server.WithTaskHandler(reg),
+        server.WithTaskKey(key),
+        server.WithTaskNamespace("export"),
+        server.WithTaskCaller(principalOf),
+    )
+    // ... the export tool is added to srv here ...
+
+    return srv
+}
+```
+
+`principalOf` reads the caller from the request's context. The demo sets none, so it binds nothing there; a real one returns the principal a verified token names.
+
+### WithTaskKey
+
+The default key is random and made when the server is built. **Rebuilding the server, or building a second one, turns every live id into "gone"**, so a client's task does not survive a restart, even if your task handler does.
+
+`WithTaskKey` sets the secret instead: a strong random secret of at least 32 bytes, or it panics. Servers that share the key and the namespace open each other's ids. `WithTaskNamespace` defaults to the server's name, so two services that reuse a key never open each other's ids.
+
+A key is not enough for a task to outlive a restart: the task handler must still know the job. `MemoryTasks` does not.
+
+### WithTaskCaller
+
+`WithTaskCaller` binds each id to the identity its function returns, so only that caller can poll, cancel or answer the task. Another caller is told no such task exists.
+
+:::warning[Bind ids to a caller]
+Without `WithTaskCaller`, ids are bound to no one and unguessability is the only guard. In an authenticated deployment, anyone who holds an id can then read the task, cancel it and answer its input requests. FlexMCP logs a one-time warning when a task request carries `Authorization` and no binding is set; that is a hint, not a check.
+:::
+
+- Return a principal your deployment authenticated, never a connection or session key (it changes on reconnect) and never `clientInfo` (the client sets it itself).
+- The function sees the request's context as the transport built it, with what `WithHTTPContextFunc` put there, before any tool middleware. A principal that tool middleware sets is not seen.
+- Ids travel in the `Mcp-Name` header, so proxies and access logs see them.
+
+## Input, Hooks and Tool Lists
+
+- **Input.** A task in `input_required` carries `inputRequests`, which need the capability the `tasks/get` request declared (elicitation, sampling, roots); a request that did not declare it gets `-32021`.
+- **Declaring the extension.** A task method from a request that did not declare the extension answers `-32021`.
+- **Hooks.** On a `2026-07-28` request `tasks/*` fire only the untyped hooks (`BeforeAny`, `OnSuccess`, `OnError`). The typed task hooks (`BeforeGetTask` and the rest) and `TaskHooks` serve earlier revisions only. See [the protocol page](/protocol-2026-07-28#tasks-of-the-earlier-revision).
+- **Tool lists.** `tools/list` for a `2026-07-28` request leaves out tools added with `AddTaskTool` and tools with `TaskSupportRequired`, and strips `execution` from the rest.
+- **No push.** Extension tasks send no notifications; clients poll `tasks/get`. The `notifications/tasks/status` below belongs to the 2025-11-25 tasks.
+
+## Calling a Task from a Client
+
+A client declares the extension in `WithClientCapabilities` and gets a task back from `CallTool` in `result.Task`:
+
+```go
+c := client.NewClient(
+    transport.NewInProcessTransport(srv),
+    client.WithClientCapabilities(mcp.ClientCapabilities{
+        Extensions: map[string]any{mcp.ExtensionTasks: map[string]any{}},
+    }),
+)
+```
+
+`GetExtensionTask`, `CancelExtensionTask`, `UpdateExtensionTask` and `WaitForExtensionTask` then poll, cancel and answer it. See [Client Operations](/clients/operations#long-running-tools).
+
+## Clients That Support It
+
+Claude Code supports the extension in public beta from v2.1.304, in the CLI, Agent SDK and GitHub Actions sessions. It polls `tasks/get`, and limits `taskId` to 128 characters. Codex CLI has no support. Both were checked on 2026-10-27; their support is changing, so check before you rely on it.
+
+## The 2025-11-25 Tasks
+
+Clients of the `2025-11-25` revision ask for a task with `params.task`, and the server runs the tool in the background. They poll it with `tasks/get`, list tasks with `tasks/list`, fetch the outcome with `tasks/result` and stop it with `tasks/cancel`. On a `2026-07-28` request `tasks/list` and `tasks/result` answer `-32601`, and `tasks/get` and `tasks/cancel` are the extension's methods. These tasks serve earlier-revision requests only; on a `2026-07-28` request `params.task` is ignored and the tool runs as a plain call. They are advertised in the `initialize` answer, never by `server/discover`.
+
+### Task Support Modes
+
+Every tool declares how it interacts with the task system via `mcp.TaskSupport`:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -20,94 +285,63 @@ Every tool declares how it interacts with the task system via `mcp.TaskSupport`.
 | **Optional** | `mcp.TaskSupportOptional` | The tool can be invoked as a task or run synchronously depending on the client's request. |
 | **Required** | `mcp.TaskSupportRequired` | The tool must be invoked as a task. Synchronous calls are rejected with an error. |
 
+A task-only tool is registered with `AddTaskTool`. A regular tool added with `AddTool` can opt in with `TaskSupportOptional`:
+
 ```go
-// Set task support when creating a tool
-tool := mcp.NewTool("long_process",
-    mcp.WithDescription("A long-running operation"),
-    mcp.WithTaskSupport(mcp.TaskSupportRequired),
+optional := mcp.NewTool("quick_or_task",
+    mcp.WithDescription("Answers at once, or as a task when asked to"),
+    mcp.WithTaskSupport(mcp.TaskSupportOptional),
 )
+
+s.AddTool(optional, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    return mcp.NewToolResultText("done"), nil
+})
 ```
 
-## Enabling Task Capabilities
+### Enabling and Registering
 
-To use task-augmented tools, enable both tool and task capabilities on the server. `WithTaskCapabilities` takes three booleans controlling which task operations are available:
-
-1. **list** — allow clients to list tasks
-2. **cancel** — allow clients to cancel running tasks
-3. **toolCallTasks** — enable task augmentation for tool calls
+`WithTaskCapabilities` takes three booleans: whether clients may **list** tasks, **cancel** them, and whether **toolCallTasks** are enabled. `AddTaskTool` registers a tool with a handler that returns `*mcp.CreateTaskResult`; `AddTaskTools` registers several with `server.ServerTaskTool`.
 
 ```go
-s := server.NewMCPServer("Task Server", "1.0.0",
+s := server.NewMCPServer("legacy-tasks", "1.0.0",
     server.WithToolCapabilities(true),
     server.WithTaskCapabilities(true, true, true), // list, cancel, toolCallTasks
+    server.WithTaskHooks(taskHooks),
+    server.WithMaxConcurrentTasks(10),
+    server.WithTaskTTL(time.Hour),
 )
-```
 
-This is the 2025-11-25 `tasks` capability, advertised in the answer to `initialize`. `server/discover` leaves it out: protocol version 2026-07-28 moved tasks into the Tasks extension (`io.modelcontextprotocol/tasks`), which FlexMCP does not serve yet.
-
-## Registering Task Tools
-
-### AddTaskTool
-
-Use `AddTaskTool` to register a single task-augmented tool with its handler:
-
-```go
 tool := mcp.NewTool("long_process",
     mcp.WithDescription("Run a long process asynchronously"),
     mcp.WithTaskSupport(mcp.TaskSupportRequired),
     mcp.WithString("input", mcp.Required(), mcp.Description("Input data")),
 )
 
-s.AddTaskTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+s.AddTaskTool(tool, longProcess)
+```
+
+The handler runs in the background. The server makes the task and its id; what the handler returns is the result the client fetches with `tasks/result`:
+
+```go
+func longProcess(ctx context.Context, req mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
     input := req.GetString("input", "")
 
-    // Do the actual work here — this runs in the background.
     // Check ctx.Done() to support cancellation.
-    for i := 0; i < 100; i++ {
+    for range 100 {
         select {
         case <-ctx.Done():
             return nil, ctx.Err()
-        default:
-            // simulate work
-            time.Sleep(100 * time.Millisecond)
+        case <-time.After(100 * time.Millisecond):
         }
     }
 
-    // Return result — the server manages the Task lifecycle
     return &mcp.CreateTaskResult{
-        Task: mcp.NewTask("unique-task-id",
-            mcp.WithTaskStatusMessage("Processing started"),
-            mcp.WithTaskPollInterval(2000), // suggest polling every 2s
-            mcp.WithTaskTTL(300000),        // task expires after 5 minutes
-        ),
+        Content: []mcp.Content{mcp.NewTextContent("processed " + input)},
     }, nil
-})
+}
 ```
 
-### AddTaskTools
-
-Register multiple task tools at once with `AddTaskTools`:
-
-```go
-s.AddTaskTools(
-    server.ServerTaskTool{Tool: tool1, Handler: handler1},
-    server.ServerTaskTool{Tool: tool2, Handler: handler2},
-)
-```
-
-## Handler Signature
-
-Task tool handlers use a dedicated function type that returns `*mcp.CreateTaskResult` instead of the regular `*mcp.CallToolResult`:
-
-```go
-type TaskToolHandlerFunc func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CreateTaskResult, error)
-```
-
-The handler runs asynchronously in the background. The server takes care of creating the task entry, tracking status, and sending notifications to the client.
-
-## Task Lifecycle
-
-A task moves through a well-defined set of statuses:
+### Task Lifecycle
 
 ```
 Working ──→ Completed
@@ -115,8 +349,6 @@ Working ──→ Completed
        ──→ Cancelled
        ──→ InputRequired ──→ Working (resumed)
 ```
-
-The available status constants are:
 
 | Status | Constant | Description |
 |--------|----------|-------------|
@@ -126,76 +358,19 @@ The available status constants are:
 | Cancelled | `mcp.TaskStatusCancelled` | Task was cancelled by the client |
 | Input Required | `mcp.TaskStatusInputRequired` | Task needs additional input to continue |
 
-Use `IsTerminal()` to check whether a task has reached a final state:
+`task.Status.IsTerminal()` reports whether a task has reached a final state.
 
-```go
-task := mcp.NewTask("my-task")
+### Task Options
 
-// Later, check if the task is done
-if task.Status.IsTerminal() {
-    // task is Completed, Failed, or Cancelled
-}
-```
+The server makes the task, its id and its fields. A `Task` that a handler returns in its `CreateTaskResult`, built with `mcp.NewTask` and options such as `WithTaskTTL` or `WithTaskPollInterval`, is ignored; those constructors are for building an `mcp.Task` yourself, in a test for example. What bounds a task on the server is `server.WithTaskTTL`: a request asking for a longer TTL, or none, gets that one. **Zero or less means unbounded**, unlike `server.WithTaskResultTTL`, where a negative TTL is zero. It and `WithMaxConcurrentTasks` apply to these tasks only, not to the tasks of the extension.
 
-## Task Options
+### Related Task Metadata
 
-When creating a task with `mcp.NewTask`, you can configure it with functional options:
+Every successful `tasks/result` answer carries `_meta["io.modelcontextprotocol/related-task"]` with the task's id, set by the server so the client can tie the result to its task. A handler's own `Meta` is merged beside that key and cannot replace it. `mcp.WithRelatedTask(id)` only builds such a meta; you do not need it to get the key.
 
-```go
-task := mcp.NewTask("task-123",
-    mcp.WithTaskStatus(mcp.TaskStatusWorking),       // set initial status (default: Working)
-    mcp.WithTaskStatusMessage("Initializing..."),     // human-readable status message
-    mcp.WithTaskTTL(300000),                          // TTL in milliseconds (5 minutes)
-    mcp.WithTaskPollInterval(2000),                   // suggested poll interval in ms
-    mcp.WithTaskCreatedAt("2025-01-15T10:30:00Z"),    // custom creation timestamp
-)
-```
+### Task Hooks
 
-| Option | Description |
-|--------|-------------|
-| `WithTaskStatus` | Set the task's initial status. Defaults to `TaskStatusWorking`. |
-| `WithTaskStatusMessage` | Attach a human-readable message describing the current state. |
-| `WithTaskTTL` | Time-to-live in milliseconds. After this duration, the task may be deleted. |
-| `WithTaskPollInterval` | Suggested polling interval in milliseconds for the client. |
-| `WithTaskCreatedAt` | Override the creation timestamp (defaults to `time.Now()`). |
-
-## Model Immediate Response
-
-Servers can provide an immediate response to the model while the task continues executing in the background. This lets the model acknowledge the request without waiting for the full result:
-
-```go
-s.AddTaskTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
-    // ... start processing ...
-
-    task := mcp.NewTask("task-456",
-        mcp.WithTaskStatusMessage("Processing started"),
-        mcp.WithTaskPollInterval(5000),
-    )
-
-    return &mcp.CreateTaskResult{
-        Task: task,
-        Result: mcp.Result{
-            Meta: mcp.WithModelImmediateResponse("Processing your request. This may take a few minutes."),
-        },
-    }, nil
-})
-```
-
-The `WithModelImmediateResponse` helper sets the `io.modelcontextprotocol/model-immediate-response` metadata key, providing a string that the client can pass directly to the model as an interim result.
-
-## Related Task Metadata
-
-You can associate messages or results with a specific task using `WithRelatedTask`. This is useful when sending follow-up data that references an existing task:
-
-```go
-meta := mcp.WithRelatedTask("task-id-123")
-```
-
-The metadata contains the `io.modelcontextprotocol/related-task` key with the task ID, enabling clients to correlate responses with their originating tasks.
-
-## Task Hooks
-
-Task hooks provide observability into the task lifecycle. Use `server.TaskHooks` to register callbacks for creation, completion, failure, cancellation, and any status change:
+`server.TaskHooks` gives observability into the task lifecycle: `AddOnTaskCreated`, `AddOnTaskCompleted`, `AddOnTaskFailed`, `AddOnTaskCancelled` and `AddOnTaskStatusChanged`:
 
 ```go
 taskHooks := &server.TaskHooks{}
@@ -211,157 +386,19 @@ taskHooks.AddOnTaskCompleted(func(ctx context.Context, metrics server.TaskMetric
 taskHooks.AddOnTaskFailed(func(ctx context.Context, metrics server.TaskMetrics) {
     log.Printf("Task %s failed: %v", metrics.TaskID, metrics.Error)
 })
-
-taskHooks.AddOnTaskCancelled(func(ctx context.Context, metrics server.TaskMetrics) {
-    log.Printf("Task %s was cancelled", metrics.TaskID)
-})
-
-taskHooks.AddOnTaskStatusChanged(func(ctx context.Context, metrics server.TaskMetrics) {
-    log.Printf("Task %s status: %s", metrics.TaskID, metrics.Status)
-})
 ```
 
-Pass the hooks to the server with `WithTaskHooks`:
+Pass them with `WithTaskHooks`. `server.TaskMetrics` carries `TaskID`, `ToolName`, `Status`, `StatusMessage`, `CreatedAt`, `CompletedAt`, `Duration`, `SessionID` and `Error`.
 
-```go
-s := server.NewMCPServer("Task Server", "1.0.0",
-    server.WithToolCapabilities(true),
-    server.WithTaskCapabilities(true, true, true),
-    server.WithTaskHooks(taskHooks),
-)
-```
+### Concurrency and Notifications
 
-### TaskMetrics Fields
+`WithMaxConcurrentTasks(n)` limits how many tasks run at once; past it, new task requests are rejected with an error. The server sends `notifications/tasks/status` to connected clients whenever a task's status changes, so clients need not rely on polling alone.
 
-The `server.TaskMetrics` struct provides rich context for each hook:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `TaskID` | `string` | Unique identifier for the task |
-| `ToolName` | `string` | Name of the tool that created the task |
-| `Status` | `mcp.TaskStatus` | Current status of the task |
-| `StatusMessage` | `string` | Optional status message |
-| `CreatedAt` | `time.Time` | When the task was created |
-| `CompletedAt` | `*time.Time` | When the task completed (nil if still running) |
-| `Duration` | `time.Duration` | How long the task has run (zero if not completed) |
-| `SessionID` | `string` | Session that owns this task |
-| `Error` | `error` | Error if task failed (nil otherwise) |
-
-## Concurrency Limits
-
-Use `WithMaxConcurrentTasks` to limit how many tasks can run simultaneously. When the limit is reached, new task requests are rejected with an error:
-
-```go
-s := server.NewMCPServer("Task Server", "1.0.0",
-    server.WithToolCapabilities(true),
-    server.WithTaskCapabilities(true, true, true),
-    server.WithMaxConcurrentTasks(10),
-)
-```
-
-## Task Status Notifications
-
-The server automatically sends `notifications/tasks/status` to connected clients whenever a task's status changes. This means clients don't have to rely solely on polling — they can also listen for push notifications to react to status transitions in real time.
-
-## Complete Example
-
-Here's a full example combining all the concepts — a server with a required task tool, an optional task tool, and observability hooks:
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "time"
-
-    "github.com/pbednarcik/flexmcp/mcp"
-    "github.com/pbednarcik/flexmcp/server"
-)
-
-func main() {
-    // Set up observability hooks
-    taskHooks := &server.TaskHooks{}
-    taskHooks.AddOnTaskCreated(func(ctx context.Context, metrics server.TaskMetrics) {
-        log.Printf("Task %s created for tool %s", metrics.TaskID, metrics.ToolName)
-    })
-    taskHooks.AddOnTaskCompleted(func(ctx context.Context, metrics server.TaskMetrics) {
-        log.Printf("Task %s completed in %v", metrics.TaskID, metrics.Duration)
-    })
-    taskHooks.AddOnTaskFailed(func(ctx context.Context, metrics server.TaskMetrics) {
-        log.Printf("Task %s failed: %v", metrics.TaskID, metrics.Error)
-    })
-
-    // Create server
-    s := server.NewMCPServer("Task Example", "1.0.0",
-        server.WithToolCapabilities(true),
-        server.WithTaskCapabilities(true, true, true),
-        server.WithTaskHooks(taskHooks),
-        server.WithMaxConcurrentTasks(10),
-    )
-
-    // Task-required tool: must be invoked as a task
-    batchTool := mcp.NewTool("process_batch",
-        mcp.WithDescription("Process a batch of items asynchronously"),
-        mcp.WithTaskSupport(mcp.TaskSupportRequired),
-        mcp.WithArray("items",
-            mcp.Description("Items to process"),
-            mcp.Required(),
-        ),
-    )
-    s.AddTaskTool(batchTool, handleBatch)
-
-    // Task-optional tool: can run sync or async
-    analyzeTool := mcp.NewTool("analyze",
-        mcp.WithDescription("Analyze data — runs async if invoked as a task"),
-        mcp.WithTaskSupport(mcp.TaskSupportOptional),
-        mcp.WithString("data", mcp.Required(), mcp.Description("Data to analyze")),
-    )
-    s.AddTaskTool(analyzeTool, handleAnalyze)
-
-    // Start server
-    if err := server.ServeStdio(s); err != nil {
-        log.Fatalf("Server error: %v", err)
-    }
-}
-
-func handleBatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
-    // Process items — check for cancellation
-    for i := 0; i < 10; i++ {
-        select {
-        case <-ctx.Done():
-            return nil, ctx.Err()
-        default:
-            time.Sleep(1 * time.Second)
-        }
-    }
-
-    return &mcp.CreateTaskResult{
-        Task: mcp.NewTask("batch-task",
-            mcp.WithTaskStatusMessage("Batch processing complete"),
-        ),
-    }, nil
-}
-
-func handleAnalyze(ctx context.Context, req mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
-    data := req.GetString("data", "")
-
-    // Simulate analysis
-    time.Sleep(2 * time.Second)
-
-    return &mcp.CreateTaskResult{
-        Task: mcp.NewTask("analyze-task",
-            mcp.WithTaskStatusMessage(fmt.Sprintf("Analyzed %d characters", len(data))),
-        ),
-        Result: mcp.Result{
-            Meta: mcp.WithModelImmediateResponse("Analysis is in progress. Results will be available shortly."),
-        },
-    }, nil
-}
-```
+`go run ./examples/tasks_extension -legacy` serves the code above on stdio.
 
 ## Next Steps
 
+- **[Client Operations](/clients/operations#long-running-tools)** — Poll, cancel and answer tasks from a client
+- **[Protocol 2026-07-28](/protocol-2026-07-28)** — What else changed in this revision
 - **[Tools](/servers/tools)** — Learn about regular synchronous tools
 - **[Advanced Features](/servers/advanced)** — Explore middleware, hooks, and typed handlers

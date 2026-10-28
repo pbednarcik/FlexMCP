@@ -150,7 +150,15 @@ request `params.task` is ignored and the tool runs as a plain call, `tools/list`
 leaves out the tools added with `AddTaskTool` and those with
 `TaskSupportRequired`, and the tools it lists carry no `execution`, which this
 revision removed. A direct call to such a tool answers `-32601`. A server that
-wants tasks for modern clients uses the Tasks extension instead.
+wants tasks for modern clients uses the Tasks extension instead; see
+[Task-Augmented Tools](/servers/tasks).
+
+The hooks follow the same split. A hook that runs before the call
+(`AddBeforeAny`, `AddBeforeCallTool`) sees `params.task` as the client sent it,
+while middleware and the handler no longer do. The `tasks/get`, `tasks/cancel`
+and `tasks/update` of this revision fire only the untyped hooks (`AddBeforeAny`,
+`AddOnSuccess`, `AddOnError`); the typed task hooks, such as `AddBeforeGetTask`,
+and `TaskHooks` fire for earlier-revision requests only.
 
 ## Clients
 

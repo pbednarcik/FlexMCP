@@ -528,6 +528,97 @@ func demonstrateBatchToolCalls(ctx context.Context, c client.Client) {
 }
 ```
 
+## Long-Running Tools
+
+A server may answer a `2026-07-28` `tools/call` with a task instead of a result (the [Tasks extension](/servers/tasks)). It only does so for a client that declares the extension, so declare it when you build the client:
+
+```go
+c := client.NewClient(
+    transport.NewInProcessTransport(srv),
+    client.WithClientCapabilities(mcp.ClientCapabilities{
+        Extensions: map[string]any{mcp.ExtensionTasks: map[string]any{}},
+    }),
+)
+```
+
+`CallTool` then returns either the result or, in `result.Task`, a task to poll. Four methods drive it:
+
+| Method | Sends | Returns |
+|--------|-------|---------|
+| `GetExtensionTask(ctx, taskID)` | `tasks/get` | The task's state, with `TaskResult` when completed, `Error` when failed, `InputRequests` when input is required |
+| `CancelExtensionTask(ctx, taskID)` | `tasks/cancel` | Nothing; the server only acknowledges, so read the state back |
+| `UpdateExtensionTask(ctx, taskID, responses)` | `tasks/update` | Nothing; answers the `InputRequests` of a task by their keys |
+| `WaitForExtensionTask(ctx, taskID, fallback)` | `tasks/get`, repeatedly | The state once the task is terminal or needs input |
+
+```go
+result, err := c.CallTool(ctx, call)
+if err != nil {
+    return fmt.Errorf("calling report: %w", err)
+}
+if result.Task == nil {
+    // The server answered at once.
+    printResult(result)
+    return nil
+}
+
+state, err := awaitTask(ctx, c, result.Task.TaskId)
+if err != nil {
+    return err
+}
+switch state.Status {
+case mcp.TaskStatusCompleted:
+    printResult(state.TaskResult)
+    return nil
+case mcp.TaskStatusFailed:
+    return fmt.Errorf("the task failed: %s", state.Error.Message)
+default:
+    return fmt.Errorf("the task ended %s", state.Status)
+}
+```
+
+- `WaitForExtensionTask` waits the server's `pollIntervalMs` between polls, never less than 250 ms and with no ceiling. `fallback`, which must be greater than zero, is used when the server gives none. It returns `ErrUnknownTaskStatus` with the state for a status the extension does not define.
+- When the context ends it returns the context's error and sends no `tasks/cancel`; whether the task stops is your decision.
+- A task in `input_required` is returned to you. Answer it with `UpdateExtensionTask` and wait again:
+
+```go
+func awaitTask(ctx context.Context, c *client.Client, taskID string) (*mcp.ExtensionTaskStateResult, error) {
+    for {
+        state, err := c.WaitForExtensionTask(ctx, taskID, time.Second)
+        if err != nil {
+            return nil, fmt.Errorf("waiting for the task: %w", err)
+        }
+        if state.Status != mcp.TaskStatusInputRequired {
+            return state, nil
+        }
+        if err := answerInput(ctx, c, taskID, state); err != nil {
+            return nil, fmt.Errorf("answering the task: %w", err)
+        }
+    }
+}
+```
+
+### Cancelling and Refused Ids
+
+A server refuses an id it does not know or no longer holds with an `mcp.TaskRefusedError`, which is still an `mcp.ErrInvalidParams`. `mcp.IsTaskGone` tells a task that ended or whose server restarted from one that never existed; call the tool again for the former:
+
+```go
+if err := c.CancelExtensionTask(ctx, taskID); err != nil {
+    return fmt.Errorf("cancelling the task: %w", err)
+}
+
+state, err := c.GetExtensionTask(ctx, taskID)
+switch {
+case mcp.IsTaskGone(err):
+    // The task ended long ago, or the server restarted: call the tool again.
+    fmt.Println("the task is gone")
+    return nil
+case err != nil:
+    return fmt.Errorf("reading the task: %w", err)
+}
+```
+
+If the client did not declare the extension, or the connection is not `2026-07-28`, these methods return `client.ErrExtensionTasksNotDeclared` and send nothing. On a `2026-07-28` connection the 2025-11-25 methods (`GetTask`, `CancelTask`, `WaitForTask`, `TaskResult`, `ListTasks`) return `client.ErrLegacyTaskMethod`.
+
 ## Using Prompts
 
 Prompts provide reusable templates for LLM interactions.
