@@ -76,15 +76,19 @@ func (v *outputSchemaValidator) compileAtRegistration(tool mcp.Tool) (*cachedToo
 //   - the tool declares no output schema
 //   - the result is nil or carries IsError = true (error results are not
 //     required to conform to the success-shape schema)
-//   - the result has no StructuredContent (mcp-go does not synthesise
+//   - the result has no structured content (mcp-go does not synthesise
 //     structured output from text content; tools without structured output
 //     are passed through to preserve back-compat)
 //   - the schema fails to compile, which registration refuses
+//
+// The structured content judged is the one the result is written with:
+// RawStructuredContent when it is set, as MarshalJSON writes it, else
+// StructuredContent.
 func (v *outputSchemaValidator) validate(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, result *mcp.CallToolResult) (bool, error) {
 	if v == nil || result == nil {
 		return false, nil
 	}
-	return v.validateStructured(tool, compiled, kept, result.StructuredContent, result.IsError)
+	return v.validateStructured(tool, compiled, kept, result.StructuredContent, result.RawStructuredContent, result.IsError)
 }
 
 // validateCreateTaskResult is the *mcp.CreateTaskResult counterpart to
@@ -97,20 +101,21 @@ func (v *outputSchemaValidator) validateCreateTaskResult(tool mcp.Tool, compiled
 	if v == nil || result == nil {
 		return false, nil
 	}
-	return v.validateStructured(tool, compiled, kept, result.StructuredContent, result.IsError)
+	return v.validateStructured(tool, compiled, kept, result.StructuredContent, nil, result.IsError)
 }
 
 // validateStructured runs the actual schema check against the structured
 // content and IsError flag extracted from a tool result. Both *CallToolResult
 // and *CreateTaskResult delegate here so the skip rules and error formatting
-// stay in one place.
-func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, structured any, isError bool) (bool, error) {
+// stay in one place. raw, when set, is the structured content as it is
+// written, and is judged in place of structured.
+func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, structured any, raw json.RawMessage, isError bool) (bool, error) {
 	// Error results carry diagnostic content that need not match the
 	// declared output schema.
 	if isError {
 		return false, nil
 	}
-	if structured == nil {
+	if structured == nil && len(raw) == 0 {
 		return false, nil
 	}
 	if !kept {
@@ -128,7 +133,13 @@ func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, compiled *json
 		return false, nil
 	}
 
-	value, err := normalizeStructuredContentForValidation(structured)
+	var value any
+	var err error
+	if len(raw) > 0 {
+		value, err = normalizeRawStructuredContent(raw)
+	} else {
+		value, err = normalizeStructuredContentForValidation(structured)
+	}
 	if err != nil {
 		return true, fmt.Errorf("invalid structured content: %w", err)
 	}
@@ -167,16 +178,22 @@ func normalizeStructuredContentForValidation(structured any) (any, error) {
 		return nil, nil
 	}
 	if raw, ok := structured.(json.RawMessage); ok {
-		if len(bytes.TrimSpace(raw)) == 0 {
-			return nil, nil
-		}
-		return jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+		return normalizeRawStructuredContent(raw)
 	}
 	encoded, err := json.Marshal(structured)
 	if err != nil {
 		return nil, err
 	}
 	return jsonschema.UnmarshalJSON(bytes.NewReader(encoded))
+}
+
+// normalizeRawStructuredContent is normalizeStructuredContentForValidation
+// for structured content held as JSON.
+func normalizeRawStructuredContent(raw json.RawMessage) (any, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	return jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 }
 
 // formatOutputValidationError shapes a validator error as a single flat
