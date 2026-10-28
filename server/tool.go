@@ -185,7 +185,7 @@ func (s *MCPServer) addTools(tools []ServerTool) {
 	defer s.toolsMu.Unlock()
 	// Stage the whole batch before touching the registry so a rejected entry
 	// leaves earlier ones unregistered as well.
-	staged := make(map[string]ServerTool, len(tools))
+	staged := make(map[string]*ServerTool, len(tools))
 	schemas := make(map[string]toolSchemas, len(tools))
 	for _, entry := range tools {
 		name := entry.Tool.Name
@@ -198,7 +198,8 @@ func (s *MCPServer) addTools(tools []ServerTool) {
 		if err != nil {
 			panic(err.Error())
 		}
-		staged[name] = entry
+		// Each iteration's entry is its own copy, the one registered.
+		staged[name] = &entry
 		schemas[name] = compiled
 	}
 	maps.Copy(s.tools, staged)
@@ -274,7 +275,7 @@ func (s *MCPServer) SetTools(tools ...ServerTool) {
 func (s *MCPServer) replaceTools(tools []ServerTool) {
 	s.toolsMu.Lock()
 	defer s.toolsMu.Unlock()
-	newTools := make(map[string]ServerTool, len(tools))
+	newTools := make(map[string]*ServerTool, len(tools))
 	schemas := make(map[string]toolSchemas, len(tools))
 	for _, entry := range tools {
 		name := entry.Tool.Name
@@ -287,7 +288,7 @@ func (s *MCPServer) replaceTools(tools []ServerTool) {
 		if err != nil {
 			panic(err.Error())
 		}
-		newTools[name] = entry
+		newTools[name] = &entry
 		schemas[name] = compiled
 	}
 	// The old tools' cached schemas go first, so the new ones compiled above
@@ -312,7 +313,9 @@ func (s *MCPServer) GetTool(toolName string) *ServerTool {
 	s.toolsMu.RLock()
 	defer s.toolsMu.RUnlock()
 	if tool, ok := s.tools[toolName]; ok {
-		return &tool
+		// A copy: the registered tool is shared with the calls made of it.
+		copied := *tool
+		return &copied
 	}
 	return nil
 }
@@ -396,16 +399,17 @@ func (s *MCPServer) filteredTools(ctx context.Context) []mcp.Tool {
 	// Add tools in sorted order
 	for _, name := range toolNames {
 		if tool, ok := s.tools[name]; ok {
+			listed := tool.Tool
 			if modern {
-				if execution := tool.Tool.Execution; execution != nil {
+				if execution := listed.Execution; execution != nil {
 					if execution.TaskSupport == mcp.TaskSupportRequired {
 						continue
 					}
 					// The copy in the list drops it; the registered tool keeps it.
-					tool.Tool.Execution = nil
+					listed.Execution = nil
 				}
 			}
-			tools = append(tools, tool.Tool)
+			tools = append(tools, listed)
 		} else if taskTool, ok := s.taskTools[name]; ok {
 			tools = append(tools, taskTool.Tool)
 		}
@@ -504,20 +508,21 @@ func (s *MCPServer) handleToolCall(
 	}
 
 	// Find the tool: the server's own first, then the task tools.
+	var tool ServerTool
 	var taskToolOnly bool
 	s.toolsMu.RLock()
-	tool, ok := s.tools[request.Params.Name]
-	if !ok {
-		if taskTool, taskOk := s.taskTools[request.Params.Name]; taskOk {
-			// Convert ServerTaskTool to ServerTool for validation
-			// The tool metadata is the same, we just need it for checking task support
-			tool = ServerTool{
-				Tool:    taskTool.Tool,
-				Handler: nil, // Handler will be used from taskTool in handleTaskAugmentedToolCall
-			}
-			ok = true
-			taskToolOnly = true
+	registered, ok := s.tools[request.Params.Name]
+	if ok {
+		tool = *registered
+	} else if taskTool, taskOk := s.taskTools[request.Params.Name]; taskOk {
+		// Convert ServerTaskTool to ServerTool for validation
+		// The tool metadata is the same, we just need it for checking task support
+		tool = ServerTool{
+			Tool:    taskTool.Tool,
+			Handler: nil, // Handler will be used from taskTool in handleTaskAugmentedToolCall
 		}
+		ok = true
+		taskToolOnly = true
 	}
 	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
 	outputSchema, outputSchemaKept := s.outputSchemaOf(request.Params.Name)
@@ -620,7 +625,9 @@ func (s *MCPServer) handleToolCall(
 		finalHandler = m(finalHandler)
 	}
 
-	result, err := finalHandler(s.withTaskOrigin(ctx, tool.Tool, outputSchema, outputSchemaKept), request)
+	// A task tool returned above, so the tool is a registered one, and its
+	// origin points to the registration rather than copying the tool.
+	result, err := finalHandler(s.withTaskOrigin(ctx, &registered.Tool, outputSchema, outputSchemaKept), request)
 	if err != nil {
 		return nil, handlerError(ctx, id, err)
 	}

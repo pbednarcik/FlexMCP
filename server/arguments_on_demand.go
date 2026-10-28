@@ -62,7 +62,8 @@ func (s *MCPServer) settleToolCall(request *mcp.CallToolRequest) {
 // registered with ServerTool.ArgumentsOnDemand.
 func (s *MCPServer) toolReadsArgumentsOnDemand(name string) bool {
 	s.toolsMu.RLock()
-	onDemand := s.tools[name].ArgumentsOnDemand
+	tool := s.tools[name]
+	onDemand := tool != nil && tool.ArgumentsOnDemand
 	s.toolsMu.RUnlock()
 	return onDemand
 }

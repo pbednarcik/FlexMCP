@@ -47,7 +47,11 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	// Look up the tool - check both taskTools and regular tools
 	s.toolsMu.RLock()
 	taskTool, isTaskTool := s.taskTools[request.Params.Name]
-	regularTool, isRegularTool := s.tools[request.Params.Name]
+	registered, isRegularTool := s.tools[request.Params.Name]
+	var regularTool ServerTool
+	if isRegularTool {
+		regularTool = *registered
+	}
 	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
 	outputSchema, outputSchemaKept := s.outputSchemaOf(request.Params.Name)
 	s.toolsMu.RUnlock()

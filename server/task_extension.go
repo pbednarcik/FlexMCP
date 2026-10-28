@@ -120,8 +120,13 @@ type TaskState struct {
 // TaskOrigin is an immutable, opaque snapshot of a tool call: the tool, its
 // output schema and its result-size limit. A handler returns it in every
 // [TaskState], so a completed result is checked against the call that made it.
+// A kept origin keeps its tool's registration reachable, handler included,
+// after the tool is registered again or deleted.
 type TaskOrigin struct {
-	tool             mcp.Tool
+	// tool is the tool as registered when the call ran, shared with every
+	// call of that registration and never written to: registering the name
+	// again stores a new one, and the origin keeps this.
+	tool             *mcp.Tool
 	outputSchema     *jsonschema.Schema
 	outputSchemaKept bool
 	sizeLimit        int
@@ -129,12 +134,15 @@ type TaskOrigin struct {
 
 // Tool returns the name of the snapshotted tool, "" for a zero origin.
 func (o TaskOrigin) Tool() string {
+	if o.tool == nil {
+		return ""
+	}
 	return o.tool.Name
 }
 
 // IsZero reports whether the origin is the zero value, which names no call.
 func (o TaskOrigin) IsZero() bool {
-	return o.tool.Name == "" && o.outputSchema == nil && !o.outputSchemaKept && o.sizeLimit == 0
+	return o.tool == nil && o.outputSchema == nil && !o.outputSchemaKept && o.sizeLimit == 0
 }
 
 // WithTaskHandler sets the server's [TaskHandler] and advertises the Tasks
@@ -367,7 +375,7 @@ func TaskOriginFromContext(ctx context.Context) TaskOrigin {
 	return TaskOrigin{}
 }
 
-func (s *MCPServer) withTaskOrigin(ctx context.Context, tool mcp.Tool, outputSchema *jsonschema.Schema, outputSchemaKept bool) context.Context {
+func (s *MCPServer) withTaskOrigin(ctx context.Context, tool *mcp.Tool, outputSchema *jsonschema.Schema, outputSchemaKept bool) context.Context {
 	if s.taskHandler == nil || !ClientDeclaresExtension(ctx, mcp.ExtensionTasks) {
 		return ctx
 	}

@@ -166,8 +166,11 @@ type MCPServer struct {
 	resourceTemplateOrder uint64
 	prompts               map[string]mcp.Prompt
 	promptHandlers        map[string]PromptHandlerFunc
-	tools                 map[string]ServerTool
-	taskTools             map[string]ServerTaskTool
+	// tools holds each registered tool once, behind a pointer nothing writes
+	// through once it is stored: a task origin shares it, and a registration
+	// of the name stores a new one.
+	tools     map[string]*ServerTool
+	taskTools map[string]ServerTaskTool
 	// argumentsOnDemand is set, for good, once a tool registered with
 	// ServerTool.ArgumentsOnDemand: until then a tools/call is decoded as
 	// json.Unmarshal decodes it, with no tool lookup. readsArgumentsOnDemand
@@ -324,7 +327,7 @@ func NewMCPServer(
 		resourceTemplates:          make(map[string]resourceTemplateEntry),
 		prompts:                    make(map[string]mcp.Prompt),
 		promptHandlers:             make(map[string]PromptHandlerFunc),
-		tools:                      make(map[string]ServerTool),
+		tools:                      make(map[string]*ServerTool),
 		taskTools:                  make(map[string]ServerTaskTool),
 		toolHeaderBindings:         make(map[string][]headerBinding),
 		toolInputSchemas:           make(map[string]*jsonschema.Schema),

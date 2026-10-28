@@ -246,6 +246,81 @@ func TestTaskOriginIsStampedOnlyWhenATaskIsPossible(t *testing.T) {
 	}
 }
 
+// An origin points to the tool as registered when its call ran, a snapshot
+// taken once per registration: two calls of one registration share it, and a
+// re-registration since makes a new one and leaves the earlier origin's alone.
+func TestTaskOriginKeepsTheToolRegisteredForItsCall(t *testing.T) {
+	var origins []TaskOrigin
+	handler := func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		origins = append(origins, TaskOriginFromContext(ctx))
+		return mcp.NewToolResultText("sync"), nil
+	}
+	srv := taskServer(false, handler)
+	srv.AddTool(mcp.NewTool("slow", mcp.WithDescription("first")), handler)
+	for range 2 {
+		require.Contains(t, callToolIn(t, t.Context(), srv, "slow", declaredCall), "result")
+	}
+	srv.AddTool(mcp.NewTool("slow", mcp.WithDescription("second")), handler)
+	require.Contains(t, callToolIn(t, t.Context(), srv, "slow", declaredCall), "result")
+
+	require.Len(t, origins, 3)
+	assert.Same(t, origins[0].tool, origins[1].tool, "two calls of one registration share its snapshot")
+	assert.NotSame(t, origins[1].tool, origins[2].tool, "a re-registration makes a new snapshot")
+	assert.Equal(t, "first", origins[0].tool.Description, "the earlier origin keeps the tool of its call")
+	assert.Equal(t, "second", origins[2].tool.Description)
+}
+
+// Nothing the server does after a registration writes to its snapshot: not a
+// change to the tool GetTool or ListTools returns, nor a 2026-07-28 tools/list,
+// which lists the tool without its execution.
+func TestTaskOriginSnapshotIsImmutable(t *testing.T) {
+	var origin TaskOrigin
+	srv := taskServer(false, nil)
+	srv.AddTool(mcp.NewTool("slow", mcp.WithDescription("first"), mcp.WithTaskSupport(mcp.TaskSupportOptional)), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		origin = TaskOriginFromContext(ctx)
+		return mcp.NewToolResultText("sync"), nil
+	})
+	require.Contains(t, callToolIn(t, t.Context(), srv, "slow", declaredCall), "result")
+	require.NotNil(t, origin.tool)
+
+	srv.GetTool("slow").Tool.Description = "changed through GetTool"
+	srv.ListTools()["slow"].Tool.Description = "changed through ListTools"
+	listed := sendTaskMethod(t, t.Context(), srv, mcp.MethodToolsList, map[string]any{}, nil)
+	require.Contains(t, listed, "result")
+
+	assert.Equal(t, "first", origin.tool.Description)
+	assert.Equal(t, "first", srv.GetTool("slow").Tool.Description)
+	require.NotNil(t, origin.tool.Execution, "a 2026-07-28 tools/list dropped the execution of the snapshot")
+	assert.Equal(t, mcp.TaskSupportOptional, origin.tool.Execution.TaskSupport)
+}
+
+// Registrations and calls race: an origin reads its snapshot while the tool
+// is registered again, which -race reports if a registration writes to a
+// snapshot already published.
+func TestTaskOriginSnapshotRacesNoRegistration(t *testing.T) {
+	var bad atomic.Int32
+	handler := func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if d := TaskOriginFromContext(ctx).tool.Description; d != "a" && d != "b" {
+			bad.Add(1)
+		}
+		return mcp.NewToolResultText("sync"), nil
+	}
+	srv := taskServer(false, handler, WithToolCapabilities(false))
+	srv.AddTool(mcp.NewTool("slow", mcp.WithDescription("a")), handler)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			srv.AddTool(mcp.NewTool("slow", mcp.WithDescription(string(rune('a'+i%2)))), handler)
+		}
+	}()
+	for range 200 {
+		require.Contains(t, callToolIn(t, t.Context(), srv, "slow", declaredCall), "result")
+	}
+	<-done
+	assert.Zero(t, bad.Load(), "an origin saw a tool no registration made")
+}
+
 // The fallback idiom of the design: a handler that cannot hand over answers
 // synchronously, a legacy client included.
 func TestALegacyRequestFallsBackToASynchronousAnswer(t *testing.T) {

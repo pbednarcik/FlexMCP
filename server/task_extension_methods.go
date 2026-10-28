@@ -240,9 +240,13 @@ func (s *MCPServer) completedTaskResult(state *TaskState) (*mcp.CallToolResult, 
 		return nil, errTaskZeroOrigin
 	}
 	origin := &state.Origin
+	var tool mcp.Tool
+	if origin.tool != nil {
+		tool = *origin.tool
+	}
 	copied := *state.Result
 	result := &copied
-	if _, err := s.outputValidator.validate(origin.tool, origin.outputSchema, origin.outputSchemaKept, result); err != nil {
+	if _, err := s.outputValidator.validate(tool, origin.outputSchema, origin.outputSchemaKept, result); err != nil {
 		result = validationToolResult(err)
 	}
 	result = limitToolResultTo(result, origin.sizeLimit)
