@@ -317,3 +317,50 @@ func TestMissingRequiredClientCapabilityErrorNamesExtensions(t *testing.T) {
 	require.NoError(t, marshalErr)
 	assert.Contains(t, string(wire), `"extensions":{"example.com/ext":{},"io.modelcontextprotocol/tasks":{}}`)
 }
+
+// A server's -32602 for a task id it does not know, or that is gone, carries
+// the reason in data.reason; decoded, it is a TaskRefusedError that is still
+// an ErrInvalidParams. A -32602 without a reason, or with another, is not.
+func TestTaskRefusedErrorCarriesTheReasonOverTheWire(t *testing.T) {
+	decode := func(t *testing.T, wire string) error {
+		t.Helper()
+		var details JSONRPCErrorDetails
+		require.NoError(t, json.Unmarshal([]byte(wire), &details))
+		return details.AsError()
+	}
+
+	for _, reason := range []string{"unknown", "gone"} {
+		t.Run(reason, func(t *testing.T) {
+			err := decode(t, `{"code":-32602,"message":"`+reason+`: the words","data":{"reason":"`+reason+`"}}`)
+
+			var refused TaskRefusedError
+			require.True(t, errors.As(err, &refused))
+			assert.Equal(t, reason, refused.Reason)
+			assert.Equal(t, reason+": the words", refused.Message)
+			assert.EqualError(t, err, "invalid params: "+reason+": the words")
+			assert.True(t, errors.Is(err, ErrInvalidParams), "still an invalid params error")
+			assert.True(t, errors.Is(err, TaskRefusedError{}))
+			assert.Equal(t, reason == "gone", IsTaskGone(err))
+			assert.Equal(t, reason == "gone", IsTaskGone(fmt.Errorf("get task: %w", err)))
+		})
+	}
+
+	for name, wire := range map[string]string{
+		"no data":            `{"code":-32602,"message":"bad"}`,
+		"data without it":    `{"code":-32602,"message":"bad","data":{"other":1}}`,
+		"another reason":     `{"code":-32602,"message":"bad","data":{"reason":"rude"}}`,
+		"data that is a str": `{"code":-32602,"message":"bad","data":"gone"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := decode(t, wire)
+
+			var refused TaskRefusedError
+			assert.False(t, errors.As(err, &refused))
+			assert.True(t, errors.Is(err, ErrInvalidParams))
+			assert.False(t, IsTaskGone(err))
+			assert.EqualError(t, err, "invalid params: bad")
+		})
+	}
+	assert.False(t, IsTaskGone(nil))
+	assert.False(t, IsTaskGone(errors.New("gone")))
+}

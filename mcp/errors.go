@@ -288,9 +288,81 @@ func IsMissingRequiredClientCapability(err error) bool {
 	return errors.As(err, &target) || errors.As(err, &pointer)
 }
 
+// TaskRefusedError is a server's -32602 for a task id of the Tasks extension
+// that it refuses, as the client decodes it: the reason is in the error's
+// data. It is still an [ErrInvalidParams], so errors.Is finds that sentinel.
+type TaskRefusedError struct {
+	// Reason is why the id was refused: "unknown" for an id the server never
+	// issued to this caller, "gone" for a task that ended or a server that
+	// restarted.
+	Reason string
+	// Message is the server's message.
+	Message string
+}
+
+func (e TaskRefusedError) Error() string {
+	if e.Message == "" || e.Message == ErrInvalidParams.Error() {
+		return ErrInvalidParams.Error()
+	}
+	return ErrInvalidParams.Error() + ": " + e.Message
+}
+
+// Unwrap returns [ErrInvalidParams].
+func (e TaskRefusedError) Unwrap() error { return ErrInvalidParams }
+
+// Is reports whether target is a TaskRefusedError, as a value or a non-nil
+// pointer, so errors.Is finds the type whatever its fields. As for
+// [HeaderMismatchError.Is], a nil pointer to the type in a chain makes
+// errors.Is panic.
+func (e TaskRefusedError) Is(target error) bool {
+	switch target := target.(type) {
+	case TaskRefusedError:
+		return true
+	case *TaskRefusedError:
+		return target != nil
+	}
+	return false
+}
+
+// IsTaskGone checks if an error is a [TaskRefusedError] whose reason is
+// "gone": the task ended, or the server restarted, and the call that made it
+// is to be made again.
+func IsTaskGone(err error) bool {
+	if target, ok := errors.AsType[TaskRefusedError](err); ok {
+		return target.Reason == "gone"
+	}
+	pointer, ok := errors.AsType[*TaskRefusedError](err)
+	return ok && pointer != nil && pointer.Reason == "gone"
+}
+
+// taskRefusalReason is the reason in the data of a -32602 that refuses a task
+// id: "unknown" or "gone", and "" for any other data.
+func taskRefusalReason(data any) string {
+	if data == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return ""
+	}
+	var fields struct {
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(encoded, &fields) != nil {
+		return ""
+	}
+	switch fields.Reason {
+	case "unknown", "gone":
+		return fields.Reason
+	}
+	return ""
+}
+
 // AsError maps JSONRPCErrorDetails to a Go error.
 // Returns sentinel errors wrapped with custom messages for known codes.
 // Defaults to a generic error with the original message when the code is not mapped.
+// An INVALID_PARAMS error whose data names the reason "unknown" or "gone" is a
+// [TaskRefusedError]; see [IsTaskGone].
 func (e *JSONRPCErrorDetails) AsError() error {
 	var err error
 
@@ -302,6 +374,9 @@ func (e *JSONRPCErrorDetails) AsError() error {
 	case METHOD_NOT_FOUND:
 		err = ErrMethodNotFound
 	case INVALID_PARAMS:
+		if reason := taskRefusalReason(e.Data); reason != "" {
+			return TaskRefusedError{Reason: reason, Message: e.Message}
+		}
 		err = ErrInvalidParams
 	case INTERNAL_ERROR:
 		err = ErrInternalError
