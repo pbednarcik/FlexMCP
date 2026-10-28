@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/cryptotest"
 	"time"
 
 	"github.com/pbednarcik/flexmcp/mcp"
@@ -793,11 +794,16 @@ func (h fixedTask) TaskState(context.Context, TaskRef) (TaskState, error) { retu
 func (fixedTask) CancelTask(context.Context, TaskRef) error { return nil }
 
 // A tasks/get of a working task, on a declared request without HTTP headers:
-// 43 allocations (a declared tools/call is 40).
+// 43 allocations (a declared tools/call is 40). The task id comes from a fixed
+// crypto/rand seed. encoding/json keeps decoded strings in a 256-slot cache
+// hashed from their ends, and about one random id in fifty shares a slot with
+// a string the same request decodes, "2.0" among them: the two then evict each
+// other and every call allocates both again. Seed 0 mints such an id.
 func TestExtensionGetTaskAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
+	cryptotest.SetGlobalRandom(t, 1)
 	srv := NewMCPServer("tasks", "1.0.0", WithTaskHandler(fixedTask{TaskState{
 		Status:        mcp.TaskStatusWorking,
 		CreatedAt:     taskCreated,
