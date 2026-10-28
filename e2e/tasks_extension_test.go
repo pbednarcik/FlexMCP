@@ -609,3 +609,51 @@ func TestHandedOverWorkOutlivesTheRequest(t *testing.T) {
 		})
 	}
 }
+
+// Work handed over through MemoryTasks runs detached from the request's
+// session: a notification it sends once the answer is out reaches no client,
+// and the send says so, whatever the transport.
+func TestHandedOverWorkReachesNoClientAfterTheAnswer(t *testing.T) {
+	for _, tr := range transports {
+		t.Run(tr.name, func(t *testing.T) {
+			mem := server.NewMemoryTasks()
+			t.Cleanup(mem.Close)
+			answered := make(chan struct{})
+			sent := make(chan error, 1)
+			srv := server.NewMCPServer("e2e-detached", "1.0.0", server.WithToolCapabilities(true), server.WithTaskHandler(mem))
+			srv.AddTool(mcp.NewTool("late"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return mem.Run(ctx, func(ctx context.Context, _ func(string)) (*mcp.CallToolResult, error) {
+					select {
+					case <-answered:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+					sent <- server.ServerFromContext(ctx).SendNotificationToClient(ctx, "notifications/progress",
+						map[string]any{"progressToken": "p1", "progress": 1})
+					return mcp.NewToolResultText("done"), nil
+				})
+			})
+			got := make(chan mcp.JSONRPCNotification, 4)
+			c := tr.connect(t, srv, declaresTasks())
+			c.OnNotification(func(n mcp.JSONRPCNotification) { got <- n })
+
+			var call mcp.CallToolRequest
+			call.Params.Name = "late"
+			call.Params.Meta = &mcp.Meta{ProgressToken: "p1"}
+			handedOver, err := c.CallTool(t.Context(), call)
+			require.NoError(t, err)
+			require.NotNil(t, handedOver.Task)
+			close(answered)
+
+			assert.ErrorIs(t, await(t, sent, "the work's send"), server.ErrNotificationNotInitialized,
+				"the handed-over work has no session to send through")
+			_, err = c.ListTools(t.Context(), mcp.ListToolsRequest{})
+			require.NoError(t, err, "a round trip after the send")
+			select {
+			case n := <-got:
+				t.Fatalf("a notification reached the client after the answer: %s", n.Method)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}

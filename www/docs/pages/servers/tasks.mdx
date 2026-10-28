@@ -59,8 +59,8 @@ return tasks.Run(ctx, func(ctx context.Context, status func(string)) (*mcp.CallT
 
 - **A call that can become a task:** `Run` starts the function on its own goroutine and returns the task. The function's result becomes the task's result; an error, a panic or a nil result fails the task. `status` sets the message `tasks/get` reports while the task works.
 - **Any other call** (the client did not declare the extension, an earlier revision, no handler): `Run` runs the function at once and returns its result, so one handler serves every client.
-- The function runs under a context that keeps the request's values but not its cancellation. It ends through `tasks/cancel`, the task's TTL or `Close`, and must return when it does.
-- Progress and notifications sent through the original request after the hand-over are dropped.
+- The function runs under `server.DetachTaskContext(ctx)`: the request's values, without its cancellation or its session. It ends through `tasks/cancel`, the task's TTL or `Close`, and must return when it does.
+- Nothing the function sends reaches the client, whose request is answered: a notification sent under its context fails with `ErrNotificationNotInitialized`. `status` is how the work reports progress.
 - Tasks live in one process. Behind a load balancer, or after a restart, a poll that cannot find a task answers "gone".
 - `WithMemoryTasksMaxRunning` (default 100) bounds the tasks running at once, and `Run` returns `ErrTooManyRunningTasks` at the limit. `WithMemoryTasksMaxEnded` (default 1,000) bounds the ended tasks kept, oldest evicted first. The TTL is one hour unless you pass `WithTaskResultTTL`.
 - `MemoryTasks` does not implement `TaskInputHandler`, so a task it keeps is never `input_required`.
@@ -114,8 +114,9 @@ func (r *registry) start(ctx context.Context, work func(context.Context) (*mcp.C
     created := time.Now()
 
     // The request's context ends once the response is out, so the work runs
-    // under one that keeps its values but not its cancellation.
-    workCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+    // under one detached from it: its values, without its cancellation or its
+    // session.
+    workCtx, cancel := context.WithCancel(server.DetachTaskContext(ctx))
 
     // The registry knows the job before NewTaskResult returns, so the client's
     // first tasks/get finds it.
@@ -181,9 +182,9 @@ FlexMCP cannot check these, so the handler keeps them:
 - **Know the id first.** The registry knows the handler id before `NewTaskResult` returns, so an immediate `tasks/get` succeeds.
 - **One source for `CreatedAt` and the TTL.** Every `TaskState` reports what the hand-over reported. The TTL counts from the reported `createdAt`.
 - **Never reuse a handler id** for another job while an id that can verify it is in use, across restarts and instances included.
-- **Hand-over work outlives the request.** The request's context is cancelled once the response is written, on every transport. Run handed-over work under `context.WithoutCancel(ctx)`, as above; `MemoryTasks.Run` does this for you.
+- **Hand-over work outlives the request.** The request's context is cancelled once the response is written, on every transport. Run handed-over work under `server.DetachTaskContext(ctx)`, as above; `MemoryTasks.Run` does this for you. It also drops the session, so nothing the work sends reaches the client after the answer, and the task stamp, so the work cannot hand over a second task. `context.WithoutCancel(ctx)` keeps both.
 - **Return the origin.** `server.TaskOriginFromContext(ctx)` snapshots the tool, its output schema and its result-size limit at the call. Keep it with the job and return it in every `TaskState`: a completed result is validated and size-limited against it, even if the tool was re-registered meanwhile. A completed state without an origin answers `-32603`.
-- **Panics and errors.** A panic in a method answers `-32603` on every transport. Any error but `ErrTaskGone` answers `-32603` too, with its message kept on the server unless it is a `NewHandlerError`.
+- **Panics and errors.** A panic in a method answers `-32603` on every transport. An error other than `ErrTaskGone` is answered as a tool handler's is: a `NewHandlerError` in its own form, an `mcp.MissingRequiredClientCapabilityError` as `-32021`, and anything else as `-32603` with its message kept on the server.
 
 A task handler that also implements `server.TaskInputHandler` receives `tasks/update`:
 
@@ -197,7 +198,7 @@ type TaskInputHandler interface {
 
 ## Task Ids and Callers
 
-FlexMCP mints the task id: unguessable, at most 128 characters, and not stored. It carries your handler id, a random nonce and a key epoch, and is authenticated with an HMAC over those and the caller. A poll with an id that fails authentication answers `-32602` with `error.data.reason` of `"unknown"`; one from an earlier epoch answers `"gone"`.
+FlexMCP mints the task id: unguessable, at most 128 characters, and not stored. It carries your handler id, a random nonce and a key epoch, and is authenticated with an HMAC over those and the caller. It is authenticated, not encrypted: anyone who holds the id can read the handler id, so a handler id must not carry secrets. A poll with an id that fails authentication answers `-32602` with `error.data.reason` of `"unknown"`; one from an earlier epoch answers `"gone"`.
 
 ```go
 // newGuardedServer serves an "export" tool whose tasks live in a registry. Its

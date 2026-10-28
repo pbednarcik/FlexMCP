@@ -12,6 +12,7 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"weak"
 
 	"github.com/pbednarcik/flexmcp/mcp"
 	"github.com/stretchr/testify/assert"
@@ -843,4 +844,28 @@ func TestMemoryTasksANestedRunInsideTheWorkRunsSynchronously(t *testing.T) {
 	f.waitForIdle(t)
 	_, kept := f.mem.held()
 	assert.Equal(t, 1, kept, "the nested call made no task of its own")
+}
+
+// An ended task is kept for polling, but nothing of the request it was handed
+// over from: not its context, nor what that context holds.
+func TestMemoryTasksAnEndedTaskKeepsNothingOfTheRequest(t *testing.T) {
+	type valueKey struct{}
+	f := newMemoryFixture(t, nil)
+	f.work = textWork("done")
+	handOver := func() (string, weak.Pointer[[1024]byte]) {
+		held := new([1024]byte)
+		ctx := context.WithValue(t.Context(), valueKey{}, held)
+		taskID, ok := taskResultOf(t, callToolIn(t, ctx, f.srv, "slow", declaredCall))["taskId"].(string)
+		require.True(t, ok)
+		return taskID, weak.Make(held)
+	}
+	taskID, request := handOver()
+	f.waitForStatus(t, taskID, "completed")
+	f.waitForIdle(t)
+
+	for range 3 {
+		runtime.GC()
+	}
+	assert.True(t, request.Value() == nil, "the ended task keeps the request's context")
+	assert.Equal(t, "completed", f.statusOf(taskID), "the task itself is kept")
 }

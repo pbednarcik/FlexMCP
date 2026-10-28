@@ -91,17 +91,16 @@ type MemoryTasks struct {
 	workers sync.WaitGroup
 }
 
-// memoryJob is one task. Every field after cancel is guarded by
-// [MemoryTasks.mu].
+// memoryJob is one task. cancel and the fields after it are guarded by
+// [MemoryTasks.mu]; cancel is dropped once the work returns.
 type memoryJob struct {
 	id           string
 	origin       TaskOrigin
 	createdAt    time.Time
 	ttl          time.Duration
 	pollInterval *time.Duration
-	worker       memoryWorkerContext
-	cancel       context.CancelFunc
 
+	cancel    context.CancelFunc
 	status    mcp.TaskStatus
 	message   string
 	updatedAt time.Time
@@ -117,24 +116,6 @@ func (j *memoryJob) touch(now time.Time) {
 		now = j.createdAt
 	}
 	j.updatedAt = now
-}
-
-// memoryWorkerKey finds a [memoryWorkerContext] in a context.
-type memoryWorkerKey struct{}
-
-// memoryWorkerContext is the parent of a handed-over work function's context:
-// it keeps the tool call's values but hides its task stamp, so a Run or
-// NewTaskResult called from the work cannot hand over a second task.
-type memoryWorkerContext struct{ context.Context }
-
-func (c *memoryWorkerContext) Value(key any) any {
-	switch key.(type) {
-	case taskCallKey:
-		return nil
-	case memoryWorkerKey:
-		return c
-	}
-	return c.Context.Value(key)
 }
 
 var _ TaskHandler = (*MemoryTasks)(nil)
@@ -160,17 +141,17 @@ func NewMemoryTasks(opts ...MemoryTasksOption) *MemoryTasks {
 // 2026-07-28 one, or the server has no [TaskHandler]. A ctx that is not a tool
 // call's is an error, and fn does not run.
 //
-// A handed-over fn runs under a context that keeps ctx's values but not its
-// cancellation: it ends through tasks/cancel, the task's TTL or
-// [MemoryTasks.Close], and fn must return when it does. Progress and
-// notifications sent through the original request after the hand-over are
-// dropped. status sets the task's message while it works; it does nothing when
-// fn runs synchronously. A Run called from inside fn, as a helper shared with
-// tool handlers does, runs its function synchronously too, and
-// [TaskOriginFromContext] is zero there. fn's result is kept as the task's
-// result and must not be changed once fn returns. An error, a panic, or a nil result without an
-// error fails the task; the error stays on the server unless it is a
-// [NewHandlerError].
+// A handed-over fn runs under [DetachTaskContext] of ctx, which keeps ctx's
+// values but not its cancellation or its session: it ends through
+// tasks/cancel, the task's TTL or [MemoryTasks.Close], and fn must return
+// when it does. Nothing fn sends reaches the client, whose request is
+// answered: a notification fails with [ErrNotificationNotInitialized]. status
+// sets the task's message while it works; it does nothing when fn runs
+// synchronously. A Run called from inside fn runs its function synchronously
+// too, and [TaskOriginFromContext] is zero there. fn's result is kept as the
+// task's result and must not be changed once fn returns. An error, a panic,
+// or a nil result without an error fails the task; the error stays on the
+// server unless it is a [NewHandlerError].
 //
 // opts are those of [NewTaskResult]; without [WithTaskResultTTL] the TTL is one
 // hour. Run returns [ErrTooManyRunningTasks] when the limit of running tasks is
@@ -179,7 +160,7 @@ func NewMemoryTasks(opts ...MemoryTasksOption) *MemoryTasks {
 // task.
 func (m *MemoryTasks) Run(ctx context.Context, fn func(ctx context.Context, status func(string)) (*mcp.CallToolResult, error), opts ...TaskResultOption) (*mcp.CallToolResult, error) {
 	if taskCallFromContext(ctx) == nil {
-		if _, nested := ctx.Value(memoryWorkerKey{}).(*memoryWorkerContext); nested {
+		if ctx.Value(detachedTaskKey{}) != nil {
 			return fn(ctx, func(string) {})
 		}
 		return runWithoutTask(ctx, fn, whyNoTaskCall(ctx))
@@ -221,8 +202,7 @@ func (m *MemoryTasks) Run(ctx context.Context, fn func(ctx context.Context, stat
 		poll := *cfg.pollInterval
 		job.pollInterval = &poll
 	}
-	job.worker.Context = context.WithoutCancel(ctx)
-	workCtx, cancel := context.WithCancel(&job.worker)
+	workCtx, cancel := context.WithCancel(DetachTaskContext(ctx))
 	job.cancel = cancel
 
 	m.mu.Lock()
@@ -317,8 +297,10 @@ func (m *MemoryTasks) finish(job *memoryJob, result *mcp.CallToolResult, err err
 			m.endLocked(job, mcp.TaskStatusCompleted, result, nil)
 		}
 	}
+	cancel := job.cancel
+	job.cancel = func() {}
 	m.mu.Unlock()
-	job.cancel()
+	cancel()
 }
 
 // endLocked moves job to a terminal status and evicts the oldest ended tasks
@@ -353,8 +335,9 @@ func (m *MemoryTasks) expire(job *memoryJob) {
 	if m.jobs[job.id] == job {
 		m.dropLocked(job)
 	}
+	cancel := job.cancel
 	m.mu.Unlock()
-	job.cancel()
+	cancel()
 }
 
 // TaskState renders the task as it is now, or returns [ErrTaskGone] for one
@@ -399,8 +382,9 @@ func (m *MemoryTasks) CancelTask(_ context.Context, ref TaskRef) error {
 		return nil
 	}
 	m.endLocked(job, mcp.TaskStatusCancelled, nil, nil)
+	cancel := job.cancel
 	m.mu.Unlock()
-	job.cancel()
+	cancel()
 	return nil
 }
 

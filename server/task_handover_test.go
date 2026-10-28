@@ -442,3 +442,50 @@ func TestTheCallerIsResolvedOnlyOnAHandOver(t *testing.T) {
 	taskResultOf(t, callToolIn(t, t.Context(), srv, "slow", declaredCall))
 	assert.Equal(t, int32(2), calls.Load(), "the caller runs for the seal and for the guard")
 }
+
+// DetachTaskContext keeps the call's values, and drops its cancellation, its
+// session and its task stamp: what is sent under it reaches no client, and a
+// Run under it runs at once.
+func TestDetachTaskContextKeepsValuesAndDropsTheRest(t *testing.T) {
+	type valueKey struct{}
+	var (
+		detached context.Context
+		session  ClientSession
+		stamped  bool
+	)
+	srv := taskServer(false, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		session = ClientSessionFromContext(ctx)
+		stamped = !TaskOriginFromContext(ctx).IsZero()
+		detached = DetachTaskContext(ctx)
+		return mcp.NewToolResultText("sync"), nil
+	})
+	reqCtx := srv.WithContext(context.WithValue(t.Context(), valueKey{}, "kept"),
+		fakeSession{sessionID: "s1", notificationChannel: make(chan mcp.JSONRPCNotification, 1), initialized: true})
+	reqCtx, cancel := context.WithCancel(reqCtx)
+	callToolIn(t, reqCtx, srv, "slow", declaredCall)
+	cancel()
+	require.NotNil(t, session, "the call carried a session")
+	require.True(t, stamped, "the call could become a task")
+	require.NotNil(t, detached)
+
+	assert.Equal(t, "kept", detached.Value(valueKey{}))
+	assert.Same(t, srv, ServerFromContext(detached))
+	assert.True(t, IsModernRequest(detached), "the request's protocol information is kept")
+	assert.NoError(t, detached.Err(), "the call's cancellation is dropped")
+	assert.Nil(t, ClientSessionFromContext(detached), "the call's session is dropped")
+	assert.ErrorIs(t, srv.SendNotificationToClient(detached, "notifications/progress", nil), ErrNotificationNotInitialized)
+	assert.True(t, TaskOriginFromContext(detached).IsZero(), "the task stamp is dropped")
+	_, err := NewTaskResult(detached, "job-1")
+	assert.ErrorIs(t, err, ErrNotToolCall)
+
+	mem := NewMemoryTasks()
+	t.Cleanup(mem.Close)
+	ran := false
+	result, err := mem.Run(detached, func(context.Context, func(string)) (*mcp.CallToolResult, error) {
+		ran = true
+		return mcp.NewToolResultText("at once"), nil
+	})
+	require.NoError(t, err)
+	assert.True(t, ran, "a Run under a detached context runs its function at once")
+	assert.Nil(t, result.Task)
+}

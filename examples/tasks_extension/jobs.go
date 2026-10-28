@@ -88,8 +88,9 @@ func (r *registry) start(ctx context.Context, work func(context.Context) (*mcp.C
 	created := time.Now()
 
 	// The request's context ends once the response is out, so the work runs
-	// under one that keeps its values but not its cancellation.
-	workCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// under one detached from it: its values, without its cancellation or its
+	// session.
+	workCtx, cancel := context.WithCancel(server.DetachTaskContext(ctx))
 
 	// The registry knows the job before NewTaskResult returns, so the client's
 	// first tasks/get finds it.
