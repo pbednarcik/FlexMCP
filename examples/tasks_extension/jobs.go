@@ -133,8 +133,11 @@ func (r *registry) run(ctx context.Context, id string, work func(context.Context
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// The ended job lets go of its cancellation, which holds the request's
+	// context.
 	job := r.jobs[id]
 	job.cancel()
+	job.cancel = func() {}
 	if job.status != mcp.TaskStatusWorking {
 		// Cancelled meanwhile: a terminal status never changes.
 		return
