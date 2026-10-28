@@ -71,7 +71,8 @@ func WithMemoryTasksMaxEnded(n int) MemoryTasksOption {
 // included. The same TTL is reported to the client and enforced: when it
 // passes, the task is forgotten, and its work, if still running, is cancelled.
 // A creation time older than the TTL therefore hands over a task that is
-// already gone. At most [WithMemoryTasksMaxEnded] ended tasks are
+// already gone. A client may leave without sending tasks/cancel, so the TTL
+// is also what bounds work nobody will poll again. At most [WithMemoryTasksMaxEnded] ended tasks are
 // kept, and [WithMemoryTasksMaxRunning] tasks run at once.
 //
 // MemoryTasks does not implement [TaskInputHandler]: UpdateTask is not

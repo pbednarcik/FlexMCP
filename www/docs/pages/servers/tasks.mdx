@@ -59,7 +59,7 @@ return tasks.Run(ctx, func(ctx context.Context, status func(string)) (*mcp.CallT
 
 - **A call that can become a task:** `Run` starts the function on its own goroutine and returns the task. The function's result becomes the task's result; an error, a panic or a nil result fails the task. `status` sets the message `tasks/get` reports while the task works.
 - **Any other call** (the client did not declare the extension, an earlier revision, no handler): `Run` runs the function at once and returns its result, so one handler serves every client.
-- The function runs under `server.DetachTaskContext(ctx)`: the request's values, without its cancellation or its session. It ends through `tasks/cancel`, the task's TTL or `Close`, and must return when it does.
+- The function runs under `server.DetachTaskContext(ctx)`: the request's values, without its cancellation or its session. It ends through `tasks/cancel`, the task's TTL or `Close`, and must return when it does. A client may leave without cancelling, so choose a TTL that bounds abandoned work.
 - Nothing the function sends reaches the client, whose request is answered: a notification sent under its context fails with `ErrNotificationNotInitialized`. `status` is how the work reports progress.
 - Tasks live in one process. Behind a load balancer, or after a restart, a poll that cannot find a task answers "gone".
 - `WithMemoryTasksMaxRunning` (default 100) bounds the tasks running at once, and `Run` returns `ErrTooManyRunningTasks` at the limit. `WithMemoryTasksMaxEnded` (default 1,000) bounds the ended tasks kept, oldest evicted first. The TTL is one hour unless you pass `WithTaskResultTTL`.
