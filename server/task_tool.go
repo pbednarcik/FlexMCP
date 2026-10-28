@@ -37,34 +37,30 @@ func (s *MCPServer) limitCreateTaskResult(result *mcp.CreateTaskResult) *mcp.Cre
 	return &stored
 }
 
-// handleTaskAugmentedToolCall handles tool calls that are executed as tasks.
+// handleToolCallAsTask handles tool calls that are executed as tasks.
 // It creates a task entry, starts async execution, and returns CreateTaskResult immediately.
-func (s *MCPServer) handleTaskAugmentedToolCall(
+// The call runs called, the registration handleToolCall found and the tool
+// filters authorized, with the schemas kept with it.
+func (s *MCPServer) handleToolCallAsTask(
 	ctx context.Context,
 	id any,
 	request mcp.CallToolRequest,
+	called calledTool,
 ) (*mcp.CreateTaskResult, *requestError) {
-	// Look up the tool - check both taskTools and regular tools
-	s.toolsMu.RLock()
-	taskTool, isTaskTool := s.taskTools[request.Params.Name]
-	registered, isRegularTool := s.tools[request.Params.Name]
 	var regularTool ServerTool
-	if isRegularTool {
-		regularTool = *registered
+	if called.registered != nil {
+		regularTool = *called.registered
 	}
-	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
-	outputSchema, outputSchemaKept := s.outputSchemaOf(request.Params.Name)
-	s.toolsMu.RUnlock()
 
 	// Determine which tool to use and validate task support
 	var toolToUse ServerTaskTool
 	var hasTaskHandler bool
 
-	if isTaskTool {
+	if called.registered == nil {
 		// Tool is registered as a task tool
-		toolToUse = taskTool
+		toolToUse = called.taskTool
 		hasTaskHandler = true
-	} else if isRegularTool {
+	} else {
 		// Tool is a regular tool with task support
 		// Validate that it actually supports task augmentation
 		if regularTool.Tool.Execution == nil ||
@@ -78,13 +74,6 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 		}
 
 		hasTaskHandler = false
-	} else {
-		// Tool not found in either map
-		return nil, &requestError{
-			id:   id,
-			code: mcp.INVALID_PARAMS,
-			err:  fmt.Errorf("tool '%s' not found", request.Params.Name),
-		}
 	}
 
 	// The call was decoded for the tool registered then, and a tool that has
@@ -107,7 +96,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 		if hasTaskHandler {
 			toolDef = toolToUse.Tool
 		}
-		if _, err := s.inputValidator.validateRegistered(toolDef, inputSchema, inputSchemaKept, s.argumentsToValidate(request, onDemand)); err != nil {
+		if _, err := s.inputValidator.validateRegistered(toolDef, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, onDemand)); err != nil {
 			invalid = err
 		}
 	}
@@ -154,7 +143,7 @@ func (s *MCPServer) handleTaskAugmentedToolCall(
 	// that keeps the request's values (session, protocol info) but ends only
 	// through tasks/cancel or the TTL.
 	taskCtx := context.WithoutCancel(ctx)
-	entry.outputSchema, entry.outputSchemaKept = outputSchema, outputSchemaKept
+	entry.outputSchema, entry.outputSchemaKept = called.outputSchema, called.outputSchemaKept
 	if hasTaskHandler {
 		go s.executeTaskTool(taskCtx, entry, toolToUse, request)
 	} else {

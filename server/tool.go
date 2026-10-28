@@ -141,6 +141,37 @@ func (s *MCPServer) inputSchemaOf(name string) (*jsonschema.Schema, bool) {
 	return compiled, ok
 }
 
+// calledTool is what a tools/call found registered under the name it calls,
+// read under one hold of toolsMu: the registration and the schemas kept with
+// it. The call runs this registration, the one the tool filters authorized,
+// synchronously or as a task, and never looks the name up again: a tool
+// registered under it since may be one the filters deny.
+type calledTool struct {
+	// registered is the tool's registration, nil for a task tool.
+	registered *ServerTool
+	// taskTool is the task tool's registration when registered is nil.
+	taskTool                          ServerTaskTool
+	inputSchema, outputSchema         *jsonschema.Schema
+	inputSchemaKept, outputSchemaKept bool
+}
+
+// toolToCall returns the tool registered under name, the server's own before
+// the task tools, and whether there is one.
+func (s *MCPServer) toolToCall(name string) (calledTool, bool) {
+	var called calledTool
+	s.toolsMu.RLock()
+	registered, ok := s.tools[name]
+	if ok {
+		called.registered = registered
+	} else {
+		called.taskTool, ok = s.taskTools[name]
+	}
+	called.inputSchema, called.inputSchemaKept = s.inputSchemaOf(name)
+	called.outputSchema, called.outputSchemaKept = s.outputSchemaOf(name)
+	s.toolsMu.RUnlock()
+	return called, ok
+}
+
 // AddTool registers a new tool and its handler. With input validation on,
 // the input schema is compiled when the tool is registered: a schema changed
 // after that is not seen by validation until the tool is registered again.
@@ -508,32 +539,22 @@ func (s *MCPServer) handleToolCall(
 	}
 
 	// Find the tool: the server's own first, then the task tools.
-	var tool ServerTool
-	var taskToolOnly bool
-	s.toolsMu.RLock()
-	registered, ok := s.tools[request.Params.Name]
-	if ok {
-		tool = *registered
-	} else if taskTool, taskOk := s.taskTools[request.Params.Name]; taskOk {
-		// Convert ServerTaskTool to ServerTool for validation
-		// The tool metadata is the same, we just need it for checking task support
-		tool = ServerTool{
-			Tool:    taskTool.Tool,
-			Handler: nil, // Handler will be used from taskTool in handleTaskAugmentedToolCall
-		}
-		ok = true
-		taskToolOnly = true
-	}
-	inputSchema, inputSchemaKept := s.inputSchemaOf(request.Params.Name)
-	outputSchema, outputSchemaKept := s.outputSchemaOf(request.Params.Name)
-	s.toolsMu.RUnlock()
-
+	called, ok := s.toolToCall(request.Params.Name)
 	if !ok {
 		return nil, &requestError{
 			id:   id,
 			code: mcp.INVALID_PARAMS,
 			err:  fmt.Errorf("tool '%s' not found: %w", request.Params.Name, ErrToolNotFound),
 		}
+	}
+	var tool ServerTool
+	taskToolOnly := called.registered == nil
+	if taskToolOnly {
+		// A task tool's metadata is all the checks below read; its handler
+		// runs from called.taskTool in handleToolCallAsTask.
+		tool = ServerTool{Tool: called.taskTool.Tool}
+	} else {
+		tool = *called.registered
 	}
 
 	// The call was decoded for the tool registered then; a tool that has not
@@ -594,7 +615,7 @@ func (s *MCPServer) handleToolCall(
 				err:  errors.New("this server does not serve tasks"),
 			}
 		}
-		return s.handleTaskAugmentedToolCall(ctx, id, request)
+		return s.handleToolCallAsTask(ctx, id, request, called)
 	}
 
 	if taskToolOnly {
@@ -610,7 +631,7 @@ func (s *MCPServer) handleToolCall(
 	// validation failure is returned as a SEP-1303 tool execution error so the
 	// model receives feedback in its context window and can self-correct.
 	if s.inputValidator != nil {
-		if _, err := s.inputValidator.validateRegistered(tool.Tool, inputSchema, inputSchemaKept, s.argumentsToValidate(request, tool.ArgumentsOnDemand)); err != nil {
+		if _, err := s.inputValidator.validateRegistered(tool.Tool, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, tool.ArgumentsOnDemand)); err != nil {
 			return validationToolResult(err), nil
 		}
 	}
@@ -627,7 +648,7 @@ func (s *MCPServer) handleToolCall(
 
 	// A task tool returned above, so the tool is a registered one, and its
 	// origin points to the registration rather than copying the tool.
-	result, err := finalHandler(s.withTaskOrigin(ctx, &registered.Tool, outputSchema, outputSchemaKept), request)
+	result, err := finalHandler(s.withTaskOrigin(ctx, &called.registered.Tool, called.outputSchema, called.outputSchemaKept), request)
 	if err != nil {
 		return nil, handlerError(ctx, id, err)
 	}
@@ -657,7 +678,7 @@ func (s *MCPServer) handleToolCall(
 	// tool execution error so the client cannot silently receive a result
 	// that violates the declared contract.
 	if s.outputValidator != nil {
-		if _, vErr := s.outputValidator.validate(tool.Tool, outputSchema, outputSchemaKept, result); vErr != nil {
+		if _, vErr := s.outputValidator.validate(tool.Tool, called.outputSchema, called.outputSchemaKept, result); vErr != nil {
 			return validationToolResult(vErr), nil
 		}
 	}

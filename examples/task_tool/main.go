@@ -25,7 +25,7 @@ import (
 //   - TaskToolHandlerFunc type (TAS-4)
 //   - ServerTaskTool type (TAS-5)
 //   - AddTaskTool method (TAS-6)
-//   - handleTaskAugmentedToolCall (TAS-9)
+//   - handleToolCallAsTask (TAS-9)
 //   - executeTaskTool (TAS-10)
 //
 // The example includes three types of tools:
