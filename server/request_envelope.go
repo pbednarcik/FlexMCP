@@ -44,8 +44,8 @@ type paramsPeek struct {
 	Meta requestMeta `json:"_meta"`
 	Name string      `json:"name"`
 	URI  string      `json:"uri"`
-	// TaskId is a pointer, so the envelope of any other request stays small.
-	TaskId    *taskIDPeek     `json:"taskId"`
+	// TaskID is a pointer, so the envelope of any other request stays small.
+	TaskID    *taskIDPeek     `json:"taskId"`
 	RequestID json.RawMessage `json:"requestId"`
 }
 
@@ -75,10 +75,10 @@ func (p *paramsPeek) headerName(method mcp.MCPMethod) (string, bool) {
 	case mcp.MethodResourcesRead:
 		return p.URI, true
 	case mcp.MethodTasksGet, mcp.MethodTasksCancel, mcp.MethodTasksUpdate:
-		if p.TaskId == nil {
+		if p.TaskID == nil {
 			return "", true
 		}
-		return p.TaskId.id, p.TaskId.isString
+		return p.TaskID.id, p.TaskID.isString
 	}
 	return "", false
 }
