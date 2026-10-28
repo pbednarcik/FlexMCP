@@ -647,3 +647,50 @@ func TestPromptFilterGetTimeEnforcement(t *testing.T) {
 		})
 	}
 }
+
+// A filter sees a tool at call time as tools/list showed it to the filter: on
+// a 2026-07-28 request without execution, on an earlier one with it. So a
+// filter that hides tools with an execution lists and serves a tool alike.
+func TestToolFilterCallTimeSeesTheToolAsTheListShowedIt(t *testing.T) {
+	hideExecution := func(_ context.Context, tools []mcp.Tool) []mcp.Tool {
+		kept := make([]mcp.Tool, 0, len(tools))
+		for _, tool := range tools {
+			if tool.Execution == nil {
+				kept = append(kept, tool)
+			}
+		}
+		return kept
+	}
+	tests := []struct {
+		name  string
+		era   callEra
+		shown bool
+	}{
+		{"a 2026-07-28 request", undeclaredCall, true},
+		{"a legacy request", legacyCall, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := NewMCPServer("filtered", "1.0.0", WithToolCapabilities(true), WithToolFilter(hideExecution))
+			srv.AddTool(mcp.NewTool("opt", mcp.WithTaskSupport(mcp.TaskSupportOptional)), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultText("ok"), nil
+			})
+
+			var list map[string]any
+			if tt.era == legacyCall {
+				var err error
+				list, err = answerOf(srv.HandleMessage(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
+				require.NoError(t, err)
+			} else {
+				list = sendTaskMethod(t, t.Context(), srv, mcp.MethodToolsList, map[string]any{}, nil)
+			}
+			result, ok := list["result"].(map[string]any)
+			require.True(t, ok, "tools/list: %v", list)
+			listed, _ := result["tools"].([]any)
+			answer := callToolIn(t, t.Context(), srv, "opt", tt.era)
+			_, served := answer["result"]
+			assert.Equal(t, tt.shown, len(listed) == 1, "listed: %v", listed)
+			assert.Equal(t, tt.shown, served, "the call agrees with the list: %v", answer)
+		})
+	}
+}

@@ -539,8 +539,13 @@ func (s *MCPServer) handleToolCall(
 
 	// Enforce tool filters at call time to prevent access to filtered-out
 	// tools. Only the requested tool is passed through the filter chain so this
-	// access check does not rebuild and filter the full tool list.
-	if !s.passesToolFilters(ctx, tool.Tool) {
+	// access check does not rebuild and filter the full tool list. They see it
+	// as filteredTools shows it, without execution on a 2026-07-28 request.
+	filtered := tool.Tool
+	if filtered.Execution != nil && IsModernRequest(ctx) {
+		filtered.Execution = nil
+	}
+	if !s.passesToolFilters(ctx, filtered) {
 		return nil, &requestError{
 			id:   id,
 			code: mcp.INVALID_PARAMS,
