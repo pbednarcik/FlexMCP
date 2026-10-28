@@ -143,6 +143,15 @@ receiving them unfiltered, as its revision prescribes.
 not emit log notifications for a request that did not ask for one.
 `SendLogMessageToClient` applies that rule automatically.
 
+### Tasks of the earlier revision
+
+The 2025-11-25 tasks serve earlier-revision requests only. On a `2026-07-28`
+request `params.task` is ignored and the tool runs as a plain call, `tools/list`
+leaves out the tools added with `AddTaskTool` and those with
+`TaskSupportRequired`, and the tools it lists carry no `execution`, which this
+revision removed. A direct call to such a tool answers `-32601`. A server that
+wants tasks for modern clients uses the Tasks extension instead.
+
 ## Clients
 
 `Initialize` probes with `server/discover` and falls back to the handshake, so

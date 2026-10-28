@@ -66,10 +66,13 @@ type CallToolRequest struct {
 }
 
 type CallToolParams struct {
-	Name      string      `json:"name"`
-	Arguments any         `json:"arguments,omitempty"`
-	Meta      *Meta       `json:"_meta,omitempty"`
-	Task      *TaskParams `json:"task,omitempty"`
+	Name      string `json:"name"`
+	Arguments any    `json:"arguments,omitempty"`
+	Meta      *Meta  `json:"_meta,omitempty"`
+	// Task asks for a 2025-11-25 task. On a 2026-07-28 request the server
+	// clears it before the tool middleware and handler run; the hooks before
+	// the call see it as sent.
+	Task *TaskParams `json:"task,omitempty"`
 	MultiRoundTripParams
 	// RawArguments preserves the original JSON bytes for arguments when unmarshaled
 	// from a wire message. This avoids precision loss for integers above 2^53.

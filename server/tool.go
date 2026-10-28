@@ -367,7 +367,14 @@ func (s *MCPServer) DeleteTools(names ...string) {
 // applies all registered tool filters. This is the single source of truth
 // for which tools are visible in a given context, used by both handleListTools
 // and handleToolCall to guarantee consistent behavior.
+//
+// On a 2026-07-28 request the 2025-11-25 tasks are not served: the list leaves
+// out the task tools and the tools that require task augmentation, and holds
+// copies of the other tools without execution, which that version removed. The
+// filters get the list in that form.
 func (s *MCPServer) filteredTools(ctx context.Context) []mcp.Tool {
+	modern := IsModernRequest(ctx)
+
 	// Get the base tools from the server (both regular and task tools)
 	s.toolsMu.RLock()
 	tools := make([]mcp.Tool, 0, len(s.tools)+len(s.taskTools))
@@ -377,8 +384,10 @@ func (s *MCPServer) filteredTools(ctx context.Context) []mcp.Tool {
 	for name := range s.tools {
 		toolNames = append(toolNames, name)
 	}
-	for name := range s.taskTools {
-		toolNames = append(toolNames, name)
+	if !modern {
+		for name := range s.taskTools {
+			toolNames = append(toolNames, name)
+		}
 	}
 
 	// Sort the tool names for consistent ordering
@@ -387,6 +396,15 @@ func (s *MCPServer) filteredTools(ctx context.Context) []mcp.Tool {
 	// Add tools in sorted order
 	for _, name := range toolNames {
 		if tool, ok := s.tools[name]; ok {
+			if modern {
+				if execution := tool.Tool.Execution; execution != nil {
+					if execution.TaskSupport == mcp.TaskSupportRequired {
+						continue
+					}
+					// The copy in the list drops it; the registered tool keeps it.
+					tool.Tool.Execution = nil
+				}
+			}
 			tools = append(tools, tool.Tool)
 		} else if taskTool, ok := s.taskTools[name]; ok {
 			tools = append(tools, taskTool.Tool)
@@ -477,6 +495,14 @@ func (s *MCPServer) handleToolCall(
 	id any,
 	request mcp.CallToolRequest,
 ) (any, *requestError) {
+	// The 2025-11-25 tasks belong to initialize-era requests: a 2026-07-28
+	// call runs synchronously, whatever it carries, and the middleware and the
+	// handler never see params.task. The Tasks extension hands a call over
+	// through the call's context, not through params.task.
+	if request.Params.Task != nil && IsModernRequest(ctx) {
+		request.Params.Task = nil
+	}
+
 	// Find the tool: the server's own first, then the task tools.
 	var taskToolOnly bool
 	s.toolsMu.RLock()

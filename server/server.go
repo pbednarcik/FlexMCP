@@ -54,6 +54,8 @@ type ResourceHandlerMiddleware func(ResourceHandlerFunc) ResourceHandlerFunc
 // (tools/list) and when calling tools (tools/call), so a filtered-out tool
 // cannot be discovered or invoked. During tools/call, filters receive only the
 // requested tool to keep the call-time access check off the full-list hot path.
+// On a 2026-07-28 request tools/list filters see copies of the tools without
+// execution, and without the task tools and the tools that require a task.
 type ToolFilterFunc func(ctx context.Context, tools []mcp.Tool) []mcp.Tool
 
 // PromptHandlerMiddleware is a middleware function that wraps a PromptHandlerFunc.
