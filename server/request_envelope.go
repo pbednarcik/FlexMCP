@@ -44,10 +44,25 @@ type paramsPeek struct {
 	Meta requestMeta `json:"_meta"`
 	Name string      `json:"name"`
 	URI  string      `json:"uri"`
-	// TaskId stays raw so that a task id of another type fails only the
-	// Mcp-Name check, as it does in [mcp.ExtractHeaderName], and not the read.
-	TaskId    json.RawMessage `json:"taskId"`
+	// TaskId is a pointer, so the envelope of any other request stays small.
+	TaskId    *taskIDPeek     `json:"taskId"`
 	RequestID json.RawMessage `json:"requestId"`
+}
+
+// taskIDPeek is a taskId as the Mcp-Name check reads it: one of another type
+// fails that check, as in [mcp.ExtractHeaderName], and not the read.
+type taskIDPeek struct {
+	id       string
+	isString bool
+}
+
+func (p *taskIDPeek) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	value, err := dec.ReadValue()
+	if err != nil {
+		return err
+	}
+	p.isString = json.Unmarshal(value, &p.id) == nil
+	return nil
 }
 
 // headerName reports what [mcp.ExtractHeaderName] finds in params for
@@ -60,14 +75,10 @@ func (p *paramsPeek) headerName(method mcp.MCPMethod) (string, bool) {
 	case mcp.MethodResourcesRead:
 		return p.URI, true
 	case mcp.MethodTasksGet, mcp.MethodTasksCancel, mcp.MethodTasksUpdate:
-		if len(p.TaskId) == 0 {
+		if p.TaskId == nil {
 			return "", true
 		}
-		var id string
-		if json.Unmarshal(p.TaskId, &id) != nil {
-			return "", false
-		}
-		return id, true
+		return p.TaskId.id, p.TaskId.isString
 	}
 	return "", false
 }
