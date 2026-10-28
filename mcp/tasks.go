@@ -218,18 +218,14 @@ func WithRelatedTask(taskID string) *Meta {
 // continues executing asynchronously in the background.
 const ModelImmediateResponseMetaKey = "io.modelcontextprotocol/model-immediate-response"
 
-// WithModelImmediateResponse creates Meta with an immediate response message for the model.
-// This allows the model to continue processing while the task executes asynchronously.
-// The message parameter is a human-readable string that will be shown to the model.
+// WithModelImmediateResponse creates Meta carrying [ModelImmediateResponseMetaKey]
+// with message, a human-readable string meant for the model.
 //
-// Example:
-//
-//	return &mcp.CreateTaskResult{
-//	    Task: task,
-//	    Result: mcp.Result{
-//	        Meta: mcp.WithModelImmediateResponse("Processing your request. This may take a few minutes."),
-//	    },
-//	}
+// Deprecated: the server builds the answer to a task-augmented tools/call
+// itself and ignores the CreateTaskResult a handler returns, so this meta
+// never reaches that answer; set on a handler's result it only appears in
+// tasks/result, after the task ends. The 2025-11-25 tasks it belongs to are
+// superseded by the 2026-07-28 Tasks extension.
 func WithModelImmediateResponse(message string) *Meta {
 	return &Meta{
 		AdditionalFields: map[string]any{
