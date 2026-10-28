@@ -13,12 +13,15 @@ import (
 
 // dispatchRequest hands a request handleMessageRead has read and checked to
 // the handler of its method, with the method's hooks, and answers it.
+// headersChecked is the Mcp-Param-* check of a tools/call, handed to its
+// handler.
 func (s *MCPServer) dispatchRequest(
 	ctx context.Context,
 	baseMessage *jsonrpcEnvelope,
 	protocolInfo *RequestProtocolInfo,
 	headers http.Header,
 	message json.RawMessage,
+	headersChecked paramHeaderCheck,
 ) mcp.JSONRPCMessage {
 	var err *requestError
 	switch baseMessage.Method {
@@ -344,7 +347,7 @@ func (s *MCPServer) dispatchRequest(
 		} else {
 			request.Header = headers
 			s.hooks.beforeCallTool(ctx, baseMessage.ID, &request)
-			result, err = s.handleToolCall(ctx, baseMessage.ID, request)
+			result, err = s.handleToolCallChecked(ctx, baseMessage.ID, request, headersChecked)
 			s.settleToolCall(&request)
 		}
 		if err != nil {

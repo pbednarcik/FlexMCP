@@ -19,6 +19,9 @@ type MCPRequestType struct {
 	// the hooks after the request, which may answer an error instead. Its
 	// signature is (ctx context.Context, id any, result any) *requestError.
 	Final string
+	// HeaderCheck, when set, hands HandlerFunc the Mcp-Param-* check
+	// handleMessageRead made of the request, as its last argument.
+	HeaderCheck bool
 	// RemovedInModern marks methods removed by protocol version 2026-07-28.
 	// They are rejected with METHOD_NOT_FOUND on requests declaring that
 	// version or later.
@@ -133,7 +136,8 @@ var MCPRequestTypes = []MCPRequestType{
 		Group:       "tools",
 		GroupName:   "Tools",
 		HookName:    "CallTool",
-		HandlerFunc: "handleToolCall",
+		HandlerFunc: "handleToolCallChecked",
+		HeaderCheck: true,
 		ResultIsAny: true, // Returns 'any' to support both CallToolResult and CreateTaskResult
 		Decode:      "decodeToolCall",
 		Settle:      "settleToolCall",

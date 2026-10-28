@@ -48,12 +48,12 @@ func BenchmarkParamHeadersValidation(b *testing.B) {
 				headers.Set(mcp.HeaderParamPrefix+"Region", "us-east-1")
 			}
 			ctx := b.Context()
-			if err := srv.validateStandardHeadersForMessage(ctx, headers, mcp.ProtocolVersion20260728, mcp.MethodToolsCall, message); err != nil {
+			if _, err := srv.validateStandardHeadersForMessage(ctx, headers, mcp.ProtocolVersion20260728, mcp.MethodToolsCall, message); err != nil {
 				b.Fatal(err)
 			}
 			b.ReportAllocs()
 			for b.Loop() {
-				_ = srv.validateStandardHeadersForMessage(ctx, headers, mcp.ProtocolVersion20260728, mcp.MethodToolsCall, message)
+				_, _ = srv.validateStandardHeadersForMessage(ctx, headers, mcp.ProtocolVersion20260728, mcp.MethodToolsCall, message)
 			}
 		})
 	}

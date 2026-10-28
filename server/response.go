@@ -200,7 +200,9 @@ func errorResponseForProtocolError(id any, err error) mcp.JSONRPCMessage {
 
 // validateStandardHeadersForMessage checks the Mcp-Method, Mcp-Name, and
 // Mcp-Param-* headers against the JSON-RPC message body, as required from
-// protocol version 2026-07-28 (SEP-2243).
+// protocol version 2026-07-28 (SEP-2243). For a tools/call it returns the
+// Mcp-Param-* check it made, which the call makes again should it run another
+// registration.
 //
 // Requests that did not arrive over HTTP carry no headers, so validation is
 // skipped: the header contract binds the Streamable HTTP transport only.
@@ -210,32 +212,33 @@ func (s *MCPServer) validateStandardHeadersForMessage(
 	protocolVersion string,
 	method mcp.MCPMethod,
 	message json.RawMessage,
-) error {
+) (paramHeaderCheck, error) {
 	if len(headers) == 0 || headers.Get(mcp.HeaderProtocolVersion) == "" {
-		return nil
+		return paramHeaderCheck{}, nil
 	}
 
 	var wrapper struct {
 		Params json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(message, &wrapper); err != nil {
-		return nil
+		return paramHeaderCheck{}, nil
 	}
 
 	if err := mcp.ValidateStandardHeaders(headers.Get, protocolVersion, method, wrapper.Params); err != nil {
-		return err
+		return paramHeaderCheck{}, err
 	}
 
 	// Tool parameters annotated with x-mcp-header travel in headers as well as
 	// in the body, and the two must agree.
 	if method != mcp.MethodToolsCall {
-		return nil
+		return paramHeaderCheck{}, nil
 	}
-	bindings, ok := s.headerBindingsForCall(wrapper.Params)
+	bindings, tool, ok := s.headerBindingsForCall(wrapper.Params)
+	checked := paramHeaderCheck{headers: headers, message: message, against: tool}
 	if !ok {
-		return nil
+		return checked, nil
 	}
-	return checkParamHeaders(headers, bindings, message)
+	return checked, checkParamHeaders(headers, bindings, message)
 }
 
 // lookupHeader reports the first value of a header and whether it was sent at
@@ -252,34 +255,34 @@ func lookupHeader(headers http.Header) func(string) (string, bool) {
 }
 
 // headerBindingsForCall resolves the x-mcp-header bindings of the tool named
-// by a tools/call request, cached from the tool's registration. It returns
-// ok=false when the tool is unknown, leaving the not-found error to the
-// handler.
-func (s *MCPServer) headerBindingsForCall(params json.RawMessage) ([]headerBinding, bool) {
+// by a tools/call request, cached from the tool's registration, and returns
+// that registration, nil for a task tool. It returns ok=false when the tool is
+// unknown, leaving the not-found error to the handler.
+func (s *MCPServer) headerBindingsForCall(params json.RawMessage) ([]headerBinding, *ServerTool, bool) {
 	var call struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	return s.headerBindingsForTool(call.Name)
 }
 
 // headerBindingsForTool is [MCPServer.headerBindingsForCall] for a tool name
 // already read from the request.
-func (s *MCPServer) headerBindingsForTool(name string) ([]headerBinding, bool) {
+func (s *MCPServer) headerBindingsForTool(name string) ([]headerBinding, *ServerTool, bool) {
 	if name == "" {
-		return nil, false
+		return nil, nil, false
 	}
 	s.toolsMu.RLock()
 	defer s.toolsMu.RUnlock()
 	if tool, ok := s.tools[name]; ok {
-		return s.cachedHeaderBindings(name, &tool.Tool), true
+		return s.cachedHeaderBindings(name, &tool.Tool), tool, true
 	}
 	if taskTool, ok := s.taskTools[name]; ok {
-		return s.cachedHeaderBindings(name, &taskTool.Tool), true
+		return s.cachedHeaderBindings(name, &taskTool.Tool), nil, true
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 // validateStandardHeadersOfRequest is
@@ -293,27 +296,39 @@ func (s *MCPServer) validateStandardHeadersOfRequest(
 	method mcp.MCPMethod,
 	params *paramsPeek,
 	message json.RawMessage,
-) error {
+) (paramHeaderCheck, error) {
 	if len(headers) == 0 || headers.Get(mcp.HeaderProtocolVersion) == "" {
-		return nil
+		return paramHeaderCheck{}, nil
 	}
 	bodyName := func() (string, bool) { return params.headerName(method) }
 	if err := mcp.ValidateStandardHeadersWithName(headers.Get, protocolVersion, method, bodyName); err != nil {
-		return err
+		return paramHeaderCheck{}, err
 	}
 
 	if method != mcp.MethodToolsCall {
-		return nil
+		return paramHeaderCheck{}, nil
 	}
+	checked := paramHeaderCheck{headers: headers, message: message}
 	name, ok := bodyName()
 	if !ok {
-		return nil
+		return checked, nil
 	}
-	bindings, ok := s.headerBindingsForTool(name)
+	bindings, tool, ok := s.headerBindingsForTool(name)
+	checked.against = tool
 	if !ok || len(bindings) == 0 {
-		return nil
+		return checked, nil
 	}
-	return checkParamHeaders(headers, bindings, message)
+	return checked, checkParamHeaders(headers, bindings, message)
+}
+
+// paramHeaderError answers a tools/call whose Mcp-Param-* headers fail
+// [paramHeaderCheck.recheck] as [errorResponseForProtocolError] answers one
+// that fails the check at dispatch.
+func paramHeaderError(id any, err error) *requestError {
+	if mismatch, ok := errors.AsType[mcp.HeaderMismatchError](err); ok {
+		return &requestError{id: id, code: mcp.HEADER_MISMATCH, err: err, data: mcp.HeaderMismatchData{Header: mismatch.Header}}
+	}
+	return &requestError{id: id, code: mcp.INVALID_PARAMS, err: err}
 }
 
 // cachedHeaderBindings returns the bindings registration extracted for name.

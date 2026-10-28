@@ -75,7 +75,8 @@ func TestParamHeadersCheckAllocations(t *testing.T) {
 		var envelope requestEnvelope
 		require.NoError(t, readEnvelope(body, &envelope))
 		check := func(headers http.Header) error {
-			return srv.validateStandardHeadersOfRequest(headers, mcp.ProtocolVersion20260728, mcp.MethodToolsCall, &envelope.Params, body)
+			_, err := srv.validateStandardHeadersOfRequest(headers, mcp.ProtocolVersion20260728, mcp.MethodToolsCall, &envelope.Params, body)
+			return err
 		}
 		require.NoError(t, check(headers))
 		wrong := headers.Clone()

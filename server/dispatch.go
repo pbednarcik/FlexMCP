@@ -161,6 +161,9 @@ func (s *MCPServer) handleMessageRead(
 	// (SEP-2575). Anything else is served through the legacy path.
 	var protocolInfo *RequestProtocolInfo
 	var protocolErr error
+	// headersChecked is the Mcp-Param-* check of a tools/call, which the call
+	// makes again should it run a registration other than the one checked.
+	var headersChecked paramHeaderCheck
 	if readOnce {
 		protocolInfo = &layers.info
 		protocolErr = readProtocolInfo(envelope.Params.Meta, protocolInfo)
@@ -182,9 +185,9 @@ func (s *MCPServer) handleMessageRead(
 		}
 		var headerErr error
 		if readOnce {
-			headerErr = s.validateStandardHeadersOfRequest(headers, protocolInfo.ProtocolVersion, baseMessage.Method, &envelope.Params, message)
+			headersChecked, headerErr = s.validateStandardHeadersOfRequest(headers, protocolInfo.ProtocolVersion, baseMessage.Method, &envelope.Params, message)
 		} else {
-			headerErr = s.validateStandardHeadersForMessage(ctx, headers, protocolInfo.ProtocolVersion, baseMessage.Method, message)
+			headersChecked, headerErr = s.validateStandardHeadersForMessage(ctx, headers, protocolInfo.ProtocolVersion, baseMessage.Method, message)
 		}
 		if headerErr != nil {
 			return errorResponseForProtocolError(baseMessage.ID, headerErr)
@@ -221,5 +224,5 @@ func (s *MCPServer) handleMessageRead(
 	// 2026-07-28: resultType, serverInfo, and caching hints.
 	defer func() { resp = s.decorateResponse(ctx, protocolInfo, baseMessage.Method, resp) }()
 
-	return s.dispatchRequest(ctx, baseMessage, protocolInfo, headers, message)
+	return s.dispatchRequest(ctx, baseMessage, protocolInfo, headers, message, headersChecked)
 }

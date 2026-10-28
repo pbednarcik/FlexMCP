@@ -39,7 +39,7 @@ func (s *MCPServer) limitCreateTaskResult(result *mcp.CreateTaskResult) *mcp.Cre
 
 // handleToolCallAsTask handles tool calls that are executed as tasks.
 // It creates a task entry, starts async execution, and returns CreateTaskResult immediately.
-// The call runs called, the registration handleToolCall found and the tool
+// The call runs called, the registration handleToolCallChecked found and the tool
 // filters authorized, with the schemas kept with it.
 func (s *MCPServer) handleToolCallAsTask(
 	ctx context.Context,
@@ -325,7 +325,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 	}
 
 	// The handler runs inside the tool middlewares, the chain built outside
-	// the lock as in handleToolCall.
+	// the lock as in handleToolCallChecked.
 	finalHandler := regularTool.Handler
 	s.toolMiddlewareMu.RLock()
 	mw := s.toolHandlerMiddlewares

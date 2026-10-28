@@ -79,6 +79,25 @@ func checkParamHeadersSlow(headers http.Header, bindings []headerBinding, messag
 	return mcp.ValidateParamHeadersWithBindings(lookupHeader(headers), plain, wrapper.Params)
 }
 
+// paramHeaderCheck is the Mcp-Param-* check dispatch made of a tools/call:
+// the headers and the message it compared, and the registration whose
+// x-mcp-header bindings it compared them by. The zero value stands for a call
+// no check was made of, one that did not come over HTTP on protocol version
+// 2026-07-28.
+type paramHeaderCheck struct {
+	headers http.Header
+	message json.RawMessage
+	// against is the tool registered under the called name at dispatch, nil
+	// when none was or a task tool was.
+	against *ServerTool
+}
+
+// recheck checks the headers again, against the bindings of tool, the
+// registration the call runs in place of the one they were checked against.
+func (c paramHeaderCheck) recheck(tool mcp.Tool) error {
+	return checkParamHeaders(c.headers, keepHeaderBindings(&tool), c.message)
+}
+
 // paramHeaderWalker is the pooled state of one header check: the message as a
 // bytes.Buffer, which jsontext reads in place, the decoder, a buffer for a
 // string that holds escapes, and where each binding's value lies.

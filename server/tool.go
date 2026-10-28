@@ -400,7 +400,7 @@ func (s *MCPServer) DeleteTools(names ...string) {
 // filteredTools builds the full tool candidate set (global + task) and
 // applies all registered tool filters. This is the single source of truth
 // for which tools are visible in a given context, used by both handleListTools
-// and handleToolCall to guarantee consistent behavior.
+// and handleToolCallChecked to guarantee consistent behavior.
 //
 // On a 2026-07-28 request the 2025-11-25 tasks are not served: the list leaves
 // out the task tools and the tools that require task augmentation, and holds
@@ -525,10 +525,13 @@ func (s *MCPServer) handleListTools(
 	return &result, nil
 }
 
-func (s *MCPServer) handleToolCall(
+// handleToolCallChecked serves a tools/call. headersChecked is the
+// Mcp-Param-* check dispatch made of it, the zero value when it made none.
+func (s *MCPServer) handleToolCallChecked(
 	ctx context.Context,
 	id any,
 	request mcp.CallToolRequest,
+	headersChecked paramHeaderCheck,
 ) (any, *requestError) {
 	// The 2025-11-25 tasks belong to initialize-era requests: a 2026-07-28
 	// call runs synchronously, whatever it carries, and the middleware and the
@@ -555,6 +558,21 @@ func (s *MCPServer) handleToolCall(
 		tool = ServerTool{Tool: called.taskTool.Tool}
 	} else {
 		tool = *called.registered
+	}
+
+	// Dispatch checked the Mcp-Param-* headers against the tool registered
+	// under the name then. One registered since may bind parameters that one
+	// did not, so it runs only if the headers hold for its own bindings
+	// (Transports.md rows 34 and 36). A registration is never changed once
+	// made, so the same pointer means the same bindings, and the common case
+	// costs this comparison. A task tool's registration is a value and
+	// compares as nil, so one found where dispatch found a task tool or none
+	// is not checked again: no task tool runs a checked call, a 2026-07-28
+	// one, which runs synchronously.
+	if headersChecked.headers != nil && called.registered != headersChecked.against {
+		if err := headersChecked.recheck(tool.Tool); err != nil {
+			return nil, paramHeaderError(id, err)
+		}
 	}
 
 	// The call was decoded for the tool registered then; a tool that has not
