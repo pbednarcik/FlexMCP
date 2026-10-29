@@ -20,7 +20,7 @@ import (
 )
 
 // A number big.Rat cannot read: float64 reads it as 0, and jsonschema
-// v6.0.2's validator, which reads every number it checks through big.Rat,
+// v6.0.3's validator, which reads every number it checks through big.Rat,
 // panics on it. Any client can send one.
 const outOfRangeNumber = `0e10000000000000000000`
 
@@ -188,7 +188,7 @@ func TestRegistrationNamesABoundItCannotRead(t *testing.T) {
 }
 
 // A bound the metaschema does not read as a number compiles, and jsonschema
-// v6.0.2 drops it: such a bound is refused at registration all the same, in
+// v6.0.3 drops it: such a bound is refused at registration all the same, in
 // an input or an output schema, wherever a schema sits, with the lock let go.
 // A number big.Rat cannot read where the schema's dialect reads no bound,
 // such as a default, a property named for a keyword, an unknown keyword or a

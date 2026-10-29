@@ -113,7 +113,7 @@ func validationOutcome(ran bool, err error) string {
 }
 
 // validated validates args against compiled and renders the outcome; a
-// panic fails t. jsonschema v6.0.2 panics on a number big.Rat cannot read,
+// panic fails t. jsonschema v6.0.3 panics on a number big.Rat cannot read,
 // such as 0e10000000000000000000, and validation must answer it as a
 // failure instead.
 func validated(t testing.TB, compiled *jsonschema.Schema, args callArguments) string {
@@ -127,7 +127,7 @@ func validated(t testing.TB, compiled *jsonschema.Schema, args callArguments) st
 }
 
 // compileFuzzed compiles schema, nil when it does not compile or when the
-// compiler panics, as jsonschema v6.0.2's does on a bound big.Rat cannot
+// compiler panics, as jsonschema v6.0.3's does on a bound big.Rat cannot
 // read: no call reaches validation then.
 func compileFuzzed(schema string) (compiled *jsonschema.Schema) {
 	defer func() {

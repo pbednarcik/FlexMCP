@@ -225,7 +225,7 @@ func validateTree(compiled *jsonschema.Schema, value any) error {
 }
 
 // validateRead validates value, a validator tree, against compiled.
-// jsonschema v6.0.2 reads every number a schema checks through big.Rat and
+// jsonschema v6.0.3 reads every number a schema checks through big.Rat and
 // panics on one big.Rat cannot read; that panic is recovered here, around
 // Validate alone, and the number is the error. Any other panic is raised
 // again (blameUnreadableNumber).
@@ -394,7 +394,7 @@ func findNumberOutOfRange(value any, at []string) *numberOutOfRange {
 
 // A call's arguments are refused before the validator reads them when they
 // hold a number past either bound below or nest past maxArgumentDepth.
-// jsonschema v6.0.2 reads a number through big.Rat, whose work grows with its
+// jsonschema v6.0.3 reads a number through big.Rat, whose work grows with its
 // digits and, unless it is zero, its decimal scale; each node of its error
 // tree copies the instance path, so its memory grows with the square of the
 // depth. A float64, written shortest or exactly, has at most 1075 digits and a

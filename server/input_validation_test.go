@@ -432,6 +432,19 @@ func TestInputSchemaValidation_NestedPathInError(t *testing.T) {
 		"error message should reference the nested path: %s", tc.Text)
 }
 
+// An element checked by items after prefixItems, or by additionalItems after
+// an items array, is named by its own index: the second element here.
+func TestInputSchemaValidation_ItemsAfterAPrefixNameTheirElement(t *testing.T) {
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation())
+	srv.AddTool(mcp.NewToolWithRawSchema("prefixed", "", json.RawMessage(
+		`{"type":"object","properties":{"a":{"prefixItems":[{}],"items":{"type":"integer"}}}}`)), okHandler)
+	srv.AddTool(mcp.NewToolWithRawSchema("draft7", "", json.RawMessage(
+		`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"a":{"items":[{}],"additionalItems":{"type":"integer"}}}}`)), okHandler)
+	for _, tool := range []string{"prefixed", "draft7"} {
+		assert.Equal(t, "input schema validation failed: /a/1: got string, want integer", resultText(t, srv, tool, `{"a":["x","y"]}`), tool)
+	}
+}
+
 // TestInputSchemaValidation_MessagesAreSentences pins the message the model
 // receives: the instance location, then the validator's own English
 // sentence for the violation, never a Go struct dump.
