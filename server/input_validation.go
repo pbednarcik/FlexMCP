@@ -336,6 +336,17 @@ func (e *numberOutOfRange) Error() string {
 	return validationLine(e.at, "number "+literal+" is out of range")
 }
 
+// nestedTooDeep is an object or array in a call's arguments nested past
+// maxArgumentDepth, at the place it stands.
+type nestedTooDeep struct {
+	at []string
+}
+
+// Error renders the failure as formatLeafMessage renders the validator's.
+func (e *nestedTooDeep) Error() string {
+	return validationLine(e.at, "value is nested deeper than "+strconv.Itoa(maxArgumentDepth)+" levels")
+}
+
 // hasUnreadableNumber reports whether value, a validator tree, holds a number
 // big.Rat cannot read: findNumberOutOfRange's answer, without the order and
 // the place it finds one in.
@@ -382,14 +393,16 @@ func findNumberOutOfRange(value any, at []string) *numberOutOfRange {
 }
 
 // A call's arguments are refused before the validator reads them when they
-// hold a number past either bound below. jsonschema v6.0.2 reads a number
-// through big.Rat, whose work grows with its digits and, unless it is zero,
-// its decimal scale. A float64, written shortest or exactly, has at most 1075
-// digits and a scale within 1074 either way; the request's decode refuses one
-// past range.
+// hold a number past either bound below or nest past maxArgumentDepth.
+// jsonschema v6.0.2 reads a number through big.Rat, whose work grows with its
+// digits and, unless it is zero, its decimal scale; each node of its error
+// tree copies the instance path, so its memory grows with the square of the
+// depth. A float64, written shortest or exactly, has at most 1075 digits and a
+// scale within 1074 either way; the request's decode refuses one past range.
 const (
-	maxNumberDigits = 1100
-	maxNumberScale  = 1100
+	maxNumberDigits  = 1100
+	maxNumberScale   = 1100
+	maxArgumentDepth = 128
 )
 
 // numberPastBounds reports whether literal has more than maxNumberDigits
@@ -447,19 +460,25 @@ func numberPastBounds(literal string) bool {
 }
 
 // argumentsPastBounds reports whether value, a call's arguments as the
-// validator reads them at level, holds a number past the bounds. It neither
-// sorts nor allocates.
+// validator reads them at level, holds a number past the bounds or an object
+// or array past maxArgumentDepth. It neither sorts nor allocates.
 func argumentsPastBounds(value any, level int) bool {
 	switch v := value.(type) {
 	case json.Number:
 		return numberPastBounds(string(v))
 	case []any:
+		if level > maxArgumentDepth {
+			return true
+		}
 		for _, item := range v {
 			if argumentsPastBounds(item, level+1) {
 				return true
 			}
 		}
 	case map[string]any:
+		if level > maxArgumentDepth {
+			return true
+		}
 		for _, member := range v {
 			if argumentsPastBounds(member, level+1) {
 				return true
@@ -469,7 +488,7 @@ func argumentsPastBounds(value any, level int) bool {
 	return false
 }
 
-// findArgumentPastBounds returns the first number in value that
+// findArgumentPastBounds returns the first number or nesting in value that
 // argumentsPastBounds finds, members in key order, or nil. at and level are
 // the place value stands.
 func findArgumentPastBounds(value any, at []string, level int) error {
@@ -479,12 +498,18 @@ func findArgumentPastBounds(value any, at []string, level int) error {
 			return &numberOutOfRange{at: slices.Clone(at), literal: string(v)}
 		}
 	case []any:
+		if level > maxArgumentDepth {
+			return &nestedTooDeep{at: slices.Clone(at)}
+		}
 		for i, item := range v {
 			if err := findArgumentPastBounds(item, append(at, strconv.Itoa(i)), level+1); err != nil {
 				return err
 			}
 		}
 	case map[string]any:
+		if level > maxArgumentDepth {
+			return &nestedTooDeep{at: slices.Clone(at)}
+		}
 		for _, key := range slices.Sorted(maps.Keys(v)) {
 			if err := findArgumentPastBounds(v[key], append(at, key), level+1); err != nil {
 				return err
@@ -747,7 +772,7 @@ type callArguments struct {
 // normalize returns the arguments in the form the JSON Schema validator
 // reads, as normalizeArgumentsForValidation does for either form. Arguments
 // sent as raw are read as sent, numbers exact: from their decode when every
-// number in them reads the same there (numbersReadExactly), else from a
+// number in them reads the same there (scanArguments), else from a
 // second decode that keeps each number's literal. bounded reports that the
 // scan of raw found nothing argumentsPastBounds would.
 func (a callArguments) normalize() (value any, bounded bool, err error) {
@@ -755,8 +780,10 @@ func (a callArguments) normalize() (value any, bounded bool, err error) {
 		value, err = normalizeArgumentsForValidation(a.decoded)
 		return value, false, err
 	}
-	if a.decoded != nil && numbersReadExactly(a.raw) {
-		return a.decoded, true, nil
+	if a.decoded != nil {
+		if exact, shallow := scanArguments(a.raw); exact {
+			return a.decoded, shallow, nil
+		}
 	}
 	value, err = normalizeRawArguments(a.raw)
 	return value, false, err
@@ -831,11 +858,11 @@ func normalizeRawArguments(raw json.RawMessage) (any, error) {
 	return jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 }
 
-// numbersReadExactly reports whether the validator reads every number in raw,
-// a JSON text, the same from the float64 that decoding raw into an any makes
-// of it as from its literal. The validator reads a number of either kind
-// through fmt.Sprint and big.Rat, so it reads a float64 as the shortest
-// decimal that rounds to it, and 2^53+1, read from its float64, would be 2^53.
+// scanArguments reports whether the validator reads every number in raw, a
+// JSON text, the same from the float64 decoding raw into an any makes of it as
+// from its literal (exact), and whether no object or array in it nests past
+// maxArgumentDepth (shallow). The validator reads a float64 through big.Rat as
+// the shortest decimal that rounds to it: 2^53+1 would be read as 2^53.
 //
 // The rule is on the literal of each number outside a string: it has no
 // exponent ('e' or 'E') and at most 15 digits. Every digit counts: the
@@ -849,9 +876,15 @@ func normalizeRawArguments(raw json.RawMessage) (any, error) {
 // decimal of the float64 nearest it, up to trailing zeros: 10^15 < 2^52, so no
 // two such decimals round to the same float64. A minus zero reads as zero
 // either way. The scan reads raw once and allocates nothing.
-func numbersReadExactly(raw []byte) bool {
+func scanArguments(raw []byte) (exact, shallow bool) {
+	depth, deepest := 0, 0
 	for i := 0; i < len(raw); i++ {
 		switch c := raw[i]; {
+		case c == '[' || c == '{':
+			depth++
+			deepest = max(deepest, depth)
+		case c == ']' || c == '}':
+			depth--
 		case c == '"':
 			for i++; i < len(raw) && raw[i] != '"'; i++ {
 				if raw[i] == '\\' {
@@ -867,19 +900,19 @@ func numbersReadExactly(raw []byte) bool {
 					continue
 				}
 				if d == 'e' || d == 'E' {
-					return false
+					return false, false
 				}
 				if d != '-' && d != '.' {
 					break
 				}
 			}
 			if digits > 15 {
-				return false
+				return false, false
 			}
 			i--
 		}
 	}
-	return true
+	return true, deepest <= maxArgumentDepth
 }
 
 // A failing call's feedback is bounded: the first maxValidationMessages
@@ -900,6 +933,9 @@ const (
 func formatValidationError(err error) error {
 	if outOfRange, ok := errors.AsType[*numberOutOfRange](err); ok {
 		return fmt.Errorf("input schema validation failed: %s", outOfRange.Error())
+	}
+	if tooDeep, ok := errors.AsType[*nestedTooDeep](err); ok {
+		return fmt.Errorf("input schema validation failed: %s", tooDeep.Error())
 	}
 	var verr *jsonschema.ValidationError
 	if !errors.As(err, &verr) {

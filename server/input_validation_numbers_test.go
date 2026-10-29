@@ -19,12 +19,12 @@ import (
 )
 
 // A validated call is validated from the Arguments it decoded whenever every
-// number in its RawArguments reads the same there (numbersReadExactly), and
+// number in its RawArguments reads the same there (scanArguments), and
 // from a second decode of the bytes otherwise. These tests hold the first to
 // the second: the same failures with the same texts for every input, the
 // Arguments left as they were.
 
-func TestNumbersReadExactly(t *testing.T) {
+func TestScanArgumentsReadsNumbersExactly(t *testing.T) {
 	for raw, want := range map[string]bool{
 		`{"limit":5}`:                    true,
 		`123456789012345`:                true,  // 15 digits
@@ -69,14 +69,15 @@ func TestNumbersReadExactly(t *testing.T) {
 		if !json.Valid([]byte(raw)) {
 			t.Fatalf("%s is not JSON", raw)
 		}
-		assert.Equal(t, want, numbersReadExactly([]byte(raw)), raw)
+		exact, _ := scanArguments([]byte(raw))
+		assert.Equal(t, want, exact, raw)
 	}
 }
 
 // The scan allocates nothing.
-func TestNumbersReadExactlyAllocations(t *testing.T) {
+func TestScanArgumentsAllocations(t *testing.T) {
 	raw := []byte(`{"a":[1,2.5,{"b":"c\"d"}],"n":123456789012345}`)
-	assert.Zero(t, testing.AllocsPerRun(100, func() { numbersReadExactly(raw) }))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { scanArguments(raw) }))
 }
 
 // numbersSchema puts kw on the number n, on the items of the array a, and on
@@ -193,7 +194,7 @@ func checkNumbers(t testing.TB, compiled *jsonschema.Schema, args string, tally 
 	if tally == nil {
 		return
 	}
-	if !numbersReadExactly(p.RawArguments) {
+	if exact, _ := scanArguments(p.RawArguments); !exact {
 		tally.sent++
 		err := compiled.Validate(p.Arguments)
 		if err != nil {

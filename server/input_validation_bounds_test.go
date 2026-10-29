@@ -314,3 +314,58 @@ func TestTaskToolOutputRefusalHonoursTheSizeLimit(t *testing.T) {
 		assert.Equal(t, want, result.Content[0].(mcp.TextContent).Text, "limit %d", limit)
 	}
 }
+
+// deepServer validates t as an array of arrays, recursively.
+func deepServer() *MCPServer {
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation())
+	srv.AddTool(mcp.NewToolWithRawSchema("deep", "", json.RawMessage(
+		`{"type":"object","properties":{"t":{"$ref":"#/$defs/n"}},"$defs":{"n":{"type":"array","items":{"$ref":"#/$defs/n"}}}}`)), okHandler)
+	return srv
+}
+
+// nestedArguments is an arguments object holding arrays arrays deep.
+func nestedArguments(arrays int, leaf string) string {
+	return `{"t":` + strings.Repeat("[", arrays) + leaf + strings.Repeat("]", arrays) + `}`
+}
+
+// Arguments nest at most 128 levels, the arguments object the first: one
+// level more is refused before the validator reads them, whether the call's
+// numbers are read from its decode or from a second one (an exponent).
+func TestInputValidationRefusesArgumentsNestedTooDeep(t *testing.T) {
+	srv := deepServer()
+	objects := func(n int) string { return strings.Repeat(`{"a":`, n-1) + `{}` + strings.Repeat(`}`, n-1) }
+	for _, member := range []string{"", `"x":1e0,`} {
+		with := func(arguments string) string { return "{" + member + arguments[1:] }
+		assert.Contains(t, boundsCall(t, srv, "deep", with(nestedArguments(127, ""))), `"text":"ok"`, member)
+		assert.Equal(t, "input schema validation failed: /t"+strings.Repeat("/0", 127)+": got number, want array",
+			resultText(t, srv, "deep", with(nestedArguments(127, "1"))), member)
+		assert.Equal(t, "input schema validation failed: /t"+strings.Repeat("/0", 127)+": value is nested deeper than 128 levels",
+			resultText(t, srv, "deep", with(nestedArguments(128, ""))), member)
+		assert.Contains(t, boundsCall(t, srv, "deep", with(objects(128))), `"text":"ok"`, member)
+		assert.Equal(t, "input schema validation failed: "+strings.Repeat("/a", 128)+": value is nested deeper than 128 levels",
+			resultText(t, srv, "deep", with(objects(129))), member)
+	}
+}
+
+// Under a hook arguments nested past 128 levels are refused as they are
+// without one.
+func TestInputValidationRefusesArgumentsNestedTooDeepUnderAHook(t *testing.T) {
+	arguments := strings.Repeat(`{"a":`, 128) + `{}` + strings.Repeat(`}`, 128)
+	assert.Equal(t, "input schema validation failed: "+strings.Repeat("/a", 128)+": value is nested deeper than 128 levels",
+		resultText(t, hookedServer(""), "hooked", arguments))
+}
+
+// Arguments 9,900 levels deep are refused for what decoding them allocates,
+// not the validator's error tree, which grows with the square of the depth.
+func TestInputValidationRefusesDeepArgumentsCheaply(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	srv := deepServer()
+	arguments := nestedArguments(9900, "1")
+	require.Equal(t, "input schema validation failed: /t"+strings.Repeat("/0", 127)+": value is nested deeper than 128 levels",
+		resultText(t, srv, "deep", arguments))
+	message := json.RawMessage(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"deep","arguments":` + arguments + `}}`)
+	allocs := testing.AllocsPerRun(1, func() { srv.HandleMessage(t.Context(), message) })
+	assert.LessOrEqual(t, allocs, 30000.0, "allocations to refuse arguments 9,900 levels deep")
+}
