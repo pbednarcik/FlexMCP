@@ -144,7 +144,7 @@ func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, compiled *json
 		return true, fmt.Errorf("invalid structured content: %w", err)
 	}
 
-	if err := validateTree(compiled, value); err != nil {
+	if err := validateRead(compiled, value); err != nil {
 		return true, formatOutputValidationError(err)
 	}
 	return true, nil

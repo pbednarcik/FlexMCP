@@ -199,23 +199,37 @@ func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, e
 		return false, nil
 	}
 
-	value, err := args.normalize()
+	value, bounded, err := args.normalize()
 	if err != nil {
 		return true, fmt.Errorf("invalid arguments: %w", err)
 	}
 
-	if err := validateTree(compiled, value); err != nil {
+	validate := validateTree
+	if bounded {
+		validate = validateRead
+	}
+	if err := validate(compiled, value); err != nil {
 		return true, formatValidationError(err)
 	}
 	return true, nil
 }
 
 // validateTree validates value, a tree jsonschema.UnmarshalJSON built or the
-// decoded arguments of a call, against compiled. jsonschema v6.0.2 reads every
-// number a schema checks through big.Rat and panics on one big.Rat cannot
-// read; that panic is recovered here, around Validate alone, and the number
-// is the error. Any other panic is raised again (blameUnreadableNumber).
+// decoded arguments of a call, against compiled, as validateRead does once
+// argumentsPastBounds finds nothing to refuse.
 func validateTree(compiled *jsonschema.Schema, value any) error {
+	if argumentsPastBounds(value, 1) {
+		return findArgumentPastBounds(value, nil, 1)
+	}
+	return validateRead(compiled, value)
+}
+
+// validateRead validates value, a validator tree, against compiled.
+// jsonschema v6.0.2 reads every number a schema checks through big.Rat and
+// panics on one big.Rat cannot read; that panic is recovered here, around
+// Validate alone, and the number is the error. Any other panic is raised
+// again (blameUnreadableNumber).
+func validateRead(compiled *jsonschema.Schema, value any) error {
 	recovered, err := validateRecovering(compiled, value)
 	if recovered == nil {
 		return err
@@ -303,7 +317,8 @@ func unreadableNumbersReplaced(value any, next func() json.Number) any {
 // big.Rat cannot read, at the place it stands: one whose exponent does not
 // fit an int64 or, unless it is zero, whose scale is past a million either
 // way, such as 0e10000000000000000000 or 1e-1000001, though float64 reads
-// both as 0. It fails validation as a value that does not fit the schema does.
+// both as 0, or, in a call's arguments, one past numberPastBounds' bounds. It
+// fails validation as a value that does not fit the schema does.
 type numberOutOfRange struct {
 	at      []string
 	literal string
@@ -364,6 +379,119 @@ func findNumberOutOfRange(value any, at []string) *numberOutOfRange {
 		for _, key := range slices.Sorted(maps.Keys(v)) {
 			if found := findNumberOutOfRange(v[key], append(at, key)); found != nil {
 				return found
+			}
+		}
+	}
+	return nil
+}
+
+// A call's arguments are refused before the validator reads them when they
+// hold a number past either bound below. jsonschema v6.0.2 reads a number
+// through big.Rat, whose work grows with its digits and, unless it is zero,
+// its decimal scale. A float64, written shortest or exactly, has at most 1075
+// digits and a scale within 1074 either way; the request's decode refuses one
+// past range.
+const (
+	maxNumberDigits = 1100
+	maxNumberScale  = 1100
+)
+
+// numberPastBounds reports whether literal has more than maxNumberDigits
+// digits before its exponent or, unless they are all zero, a scale (its
+// exponent less its fraction's digits) past maxNumberScale either way. A
+// literal that is no JSON number's is left to big.Rat.
+func numberPastBounds(literal string) bool {
+	i := 0
+	if i < len(literal) && (literal[i] == '-' || literal[i] == '+') {
+		i++
+	}
+	digits, fraction, nonzero, inFraction := 0, 0, false, false
+	for ; i < len(literal) && literal[i] != 'e' && literal[i] != 'E'; i++ {
+		switch c := literal[i]; {
+		case '0' <= c && c <= '9':
+			digits++
+			if inFraction {
+				fraction++
+			}
+			nonzero = nonzero || c != '0'
+		case c == '.' && !inFraction:
+			inFraction = true
+		default:
+			return false
+		}
+	}
+	if digits > maxNumberDigits {
+		return true
+	}
+	// Past saturated no fraction within maxNumberDigits brings the scale back.
+	const saturated = maxNumberScale + maxNumberDigits + 1
+	exponent, negative := 0, false
+	if i < len(literal) {
+		i++
+		if i < len(literal) && (literal[i] == '-' || literal[i] == '+') {
+			negative = literal[i] == '-'
+			i++
+		}
+		for ; i < len(literal); i++ {
+			c := literal[i]
+			if c < '0' || c > '9' {
+				return false
+			}
+			exponent = min(exponent*10+int(c-'0'), saturated)
+		}
+	}
+	if !nonzero {
+		return false
+	}
+	if negative {
+		exponent = -exponent
+	}
+	scale := exponent - fraction
+	return scale > maxNumberScale || scale < -maxNumberScale
+}
+
+// argumentsPastBounds reports whether value, a call's arguments as the
+// validator reads them at level, holds a number past the bounds. It neither
+// sorts nor allocates.
+func argumentsPastBounds(value any, level int) bool {
+	switch v := value.(type) {
+	case json.Number:
+		return numberPastBounds(string(v))
+	case []any:
+		for _, item := range v {
+			if argumentsPastBounds(item, level+1) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, member := range v {
+			if argumentsPastBounds(member, level+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// findArgumentPastBounds returns the first number in value that
+// argumentsPastBounds finds, members in key order, or nil. at and level are
+// the place value stands.
+func findArgumentPastBounds(value any, at []string, level int) error {
+	switch v := value.(type) {
+	case json.Number:
+		if numberPastBounds(string(v)) {
+			return &numberOutOfRange{at: slices.Clone(at), literal: string(v)}
+		}
+	case []any:
+		for i, item := range v {
+			if err := findArgumentPastBounds(item, append(at, strconv.Itoa(i)), level+1); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(v)) {
+			if err := findArgumentPastBounds(v[key], append(at, key), level+1); err != nil {
+				return err
 			}
 		}
 	}
@@ -624,15 +752,18 @@ type callArguments struct {
 // reads, as normalizeArgumentsForValidation does for either form. Arguments
 // sent as raw are read as sent, numbers exact: from their decode when every
 // number in them reads the same there (numbersReadExactly), else from a
-// second decode that keeps each number's literal.
-func (a callArguments) normalize() (any, error) {
+// second decode that keeps each number's literal. bounded reports that the
+// scan of raw found nothing argumentsPastBounds would.
+func (a callArguments) normalize() (value any, bounded bool, err error) {
 	if a.raw == nil {
-		return normalizeArgumentsForValidation(a.decoded)
+		value, err = normalizeArgumentsForValidation(a.decoded)
+		return value, false, err
 	}
 	if a.decoded != nil && numbersReadExactly(a.raw) {
-		return a.decoded, nil
+		return a.decoded, true, nil
 	}
-	return normalizeRawArguments(a.raw)
+	value, err = normalizeRawArguments(a.raw)
+	return value, false, err
 }
 
 // argumentsToValidate is what input validation reads of a call: the arguments
