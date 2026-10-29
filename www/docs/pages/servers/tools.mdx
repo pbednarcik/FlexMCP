@@ -30,6 +30,8 @@ A tool name is 1 to 128 characters of ASCII letters, digits, `_`, `-` and `.`, c
 
 With `WithInputSchemaValidation` or `WithOutputSchemaValidation` on, registration also compiles the tool's schemas and refuses one it cannot compile (malformed JSON, an unsupported dialect, a `$ref` the compiler would have to fetch). The compiled schema is kept, so no call pays for the compile.
 
+With `WithInputSchemaValidation` on, a call's arguments are refused before the schema is checked, as an `isError` result, when they hold a number with more than 1,100 digits or a decimal scale past 1,100, or nest objects and arrays deeper than 128 levels, the arguments object counting as the first. Every `float64` fits these bounds.
+
 ### Display Title
 
 Tools can carry a human-readable display title separate from their programmatic `name`. Clients display titles in tool pickers and UI surfaces; the `name` is reserved for model-facing identifiers.
@@ -944,8 +946,9 @@ func handleJSONTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 
 `WithToolResultSizeLimit` caps the size of a tool result's JSON. A result
 over the limit, `_meta` included, is replaced with an error result, on a
-synchronous call and on both task paths, before it is sent or stored. Zero or
-a negative limit, the default, leaves results unchecked.
+synchronous call and on both task paths, before it is sent or stored. A
+validation refusal over the limit is answered with the size-limit error
+instead. Zero or a negative limit, the default, leaves results unchecked.
 
 ```go
 s := server.NewMCPServer("demo", "1.0.0",
