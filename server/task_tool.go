@@ -123,7 +123,7 @@ func (s *MCPServer) handleToolCallAsTask(
 	if invalid != nil {
 		// No handler runs for this task: it is completed here. A hook may
 		// have cancelled it meanwhile, which completeTask leaves as it is.
-		s.completeTask(entry, validationToolResult(invalid), nil)
+		s.completeTask(entry, s.limitToolResult(validationToolResult(invalid)), nil)
 		s.tasksMu.RLock()
 		taskCopy := entry.task
 		s.tasksMu.RUnlock()
@@ -282,7 +282,7 @@ func (s *MCPServer) executeTaskTool(
 	// *CreateTaskResult, so storing a *CallToolResult here is safe.
 	if s.outputValidator != nil {
 		if _, vErr := s.outputValidator.validateCreateTaskResult(taskTool.Tool, entry.outputSchema, entry.outputSchemaKept, result); vErr != nil {
-			s.completeTask(entry, validationToolResult(vErr), nil)
+			s.completeTask(entry, s.limitToolResult(validationToolResult(vErr)), nil)
 			return
 		}
 	}
@@ -435,7 +435,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 	// reaches the client via tasks/result.
 	if s.outputValidator != nil {
 		if _, vErr := s.outputValidator.validate(regularTool.Tool, entry.outputSchema, entry.outputSchemaKept, result); vErr != nil {
-			s.completeTask(entry, validationToolResult(vErr), nil)
+			s.completeTask(entry, s.limitToolResult(validationToolResult(vErr)), nil)
 			return
 		}
 	}

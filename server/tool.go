@@ -650,7 +650,7 @@ func (s *MCPServer) handleToolCallChecked(
 	// model receives feedback in its context window and can self-correct.
 	if s.inputValidator != nil {
 		if _, err := s.inputValidator.validateRegistered(tool.Tool, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, tool.ArgumentsOnDemand)); err != nil {
-			return validationToolResult(err), nil
+			return s.limitToolResult(validationToolResult(err)), nil
 		}
 	}
 
@@ -697,7 +697,7 @@ func (s *MCPServer) handleToolCallChecked(
 	// that violates the declared contract.
 	if s.outputValidator != nil {
 		if _, vErr := s.outputValidator.validate(tool.Tool, called.outputSchema, called.outputSchemaKept, result); vErr != nil {
-			return validationToolResult(vErr), nil
+			return s.limitToolResult(validationToolResult(vErr)), nil
 		}
 	}
 

@@ -57,8 +57,9 @@ func WithPaginationLimit(limit int) ServerOption {
 // WithToolResultSizeLimit replaces a tool result whose JSON encoding is
 // larger than maxBytes with an error result. The oversized payload is not
 // sent. The same check runs for a synchronous call and for both task
-// execution paths, before the result is stored. Zero and negative limits
-// disable the check.
+// execution paths, before the result is stored. A validation refusal over
+// the limit is answered with the size-limit error instead. Zero and negative
+// limits disable the check.
 func WithToolResultSizeLimit(maxBytes int) ServerOption {
 	return func(s *MCPServer) {
 		s.toolResultSizeLimit = maxBytes

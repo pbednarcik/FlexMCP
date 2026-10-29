@@ -217,3 +217,100 @@ func TestArgumentsPastBoundsAllocations(t *testing.T) {
 	assert.False(t, argumentsPastBounds(value, 1))
 	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = argumentsPastBounds(value, 1) }))
 }
+
+// A refusal repeats at most 512 bytes of the place it names and its reason,
+// as the validator's own lines do, the place cut so the reason stays whole,
+// and the size limit applies to it.
+func TestInputValidationRefusalIsBounded(t *testing.T) {
+	key := strings.Repeat("~", 64<<10)
+	limited := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation(), WithToolResultSizeLimit(4096))
+	limited.AddTool(mcp.NewToolWithRawSchema("free", "", json.RawMessage(`{"type":"object"}`)), okHandler)
+	limited.AddTool(mcp.NewToolWithRawSchema("ints", "", json.RawMessage(`{"type":"object","additionalProperties":{"type":"integer"}}`)), okHandler)
+	arguments := `{"` + key + `":1e-1101}`
+	text := resultText(t, limited, "free", arguments)
+	assert.Equal(t, "input schema validation failed: /"+strings.Repeat("~0", 238)+"...: number 1e-1101 is out of range", text)
+	assert.Equal(t, "input schema validation failed: /"+strings.Repeat("~0", 241)+"...: got string, want integer",
+		resultText(t, limited, "ints", `{"`+key+`":"x"}`))
+	result := limited.HandleMessage(t.Context(), json.RawMessage(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"free","arguments":`+arguments+`}}`))
+	encoded, err := json.Marshal(result.(mcp.JSONRPCResponse).Result)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(encoded), 4096)
+
+	unlimited := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation())
+	unlimited.AddTool(mcp.NewToolWithRawSchema("free", "", json.RawMessage(`{"type":"object"}`)), okHandler)
+	answer := boundsCall(t, unlimited, "free", `{"`+strings.Repeat("~", 1<<20)+`":1e-1101}`)
+	assert.Less(t, len(answer), 1024, "the answer to a 1 MiB request")
+	assert.Contains(t, answer, `"isError":true`)
+
+	srv := outOfRangeServer(t, nil, nil)
+	assert.Equal(t, "input schema validation failed: /limit: number 1e-1101 is out of range", resultText(t, srv, "limited", `{"limit":1e-1101}`))
+	assert.Equal(t, "input schema validation failed: /limit: got string, want number", resultText(t, srv, "limited", `{"limit":"x"}`))
+}
+
+// A place cut inside a character is cut before it.
+func TestInputValidationRefusalCutsAtACharacter(t *testing.T) {
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation())
+	srv.AddTool(mcp.NewToolWithRawSchema("free", "", json.RawMessage(`{"type":"object"}`)), okHandler)
+	assert.Equal(t, "input schema validation failed: /"+strings.Repeat("中", 158)+"...: number 1e-1101 is out of range",
+		resultText(t, srv, "free", `{"`+strings.Repeat("中", 200)+`":1e-1101}`))
+}
+
+// A validation refusal over the size limit is replaced as any result over it
+// is: on input, on output, and on input for a task.
+func TestValidationRefusalHonoursTheSizeLimit(t *testing.T) {
+	const exceeded = "tool result exceeds 64 bytes"
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputSchemaValidation(), WithOutputSchemaValidation(),
+		WithToolResultSizeLimit(64), WithTaskCapabilities(true, true, true))
+	tool := mcp.NewToolWithRawSchema("limited", "", json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number","maximum":5}}}`))
+	tool.RawOutputSchema = json.RawMessage(`{"type":"object","properties":{"n":{"type":"number","maximum":5}}}`)
+	tool.Execution = &mcp.ToolExecution{TaskSupport: mcp.TaskSupportOptional}
+	srv.AddTool(tool, func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		result := mcp.NewToolResultText("ok")
+		result.StructuredContent = map[string]any{"n": 6}
+		return result, nil
+	})
+	assert.Equal(t, exceeded, resultText(t, srv, "limited", `{"limit":"x"}`))
+	assert.Equal(t, exceeded, resultText(t, srv, "limited", `{"limit":1}`))
+
+	created, reqErr := srv.handleTaskAugmentedToolCall(t.Context(), 1, mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name: "limited", Arguments: map[string]any{"limit": "x"}, Task: &mcp.TaskParams{},
+	}})
+	require.Nil(t, reqErr)
+	result, reqErr := srv.handleTaskResult(t.Context(), 2, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: created.Task.TaskId}})
+	require.Nil(t, reqErr)
+	require.True(t, result.IsError)
+	assert.Equal(t, exceeded, result.Content[0].(mcp.TextContent).Text)
+
+	created, reqErr = srv.handleTaskAugmentedToolCall(t.Context(), 3, mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name: "limited", Arguments: map[string]any{"limit": 1}, Task: &mcp.TaskParams{},
+	}})
+	require.Nil(t, reqErr)
+	result, reqErr = srv.handleTaskResult(t.Context(), 4, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: created.Task.TaskId}})
+	require.Nil(t, reqErr)
+	require.True(t, result.IsError)
+	assert.Equal(t, exceeded, result.Content[0].(mcp.TextContent).Text)
+}
+
+// A task tool's own handler that returns output its schema refuses gets the
+// refusal as its task's result, under the size limit like any other.
+func TestTaskToolOutputRefusalHonoursTheSizeLimit(t *testing.T) {
+	for limit, want := range map[int]string{
+		0:  "output schema validation failed: /n: maximum: got 6, want 5",
+		64: "tool result exceeds 64 bytes",
+	} {
+		srv := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true), WithOutputSchemaValidation(), WithToolResultSizeLimit(limit))
+		tool := mcp.NewTool("tasked", mcp.WithTaskSupport(mcp.TaskSupportRequired))
+		tool.RawOutputSchema = json.RawMessage(`{"type":"object","properties":{"n":{"type":"number","maximum":5}}}`)
+		srv.AddTaskTool(tool, func(context.Context, mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
+			return &mcp.CreateTaskResult{StructuredContent: map[string]any{"n": 6}}, nil
+		})
+		created, reqErr := srv.handleToolCall(t.Context(), 1, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "tasked", Task: &mcp.TaskParams{}}})
+		require.Nil(t, reqErr)
+		taskID := created.(*mcp.CreateTaskResult).Task.TaskId
+		require.Equal(t, mcp.TaskStatusCompleted, waitForTaskTerminal(t, srv, t.Context(), taskID))
+		result, reqErr := srv.handleTaskResult(t.Context(), 2, mcp.TaskResultRequest{Params: mcp.TaskResultParams{TaskId: taskID}})
+		require.Nil(t, reqErr)
+		require.True(t, result.IsError, "limit %d", limit)
+		assert.Equal(t, want, result.Content[0].(mcp.TextContent).Text, "limit %d", limit)
+	}
+}

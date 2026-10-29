@@ -329,15 +329,11 @@ const maxShownNumber = 64
 
 // Error renders the failure as formatLeafMessage renders the validator's.
 func (e *numberOutOfRange) Error() string {
-	location := jsonPointer(e.at)
-	if location == "" {
-		location = "<root>"
-	}
 	literal := e.literal
 	if len(literal) > maxShownNumber {
 		literal = literal[:maxShownNumber] + "..."
 	}
-	return location + ": number " + literal + " is out of range"
+	return validationLine(e.at, "number "+literal+" is out of range")
 }
 
 // hasUnreadableNumber reports whether value, a validator tree, holds a number
@@ -891,9 +887,11 @@ func numbersReadExactly(raw []byte) bool {
 // rest. The validator reports every failing array item, and each report
 // repeats the schema's own enum or pattern, so unbounded feedback would let
 // a request of a few kilobytes draw a response of hundreds of megabytes.
+// A failure's path is cut before its reason, never below minShownLocation.
 const (
 	maxValidationMessages     = 10
 	maxValidationMessageBytes = 512
+	minShownLocation          = 64
 )
 
 // formatValidationError turns the validator's structured error into a single
@@ -946,19 +944,33 @@ func collectValidationMessages(verr *jsonschema.ValidationError, out *[]string) 
 var validationMessages = message.NewPrinter(language.English)
 
 func formatLeafMessage(verr *jsonschema.ValidationError) string {
-	location := jsonPointer(verr.InstanceLocation)
+	return validationLine(verr.InstanceLocation, verr.ErrorKind.LocalizedString(validationMessages))
+}
+
+// validationLine renders one failure as `<path>: <text>` in at most
+// maxValidationMessageBytes and a "...": the path is cut to what the text
+// leaves it, then the line.
+func validationLine(at []string, text string) string {
+	location := jsonPointer(at)
 	if location == "" {
 		location = "<root>"
 	}
-	msg := location + ": " + verr.ErrorKind.LocalizedString(validationMessages)
+	msg := location + ": " + text
+	if room := max(maxValidationMessageBytes-len("...: ")-len(text), minShownLocation); len(msg) > maxValidationMessageBytes && len(location) > room {
+		msg = cutAtRune(location, room) + "...: " + text
+	}
 	if len(msg) > maxValidationMessageBytes {
-		cut := maxValidationMessageBytes
-		for cut > 0 && !utf8.RuneStart(msg[cut]) {
-			cut--
-		}
-		msg = msg[:cut] + "..."
+		msg = cutAtRune(msg, maxValidationMessageBytes) + "..."
 	}
 	return msg
+}
+
+// cutAtRune returns s, longer than n bytes, cut to at most n at a rune's start.
+func cutAtRune(s string, n int) string {
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // jsonPointer renders a list of path segments as a RFC 6901 JSON Pointer.
