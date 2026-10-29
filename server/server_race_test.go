@@ -77,13 +77,20 @@ func TestRaceConditions(t *testing.T) {
 		srv.DeleteTools(name)
 	})
 
-	runConcurrentOperation(&wg, testDuration, "add-middleware", func() {
+	// Every call runs through every registered middleware, so register a
+	// bounded number spread across the run rather than one per loop turn.
+	wg.Go(func() {
 		middleware := func(next ToolHandlerFunc) ToolHandlerFunc {
 			return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return next(ctx, req)
 			}
 		}
-		WithToolHandlerMiddleware(middleware)(srv)
+		tick := time.NewTicker(testDuration / 100)
+		defer tick.Stop()
+		for range 100 {
+			<-tick.C
+			WithToolHandlerMiddleware(middleware)(srv)
+		}
 	})
 
 	runConcurrentOperation(&wg, testDuration, "list-tools", func() {
