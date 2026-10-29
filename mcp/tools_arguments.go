@@ -81,7 +81,9 @@ func (r CallToolRequest) RequireString(key string) (string, error) {
 	return "", fmt.Errorf("required argument %q not found", key)
 }
 
-// GetInt returns an int argument by key, or the default value if not found
+// GetInt returns an int argument by key, or the default value if not found.
+// It truncates a fraction and does not range-check a float64; RequireWholeInt
+// refuses both.
 func (r CallToolRequest) GetInt(key string, defaultValue int) int {
 	args := r.GetArguments()
 	if val, ok := args[key]; ok {
@@ -99,7 +101,9 @@ func (r CallToolRequest) GetInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
-// RequireInt returns an int argument by key, or an error if not found or not convertible to int
+// RequireInt returns an int argument by key, or an error if not found or not convertible to int.
+// It truncates a fraction and does not range-check a float64; RequireWholeInt
+// refuses both, with a typed reason.
 func (r CallToolRequest) RequireInt(key string) (int, error) {
 	args := r.GetArguments()
 	if val, ok := args[key]; ok {
