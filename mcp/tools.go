@@ -84,6 +84,11 @@ type CallToolParams struct {
 	// lazy holds the arguments of a call to such a tool, for the getters to
 	// decode on first use; Arguments is then nil.
 	lazy *lazyArguments
+	// roundTrip is set by the server when its input validation judged a
+	// round trip of a before-hook's map, so that a float64 in Arguments may
+	// stand for several of the literals the client sent (see
+	// CallToolRequest.RequireWholeInt). A decode clears it.
+	roundTrip bool
 }
 
 // UnmarshalJSON preserves the original arguments JSON while also populating
@@ -114,6 +119,7 @@ func (p *CallToolParams) UnmarshalJSON(data []byte) error {
 	p.Arguments = nil
 	p.RawArguments = nil
 	p.lazy = nil
+	p.roundTrip = false
 
 	if len(raw.Arguments) == 0 {
 		return nil

@@ -96,7 +96,11 @@ func (s *MCPServer) handleToolCallAsTask(
 		if hasTaskHandler {
 			toolDef = toolToUse.Tool
 		}
-		if _, err := s.inputValidator.validateRegistered(toolDef, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, onDemand)); err != nil {
+		ran, err := s.inputValidator.validateRegistered(toolDef, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, onDemand))
+		if ran {
+			s.markRoundTrip(&request.Params)
+		}
+		if err != nil {
 			invalid = err
 		}
 	}

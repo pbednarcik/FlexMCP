@@ -28,6 +28,9 @@ func init() {
 		}
 		return p.Arguments
 	}
+	argsdecode.MarkRoundTrip = func(params any) {
+		params.(*CallToolParams).roundTrip = true
+	}
 	argsdecode.Settle = func(params any) {
 		p := params.(*CallToolParams)
 		if p.Arguments == nil && p.lazy != nil && p.lazy.atOnce.Load() {

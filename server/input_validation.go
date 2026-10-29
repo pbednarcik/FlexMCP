@@ -819,6 +819,21 @@ func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bo
 	return callArguments{raw: raw, decoded: arguments}
 }
 
+// markRoundTrip marks params, through argsdecode, when a before-hook is
+// registered and the call carries raw arguments other than null: validation
+// then read a round trip of them. Call it once validation ran, whether the
+// call passed or not.
+func (s *MCPServer) markRoundTrip(params *mcp.CallToolParams) {
+	if hooksSeeCallArguments(s.hooks) && len(params.RawArguments) > 0 && string(params.RawArguments) != "null" {
+		// MarkRoundTrip is an indirect call, so what it is given escapes. The
+		// copy is declared here, so that only a call that is marked pays for
+		// it, and the caller's request stays on its stack.
+		marked := *params
+		argsdecode.MarkRoundTrip(&marked)
+		*params = marked
+	}
+}
+
 // hooksSeeCallArguments reports whether a hook runs before a tools/call with
 // the request in hand.
 func hooksSeeCallArguments(hooks *Hooks) bool {

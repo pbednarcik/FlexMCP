@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pbednarcik/flexmcp/internal/argsdecode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -251,5 +252,286 @@ func TestRequireWholeInt(t *testing.T) {
 		require.ErrorAs(t, err, &argErr)
 		assert.LessOrEqual(t, len(argErr.Value), 64)
 		assert.True(t, strings.ToValidUTF8(argErr.Value, "") == argErr.Value)
+	})
+}
+
+// replacedKey is the key "limit" and a U+FFFD, as decoding reads "limit" and
+// a byte that is not valid UTF-8.
+const replacedKey = "limit\xef\xbf\xbd"
+
+func TestLastTopLevelLiteral(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		key  string
+		want string
+		ok   bool
+	}{
+		{"the only occurrence", `{"limit":25}`, "limit", "25", true},
+		{"duplicate keys, the last wins", `{"limit":1,"x":2,"limit":9007199254740993}`, "limit", "9007199254740993", true},
+		{"a nested key of the same name is skipped", `{"a":{"limit":5},"limit":7}`, "limit", "7", true},
+		{"a nested key alone is not found", `{"a":{"limit":5},"b":[{"limit":6}]}`, "limit", "", false},
+		{"an escaped key is found", `{"li` + `\` + `u006dit":9007199254740993}`, "limit", "9007199254740993", true},
+		{"an escaped quote in a key does not match", `{"li\"mit":1}`, "limit", "", false},
+		{"a key inside a string value is skipped", `{"a":"\"limit\":5, {","limit":3}`, "limit", "3", true},
+		{"a key inside a string value alone is not found", `{"a":"\"limit\":5"}`, "limit", "", false},
+		{"brackets in strings do not confuse the depth", `{"a":["]","}"],"b":{"c":"{"},"limit":4}`, "limit", "4", true},
+		{"whitespace around the parts", " {\n\t\"limit\" :\r\n 12 , \"x\":1 }\n", "limit", "12", true},
+		{"a string value is returned with its quotes", `{"limit":"5"}`, "limit", `"5"`, true},
+		{"an exponent literal", `{"limit":1e2}`, "limit", "1e2", true},
+		{"a negative literal at the end", `{"a":1,"limit":-7}`, "limit", "-7", true},
+		{"an absent key", `{"other":1}`, "limit", "", false},
+		{"not an object", `[1,2]`, "limit", "", false},
+		{"a scalar", `5`, "limit", "", false},
+		{"empty", ``, "limit", "", false},
+		{"an empty object", `{}`, "limit", "", false},
+		{"truncated", `{"limit":`, "limit", "", false},
+		{"the key is empty", `{"":3}`, "", "3", true},
+		{"a key of invalid UTF-8 reads as the replacement character", "{\"limit\xff\":9}", replacedKey, "9", true},
+		{"a truncated rune reads as replacement characters", "{\"limit\xe2\x82\":9}", "limit\xef\xbf\xbd\xef\xbf\xbd", "9", true},
+		{"a key of invalid UTF-8 is not the same key without it", "{\"limit\xff\":9}", "limit", "", false},
+		{"duplicates, the invalid spelling last", "{\"" + replacedKey + "\":1,\"limit\xff\":2}", replacedKey, "2", true},
+		{"duplicates, the invalid spelling first", "{\"limit\xff\":1,\"" + replacedKey + "\":2}", replacedKey, "2", true},
+		{"duplicates, two invalid spellings", "{\"limit\xff\":1,\"limit\xfe\":2}", replacedKey, "2", true},
+		{"duplicates, an escaped spelling last", "{\"limit\xff\":1,\"limit" + `\` + "ufffd\":2}", replacedKey, "2", true},
+		{"duplicates, a lone surrogate last", "{\"" + replacedKey + "\":1,\"limit" + `\` + "ud800\":2}", replacedKey, "2", true},
+		{"an escape beside invalid UTF-8", "{\"l" + `\` + "u0069mit\xff\":9}", replacedKey, "9", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := lastTopLevelLiteral(json.RawMessage(tc.raw), tc.key)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	t.Run("an unescaped key allocates nothing", func(t *testing.T) {
+		raw := json.RawMessage(`{"a":{"limit":5},"b":"x","limit":9007199254740993,"c":[1,2]}`)
+		allocs := testing.AllocsPerRun(100, func() { _, _ = lastTopLevelLiteral(raw, "limit") })
+		assert.Zero(t, allocs)
+	})
+
+	t.Run("a valid key of many bytes allocates nothing", func(t *testing.T) {
+		raw := json.RawMessage(`{"é":1,"日本語":2,"limit":3}`)
+		allocs := testing.AllocsPerRun(100, func() { _, _ = lastTopLevelLiteral(raw, "日本語") })
+		assert.Zero(t, allocs)
+	})
+}
+
+// keyIs reads a key as decoding does, whatever its bytes: each key below is
+// compared with the name the request's own decode gave it.
+func TestKeyIsReadsAKeyAsDecodingDoes(t *testing.T) {
+	escape := `\` + "u"
+	keys := []string{
+		"plain", "é", "日本語", "\xef\xbf\xbd",
+		"a\xffb", "\xc0\x80", "\xe2\x82", "\xe2\x82a", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xf0\x9f\x98",
+		escape + "0041", escape + "0041\xff", "\xff" + escape + "0041",
+		escape + "d800", escape + "dc00", escape + "d83d" + escape + "de00", escape + "d83d" + escape + "0041", escape + "d83d\xff",
+	}
+	for b := 0x80; b <= 0xff; b++ {
+		keys = append(keys, string([]byte{byte(b)}))
+	}
+	for _, quoted := range keys {
+		var p CallToolParams
+		require.NoError(t, json.Unmarshal([]byte(`{"name":"x","arguments":{"`+quoted+`":1}}`), &p), "%q", quoted)
+		decoded := p.Arguments.(map[string]any)
+		require.Len(t, decoded, 1, "%q", quoted)
+		for name := range decoded {
+			assert.True(t, keyIs([]byte(`"`+quoted+`"`), name), "%q decodes to %q", quoted, name)
+			assert.False(t, keyIs([]byte(`"`+quoted+`"`), name+"x"), "%q", quoted)
+		}
+	}
+}
+
+// wholeParams is the params of a call as the server hands them to a handler:
+// Arguments the decode of RawArguments, with edit applied to the map when it
+// is not nil.
+func wholeParams(t *testing.T, raw string, edit func(map[string]any)) CallToolParams {
+	t.Helper()
+	var p CallToolParams
+	require.NoError(t, json.Unmarshal([]byte(`{"name":"x","arguments":`+raw+`}`), &p))
+	if edit != nil {
+		edit(p.Arguments.(map[string]any))
+	}
+	return p
+}
+
+func TestRequireWholeIntRefinesFromRaw(t *testing.T) {
+	if strconv.IntSize != 64 {
+		t.Skip("the rows are 64-bit values")
+	}
+	tests := []struct {
+		name string
+		raw  string
+		edit func(map[string]any)
+		want int64
+		err  error
+	}{
+		{"a literal past 2^53", `{"limit":9007199254740993}`, nil, 9007199254740993, nil},
+		{"MaxInt64", `{"limit":9223372036854775807}`, nil, math.MaxInt64, nil},
+		{"MinInt64", `{"limit":-9223372036854775808}`, nil, math.MinInt64, nil},
+		{"the last duplicate wins", `{"limit":1,"limit":9007199254740993}`, nil, 9007199254740993, nil},
+		{"a nested key does not stand for the key", `{"a":{"limit":9007199254740993},"limit":9007199254740992}`, nil, 9007199254740992, nil},
+		{"an escaped key is the key", `{"li` + `\` + `u006dit":9007199254740993}`, nil, 9007199254740993, nil},
+		{"past the range", `{"limit":9223372036854775808}`, nil, 0, ErrArgumentOutOfRange},
+		{"a fraction that rounds to a whole number", `{"limit":1.0000000000000001}`, nil, 0, ErrArgumentFraction},
+		{"an exponent literal", `{"limit":1e2}`, nil, 100, nil},
+		{"a fraction is a fraction", `{"limit":1.9}`, nil, 0, ErrArgumentFraction},
+		{"a map value changed after the decode wins", `{"limit":100}`, func(m map[string]any) { m["limit"] = float64(1) }, 1, nil},
+		{"a clamp of a large literal wins", `{"limit":9007199254740993}`, func(m map[string]any) { m["limit"] = float64(5) }, 5, nil},
+		{"a key added after the decode has no literal", `{"other":1}`, func(m map[string]any) { m["limit"] = float64(1 << 53) }, 1 << 53, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := CallToolRequest{Params: wholeParams(t, tc.raw, tc.edit)}
+			got, err := r.RequireWholeInt("limit")
+			if tc.err != nil {
+				assert.ErrorIs(t, err, tc.err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, int64(got))
+		})
+	}
+
+	t.Run("a 32-bit build judges the literal against its range", func(t *testing.T) {
+		r := CallToolRequest{Params: wholeParams(t, `{"limit":9007199254740993}`, nil)}
+		_, _, err := r.wholeArgument("limit", r.GetArguments()["limit"], 32, false)
+		assert.ErrorIs(t, err, ErrArgumentOutOfRange)
+		r = CallToolRequest{Params: wholeParams(t, `{"limit":2147483647}`, nil)}
+		n, _, err := r.wholeArgument("limit", r.GetArguments()["limit"], 32, false)
+		require.NoError(t, err)
+		assert.Equal(t, int64(math.MaxInt32), n)
+	})
+
+	t.Run("the scan allocates nothing for a short literal", func(t *testing.T) {
+		r := CallToolRequest{Params: wholeParams(t, `{"a":{"limit":5},"limit":9007199254740993}`, nil)}
+		val := r.GetArguments()["limit"]
+		allocs := testing.AllocsPerRun(100, func() { _, _, _ = r.wholeArgument("limit", val, 64, false) })
+		assert.Zero(t, allocs)
+	})
+}
+
+// A refusal judged from the client's literal names the literal, cut at 64
+// bytes, not the float64 it rounds to, and keeps no hold on the request's
+// bytes.
+func TestRequireWholeIntNamesTheLiteral(t *testing.T) {
+	long := "1." + strings.Repeat("0", 80) + "1"
+	for literal, want := range map[string]string{
+		"1.0000000000000001":  "1.0000000000000001",
+		"12345678901234567.5": "12345678901234567.5",
+		long:                  long[:64],
+	} {
+		p := wholeParams(t, `{"limit":`+literal+`}`, nil)
+		_, err := CallToolRequest{Params: p}.RequireWholeInt("limit")
+		assert.ErrorIs(t, err, ErrArgumentFraction, literal)
+		var argErr *ArgumentError
+		require.ErrorAs(t, err, &argErr, literal)
+		assert.Equal(t, want, argErr.Value, literal)
+		for i := range p.RawArguments {
+			p.RawArguments[i] = ' '
+		}
+		assert.Equal(t, want, argErr.Value, "the value shares the request's bytes")
+	}
+}
+
+func TestRequireWholeIntMarked(t *testing.T) {
+	if strconv.IntSize != 64 {
+		t.Skip("the rows are 64-bit values")
+	}
+	marked := func(v any) CallToolRequest {
+		return CallToolRequest{Params: CallToolParams{Arguments: map[string]any{"limit": v}, roundTrip: true}}
+	}
+
+	t.Run("just below 2^53 is accepted", func(t *testing.T) {
+		got, err := marked(float64(9007199254740991)).RequireWholeInt("limit")
+		require.NoError(t, err)
+		assert.Equal(t, int64(9007199254740991), int64(got))
+		got, err = marked(-float64(9007199254740991)).RequireWholeInt("limit")
+		require.NoError(t, err)
+		assert.Equal(t, int64(-9007199254740991), int64(got))
+	})
+
+	t.Run("2^53 in size is inexact", func(t *testing.T) {
+		for _, v := range []float64{1 << 53, -(1 << 53), 1 << 60, -(1 << 62)} {
+			_, err := marked(v).RequireWholeInt("limit")
+			assert.ErrorIs(t, err, ErrArgumentInexact, v)
+			_, err = marked(v).RequireWholeIntText("limit")
+			assert.ErrorIs(t, err, ErrArgumentInexact, v)
+		}
+	})
+
+	t.Run("out of range wins over inexact", func(t *testing.T) {
+		for _, v := range []float64{1 << 63, -(1 << 63) * 2, math.Inf(1), 1e300} {
+			_, err := marked(v).RequireWholeInt("limit")
+			assert.ErrorIs(t, err, ErrArgumentOutOfRange, v)
+			assert.NotErrorIs(t, err, ErrArgumentInexact, v)
+		}
+	})
+
+	t.Run("a fraction is still a fraction", func(t *testing.T) {
+		_, err := marked(1.5).RequireWholeInt("limit")
+		assert.ErrorIs(t, err, ErrArgumentFraction)
+	})
+
+	t.Run("inexact is for float64 only", func(t *testing.T) {
+		wide := int64(1<<53 + 1)
+		for _, v := range []any{wide, json.Number("9007199254740993"), uint64(wide), int(wide)} {
+			got, err := marked(v).RequireWholeInt("limit")
+			require.NoError(t, err, v)
+			assert.Equal(t, wide, int64(got), v)
+		}
+	})
+
+	t.Run("a marked request does not refine from the raw literal", func(t *testing.T) {
+		p := wholeParams(t, `{"limit":9007199254740993}`, nil)
+		p.roundTrip = true
+		_, err := CallToolRequest{Params: p}.RequireWholeInt("limit")
+		assert.ErrorIs(t, err, ErrArgumentInexact)
+
+		p = wholeParams(t, `{"limit":1.0000000000000001}`, nil)
+		p.roundTrip = true
+		got, err := CallToolRequest{Params: p}.RequireWholeInt("limit")
+		require.NoError(t, err)
+		assert.Equal(t, 1, got)
+	})
+
+	t.Run("a 32-bit build: out of range wins", func(t *testing.T) {
+		_, _, err := marked(float64(1<<53)).wholeArgument("limit", float64(1<<53), 32, false)
+		assert.ErrorIs(t, err, ErrArgumentOutOfRange)
+	})
+}
+
+func TestRequireWholeIntInProcessIsNeverMarked(t *testing.T) {
+	if strconv.IntSize != 64 {
+		t.Skip("the rows are 64-bit values")
+	}
+	t.Run("a request built in process carries no mark and no raw bytes", func(t *testing.T) {
+		r := CallToolRequest{Params: CallToolParams{Arguments: map[string]any{"limit": float64(1 << 53)}}}
+		got, err := r.RequireWholeInt("limit")
+		require.NoError(t, err)
+		assert.Equal(t, int64(1<<53), int64(got))
+	})
+
+	t.Run("a decoded request carries no mark", func(t *testing.T) {
+		p := wholeParams(t, `{"limit":9007199254740992}`, nil)
+		assert.False(t, roundTripped(p))
+		got, err := CallToolRequest{Params: p}.RequireWholeInt("limit")
+		require.NoError(t, err)
+		assert.Equal(t, int64(1<<53), int64(got))
+	})
+
+	t.Run("the mark is set through argsdecode and a new decode clears it", func(t *testing.T) {
+		p := wholeParams(t, `{"limit":9007199254740993}`, nil)
+		argsdecode.MarkRoundTrip(&p)
+		assert.True(t, roundTripped(p))
+		_, err := CallToolRequest{Params: p}.RequireWholeInt("limit")
+		assert.ErrorIs(t, err, ErrArgumentInexact)
+
+		require.NoError(t, json.Unmarshal([]byte(`{"name":"x","arguments":{"limit":9007199254740993}}`), &p))
+		assert.False(t, roundTripped(p))
+		got, err := CallToolRequest{Params: p}.RequireWholeInt("limit")
+		require.NoError(t, err)
+		assert.Equal(t, int64(9007199254740993), int64(got))
 	})
 }

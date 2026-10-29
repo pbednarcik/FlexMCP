@@ -34,3 +34,11 @@ var Settle func(params any)
 // and changes nothing: for input validation, which reads them and publishes
 // nothing. Package mcp sets it when it is initialised.
 var Decoded func(params any) any
+
+// MarkRoundTrip marks params, a *mcp.CallToolParams, as one whose arguments
+// input validation judged as a round trip of a before-hook's map: the server
+// calls it when it validates such a call, so that the strict integer getter
+// knows a number in the map may stand for several literals. A request built in
+// process, or decoded again, carries no mark. Package mcp sets it when it is
+// initialised.
+var MarkRoundTrip func(params any)

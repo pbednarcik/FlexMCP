@@ -479,7 +479,8 @@ func TestInputValidationComplexCallAllocations(t *testing.T) {
 // arguments read for the validator in one pass: a call whose numbers do not
 // read exactly as float64s (an id written with an exponent), and a call a
 // before-call hook could have changed: 1565 and 1650 allocations when
-// jsonschema.UnmarshalJSON read them, 1138 and 1223 in one pass.
+// jsonschema.UnmarshalJSON read them, 1138 and 1224 in one pass, the hook's
+// call paying the round-trip mark's one allocation.
 func TestInputValidationSecondReadAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -492,7 +493,7 @@ func TestInputValidationSecondReadAllocations(t *testing.T) {
 		ceiling float64
 	}{
 		{"an exponent", nil, 1138},
-		{"a before-call hook", []ServerOption{WithHooks(hooks)}, 1223},
+		{"a before-call hook", []ServerOption{WithHooks(hooks)}, 1224},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, msg := complexValidationCall(t, tc.opts...)

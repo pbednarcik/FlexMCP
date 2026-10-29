@@ -220,6 +220,8 @@ var headerWalkCorpus = []struct {
 	{"arguments with a Kelvin sign", escapedJSON(`{"params":{"arguments":{"region":"y"},"~u212Aarguments":{"region":"x"}}}`), false},
 	{"invalid UTF-8 in a value", headerWalkMessage("{\"region\":\"us-east-1\xff\"}"), false},
 	{"invalid UTF-8 elsewhere", "{\"id\":\"\xff\",\"params\":{\"arguments\":{\"region\":\"us-east-1\"}}}", false},
+	{"invalid UTF-8 in a name", headerWalkMessage("{\"region\xff\":\"x\",\"region\":\"us-east-1\"}"), false},
+	{"invalid UTF-8 in a name on the path", "{\"params\xff\":{\"arguments\":{\"region\":\"us-east-1\"}}}", false},
 	{"a lone surrogate", headerWalkMessage(escapedJSON(`{"region":"~ud800"}`)), false},
 	{"trailing data", headerWalkMessage(`{"region":"us-east-1"}`) + ` x`, false},
 	{"two messages", headerWalkMessage(`{"region":"us-east-1"}`) + headerWalkMessage(`{}`), false},

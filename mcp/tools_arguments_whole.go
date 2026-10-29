@@ -1,12 +1,15 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // The reasons RequireWholeInt and RequireWholeIntText give for refusing an
@@ -40,8 +43,8 @@ const argumentValueCut = 64
 type ArgumentError struct {
 	// Key is the argument name.
 	Key string
-	// Value is the offending value for a scalar, cut at 64 bytes, and empty
-	// for anything else.
+	// Value is the offending value for a scalar, the client's literal when it
+	// was judged by that, cut at 64 bytes, and empty for anything else.
 	Value string
 	// Reason is the sentinel that says why the argument was refused.
 	Reason error
@@ -61,7 +64,10 @@ func (e *ArgumentError) Unwrap() error { return e.Reason }
 // RequireWholeInt returns the int argument for key, and refuses what GetInt
 // and RequireInt silently truncate or convert: a fraction, a value outside
 // the range of int, a NaN, and a string. It reads the same map as GetInt. A
-// missing key or a null is ErrArgumentMissing. The error is an
+// missing key or a null is ErrArgumentMissing. A whole number past 2^53 is
+// read exactly from the client's literal when the request carries one. Under
+// a before-call or before-any hook with input validation on, a float64 of 2^53
+// or more in size answers ErrArgumentInexact instead. The error is an
 // *ArgumentError whose Reason is one of the ErrArgument sentinels.
 func (r CallToolRequest) RequireWholeInt(key string) (int, error) {
 	return r.requireWholeInt(key, false)
@@ -79,11 +85,179 @@ func (r CallToolRequest) requireWholeInt(key string, text bool) (int, error) {
 	if !ok || val == nil {
 		return 0, &ArgumentError{Key: key, Reason: ErrArgumentMissing}
 	}
-	n, err := wholeInt(val, strconv.IntSize, text)
+	n, literal, err := r.wholeArgument(key, val, strconv.IntSize, text)
 	if err != nil {
-		return 0, &ArgumentError{Key: key, Value: scalarText(val), Reason: err}
+		value := scalarText(val)
+		if literal != "" {
+			value = strings.Clone(cutText(literal))
+		}
+		return 0, &ArgumentError{Key: key, Value: value, Reason: err}
 	}
 	return int(n), nil
+}
+
+// roundTripped reports whether the server marked p: its input validation
+// judged a round trip of a before-hook's map, so a float64 in Arguments may
+// stand for several of the literals the client sent.
+func roundTripped(p CallToolParams) bool { return p.roundTrip }
+
+// maxExactFloat is 2^53, where a float64 stops standing for one whole number.
+const maxExactFloat = float64(1 << 53)
+
+// wholeArgument judges val, the value of key in the request's map, as
+// wholeInt does, with the one thing wholeInt cannot know: a float64 may be
+// refined from the client's literal, or refused as inexact.
+//
+// On a marked request (see roundTripped) validation judged a round trip of the
+// map, so the raw literal may hold a value it never checked: the float64 is
+// range-checked, and one of 2^53 or more in size is ErrArgumentInexact. On
+// any other request that carries raw arguments, a whole float64 the raw
+// literal of key parses to is judged by that literal, so a number past 2^53 is
+// read exactly; when the literal parses to another value, a hook or
+// middleware changed the map, and the map wins. The string is the literal it
+// judged, which shares the request's bytes, or "".
+func (r CallToolRequest) wholeArgument(key string, val any, bits int, text bool) (int64, string, error) {
+	x, ok := val.(float64)
+	if !ok {
+		n, err := wholeInt(val, bits, text)
+		return n, "", err
+	}
+	if roundTripped(r.Params) {
+		n, err := wholeFloat(x, bits)
+		if err == nil && math.Abs(x) >= maxExactFloat {
+			return 0, "", ErrArgumentInexact
+		}
+		return n, "", err
+	}
+	if len(r.Params.RawArguments) > 0 && x == math.Trunc(x) && !math.IsInf(x, 0) {
+		if literal, found := lastTopLevelLiteral(r.Params.RawArguments, key); found {
+			if f, err := strconv.ParseFloat(literal, 64); err == nil && f == x {
+				n, err := wholeLiteral(literal, bits)
+				return n, literal, err
+			}
+		}
+	}
+	n, err := wholeFloat(x, bits)
+	return n, "", err
+}
+
+// lastTopLevelLiteral returns the text of the value of the last top-level
+// occurrence of key in raw, a JSON object, as the client sent it, and false
+// when raw is not an object or has no such key. The scan is depth-aware and
+// compares each key as decoding reads it; strings and nested values are
+// skipped. It allocates only for a key that holds an escape or invalid UTF-8.
+// The literal shares raw's memory, so it is good only while raw is not written.
+func lastTopLevelLiteral(raw json.RawMessage, key string) (literal string, ok bool) {
+	i := skipSpace(raw, 0)
+	if i >= len(raw) || raw[i] != '{' {
+		return "", false
+	}
+	i++
+	for {
+		i = skipSpace(raw, i)
+		if i < len(raw) && raw[i] == ',' {
+			i = skipSpace(raw, i+1)
+		}
+		if i >= len(raw) || raw[i] != '"' {
+			return literal, ok
+		}
+		quoted, nameEnd := raw[i:], skipString(raw, i)
+		if nameEnd < 0 {
+			return literal, ok
+		}
+		quoted = quoted[:nameEnd-i]
+		i = skipSpace(raw, nameEnd)
+		if i >= len(raw) || raw[i] != ':' {
+			return literal, ok
+		}
+		start := skipSpace(raw, i+1)
+		end := skipValue(raw, start)
+		if end < 0 {
+			return literal, ok
+		}
+		if keyIs(quoted, key) {
+			literal, ok = unsafe.String(&raw[start], end-start), true
+		}
+		i = end
+	}
+}
+
+// keyIs reports whether quoted, a JSON string with its quotes, decodes to key.
+// Only an escape or invalid UTF-8, which decoding replaces with U+FFFD, makes
+// a name differ from its bytes, and encoding/json itself reads those.
+func keyIs(quoted []byte, key string) bool {
+	name := quoted[1 : len(quoted)-1]
+	if bytes.IndexByte(name, '\\') >= 0 || !utf8.Valid(name) {
+		var decoded string
+		return json.Unmarshal(quoted, &decoded) == nil && decoded == key
+	}
+	return string(name) == key
+}
+
+// skipSpace returns the index of the first byte of raw at or after i that is
+// not JSON white space, or len(raw).
+func skipSpace(raw []byte, i int) int {
+	for i < len(raw) && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n' || raw[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+// skipString returns the index after the string that starts at raw[i], a
+// quote, or -1 when it is not closed.
+func skipString(raw []byte, i int) int {
+	for i++; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// skipValue returns the index after the JSON value that starts at raw[i], or
+// -1 when there is none or it is not closed. A scalar other than a string ends
+// at the first delimiter.
+func skipValue(raw []byte, i int) int {
+	if i >= len(raw) {
+		return -1
+	}
+	switch raw[i] {
+	case '"':
+		return skipString(raw, i)
+	case '{', '[':
+		depth := 0
+		for ; i < len(raw); i++ {
+			switch raw[i] {
+			case '"':
+				if i = skipString(raw, i); i < 0 {
+					return -1
+				}
+				i--
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth--; depth == 0 {
+					return i + 1
+				}
+			}
+		}
+		return -1
+	}
+	start := i
+	for i < len(raw) {
+		switch raw[i] {
+		case ',', '}', ']', ' ', '\t', '\n', '\r':
+			if i == start {
+				return -1
+			}
+			return i
+		}
+		i++
+	}
+	return i
 }
 
 // scalarText returns v as text cut at argumentValueCut bytes on a UTF-8
