@@ -193,7 +193,8 @@ func (v *inputSchemaValidator) validateRegistered(tool mcp.Tool, compiled *jsons
 }
 
 // validateArguments validates raw arguments against a compiled input schema;
-// a nil schema validates nothing. The results are validate's.
+// a nil schema validates nothing. The results are validate's; a failure is an
+// *inputInvalid, whose text is the default refusal's.
 func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, error) {
 	if compiled == nil {
 		return false, nil
@@ -201,7 +202,7 @@ func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, e
 
 	value, bounded, err := args.normalize()
 	if err != nil {
-		return true, fmt.Errorf("invalid arguments: %w", err)
+		return true, unencodableInput(compiled, err)
 	}
 
 	validate := validateTree
@@ -209,7 +210,7 @@ func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, e
 		validate = validateRead
 	}
 	if err := validate(compiled, value); err != nil {
-		return true, formatValidationError(err)
+		return true, invalidInput(compiled, value, err)
 	}
 	return true, nil
 }
@@ -555,7 +556,7 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 	if err != nil {
 		return nil, fmt.Errorf("decode tool %q input schema: %w", toolName, err)
 	}
-	resourceURL := fmt.Sprintf("mem:///flexmcp/tools/%s/input-schema.json", toolName)
+	resourceURL := toolSchemaURL(toolName)
 	c := jsonschema.NewCompiler()
 	if err := c.AddResource(resourceURL, doc); err != nil {
 		return nil, fmt.Errorf("register tool %q input schema: %w", toolName, err)
@@ -584,6 +585,13 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
 	}
 	return compiled, nil
+}
+
+// toolSchemaURL is the URL the input schema of the tool called name is
+// compiled at: an opaque virtual one, so that "$ref" resolution touches
+// neither the filesystem nor the network.
+func toolSchemaURL(name string) string {
+	return "mem:///flexmcp/tools/" + name + "/input-schema.json"
 }
 
 // findBoundOutOfRange returns a bound in doc, the schema compiled at
@@ -946,25 +954,39 @@ const (
 // flat message that's friendly for an LLM to read. Each individual constraint
 // violation is rendered as `<path>: <message>` and joined with semicolons.
 func formatValidationError(err error) error {
+	text, known := formatValidationText(err)
+	if !known {
+		return fmt.Errorf("%s%w", validationFailed, err)
+	}
+	return errors.New(text)
+}
+
+// validationFailed opens the text of every input validation failure.
+const validationFailed = "input schema validation failed: "
+
+// formatValidationText is the text formatValidationError renders err as.
+// known is false for an error that is neither the validator's nor a
+// pre-check's, whose text the failure only repeats.
+func formatValidationText(err error) (text string, known bool) {
 	if outOfRange, ok := errors.AsType[*numberOutOfRange](err); ok {
-		return fmt.Errorf("input schema validation failed: %s", outOfRange.Error())
+		return validationFailed + outOfRange.Error(), true
 	}
 	if tooDeep, ok := errors.AsType[*nestedTooDeep](err); ok {
-		return fmt.Errorf("input schema validation failed: %s", tooDeep.Error())
+		return validationFailed + tooDeep.Error(), true
 	}
 	var verr *jsonschema.ValidationError
 	if !errors.As(err, &verr) {
-		return fmt.Errorf("input schema validation failed: %w", err)
+		return validationFailed + err.Error(), false
 	}
 	var parts []string
 	rest := collectValidationMessages(verr, &parts)
 	if len(parts) == 0 {
-		return fmt.Errorf("input schema validation failed: %s", verr.Error())
+		return validationFailed + verr.Error(), true
 	}
 	if rest > 0 {
 		parts = append(parts, fmt.Sprintf("and %d more", rest))
 	}
-	return fmt.Errorf("input schema validation failed: %s", strings.Join(parts, "; "))
+	return validationFailed + strings.Join(parts, "; "), true
 }
 
 // collectValidationMessages walks the leaf causes of a validation error tree
