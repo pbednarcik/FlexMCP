@@ -49,17 +49,18 @@ type InputViolation struct {
 	// none can be derived exactly; Pointer is then "".
 	PointerUnknown bool
 	// Keyword names what failed: a schema keyword such as "type", "required"
-	// or "maximum", "false" for a false schema, or, for arguments refused
-	// before the validator read them, "numberOutOfRange", "nestedTooDeep" or
-	// "unencodable".
+	// or "maximum", "false" for a false schema, "unevaluatedProperties" for a
+	// member its false refused, "refCycle" or "invalidJsonValue" for a failure
+	// of the validator itself, or, for arguments refused before the validator
+	// read them, "numberOutOfRange", "nestedTooDeep" or "unencodable".
 	Keyword string
 	// SchemaLocation is an RFC 6901 JSON Pointer into the tool's input schema
 	// to the failing keyword, such as "/properties/x/anyOf/1/type"; under a
 	// $ref it points into the referenced schema.
 	SchemaLocation string
 	// Property is the property name the failure is about: the name a
-	// propertyNames subschema failed, or the property a keyword such as
-	// dependentRequired names.
+	// propertyNames subschema failed, the member unevaluatedProperties
+	// refused, or the property a keyword such as dependentRequired names.
 	Property string
 	// Expected is the schema's side.
 	Expected ViolationExpected
@@ -238,7 +239,10 @@ type violationSite struct {
 	node *jsonschema.ValidationError
 	// names is the propertyNames node the violation is under, nil for none:
 	// the node validated a property's name, not a value of the arguments.
-	names *kind.PropertyNames
+	names *namesPlace
+	// referenced marks a node whose schema a reference named: that schema
+	// validated the referring schema's value, whatever place it sits in.
+	referenced bool
 
 	keyed    bool
 	keyword  string
@@ -247,8 +251,25 @@ type violationSite struct {
 	tokens []string
 }
 
+// namesPlace is a propertyNames node a violation is under: the property name
+// it validated, and the place of the object holding it when that is known.
+type namesPlace struct {
+	property string
+	pointer  []string
+	known    bool
+}
+
 // unknown reports whether the site's pointer is unknown.
-func (s *violationSite) unknown() bool { return s.names != nil }
+func (s *violationSite) unknown() bool { return s.names != nil && !s.names.known }
+
+// at is the site's place in the arguments: under propertyNames the object
+// whose property name failed, else the node's own.
+func (s *violationSite) at() []string {
+	if s.names != nil {
+		return s.names.pointer
+	}
+	return s.node.InstanceLocation
+}
 
 // numberOutOfRange projects a number refused before the validator read it.
 func (p *projection) numberOutOfRange(e *numberOutOfRange) InputValidationFailure {
@@ -296,29 +317,40 @@ func (p *projection) tree(verr *jsonschema.ValidationError) InputValidationFailu
 
 // walk visits node and the nodes under it once, adding each violation it
 // finds. ancestors are the nodes from the root to node's parent, the context
-// a violation under propertyNames is placed from; names is the propertyNames
-// node node is under, nil for none.
+// a violation under propertyNames is placed from (propertyNamesPointer);
+// names is the propertyNames node node is under, nil for none.
 //
 // A node without causes is a violation, whatever its kind; so is a oneOf that
 // matched twice. A node with causes adds its causes, but a contains,
 // minContains or maxContains node is one violation: its causes say why items
 // did not count, not what the call got wrong.
-func (p *projection) walk(node *jsonschema.ValidationError, ancestors []*jsonschema.ValidationError, names *kind.PropertyNames) {
+func (p *projection) walk(node *jsonschema.ValidationError, ancestors []*jsonschema.ValidationError, names *namesPlace) {
 	switch k := node.ErrorKind.(type) {
 	case *kind.Contains, *kind.MinContains, *kind.MaxContains:
 		p.add(violationSite{node: node, names: names})
 		return
 	case *kind.PropertyNames:
-		names = k
+		pointer, known := propertyNamesPointer(ancestors, node, p.inv.instance, p.inv.resourceURL)
+		names = &namesPlace{property: k.Property, pointer: pointer, known: known}
 	}
 	if len(node.Causes) == 0 {
-		p.add(violationSite{node: node, names: names})
+		p.add(violationSite{node: node, names: names, referenced: referencedBy(ancestors, node)})
 		return
 	}
 	ancestors = append(ancestors, node)
 	for _, cause := range node.Causes {
 		p.walk(cause, ancestors, names)
 	}
+}
+
+// referencedBy reports whether the last of chain, node's parent, is a
+// reference to node's own schema.
+func referencedBy(chain []*jsonschema.ValidationError, node *jsonschema.ValidationError) bool {
+	if len(chain) == 0 {
+		return false
+	}
+	reference, ok := chain[len(chain)-1].ErrorKind.(*kind.Reference)
+	return ok && reference.URL == node.SchemaURL
 }
 
 // add counts s and keeps it if it is among the least so far: a bounded
@@ -358,7 +390,7 @@ func (p *projection) compare(a, b *violationSite) int {
 		return -1
 	}
 	if !a.unknown() {
-		if c := slices.Compare(a.node.InstanceLocation, b.node.InstanceLocation); c != 0 {
+		if c := slices.Compare(a.at(), b.at()); c != 0 {
 			return c
 		}
 	}
@@ -400,9 +432,169 @@ func (p *projection) key(s *violationSite) {
 	s.keyed = true
 	s.keyword, s.property = keywordOf(s.node.ErrorKind)
 	if s.names != nil {
-		s.property = s.names.Property
+		s.property = s.names.property
+	} else if !s.referenced && refusedUnevaluated(s.node) {
+		s.keyword = "unevaluatedProperties"
+		if at := s.node.InstanceLocation; len(at) > 0 {
+			s.property = at[len(at)-1]
+		}
 	}
 	s.tokens = p.keywordTokens(s.node)
+}
+
+// refusedUnevaluated reports whether node, by its place, is a member refused by
+// a false that is unevaluatedProperties' own subschema: the library validates
+// each unevaluated member at its own place, so the member is the node's. A leaf
+// of a subschema under the keyword keeps its own row, and the place says
+// nothing of a false a reference named (violationSite.referenced).
+func refusedUnevaluated(node *jsonschema.ValidationError) bool {
+	if _, ok := node.ErrorKind.(*kind.FalseSchema); !ok {
+		return false
+	}
+	_, fragment, ok := strings.Cut(node.SchemaURL, "#")
+	if !ok {
+		return false
+	}
+	location, ok := fragmentTokens(fragment)
+	return ok && underUnevaluated(location)
+}
+
+// underUnevaluated reports whether location, a schema location's tokens, is
+// unevaluatedProperties' own subschema: its last token is the keyword, in a
+// keyword's place. A token is a keyword's place but after a keyword that maps
+// names to schemas, where it is a name, or one that lists them, where it is
+// an index; a draft-7 items lists them when the token after it is an index.
+func underUnevaluated(location []string) bool {
+	for i := 0; i < len(location); i++ {
+		switch location[i] {
+		case "unevaluatedProperties":
+			if i == len(location)-1 {
+				return true
+			}
+		case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies",
+			"allOf", "anyOf", "oneOf", "prefixItems":
+			i++
+		case "items":
+			if i+1 < len(location) && isIndex(location[i+1]) {
+				i++
+			}
+		}
+	}
+	return false
+}
+
+// isIndex reports whether token is an array index: decimal digits only.
+func isIndex(token string) bool {
+	for i := range len(token) {
+		if token[i] < '0' || token[i] > '9' {
+			return false
+		}
+	}
+	return token != ""
+}
+
+// propertyNamesPointer is the place of the object whose property name node, a
+// propertyNames node, failed, and whether it is known exactly. chain is
+// node's ancestors from the root, instance the arguments validated and
+// resourceURL the tool's schema's.
+//
+// The library's own location for node is a slice that validating a later
+// sibling overwrites, so it is never read. The place is taken from the
+// nearest anchor on chain instead, a node holding its own copy of its place
+// (propertyNamesAnchor). The pointer is the anchor's place followed by the
+// names of the properties keywords between the anchor's schema and the
+// propertyNames keyword's, and holds only if the arguments have an object
+// there with the name. Every other case is unknown: the walk never goes past
+// the anchor, since a node further up may sit at another place, the library
+// making no node where it steps into a member.
+func propertyNamesPointer(chain []*jsonschema.ValidationError, node *jsonschema.ValidationError, instance any, resourceURL string) (pointer []string, known bool) {
+	names, ok := node.ErrorKind.(*kind.PropertyNames)
+	if !ok {
+		return nil, false
+	}
+	parent, ok := strings.CutSuffix(node.SchemaURL, "/propertyNames")
+	if !ok {
+		return nil, false
+	}
+	schema, at, ok := propertyNamesAnchor(chain, parent, resourceURL)
+	if !ok {
+		return nil, false
+	}
+	rest, ok := strings.CutPrefix(parent, schema)
+	if !ok || rest != "" && rest[0] != '/' {
+		return nil, false
+	}
+	tokens, ok := fragmentTokens(rest)
+	if !ok || len(tokens)%2 != 0 {
+		return nil, false
+	}
+	pointer = make([]string, 0, len(at)+len(tokens)/2)
+	pointer = append(pointer, at...)
+	for i := 0; i < len(tokens); i += 2 {
+		if tokens[i] != "properties" {
+			return nil, false
+		}
+		pointer = append(pointer, tokens[i+1])
+	}
+	object, ok := valueAt(instance, pointer).(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	if _, ok := object[names.Property]; !ok {
+		return nil, false
+	}
+	return pointer, true
+}
+
+// propertyNamesAnchor is the nearest anchor on chain for a propertyNames
+// keyword of the schema at parent: its schema and its place in the arguments.
+// An anchor is a $ref, whose schema is its target, validated against the
+// same value; a group, whose schema is its own; or an anyOf, allOf or oneOf,
+// whose schema is the branch parent runs through, and ok is false when parent
+// runs through none. With none on chain, the anchor is the root schema at
+// the root.
+func propertyNamesAnchor(chain []*jsonschema.ValidationError, parent, resourceURL string) (schema string, at []string, ok bool) {
+	for _, ancestor := range slices.Backward(chain) {
+		var keyword string
+		switch k := ancestor.ErrorKind.(type) {
+		case *kind.Reference:
+			return k.URL, ancestor.InstanceLocation, true
+		case *kind.Group:
+			return ancestor.SchemaURL, ancestor.InstanceLocation, true
+		case *kind.AnyOf:
+			keyword = "/anyOf/"
+		case *kind.AllOf:
+			keyword = "/allOf/"
+		case *kind.OneOf:
+			keyword = "/oneOf/"
+		default:
+			continue
+		}
+		branch, ok := compositeBranch(ancestor.SchemaURL, keyword, parent)
+		return branch, ancestor.InstanceLocation, ok
+	}
+	return resourceURL + "#", nil, true
+}
+
+// compositeBranch is the location of the branch of the composite at
+// location, its keyword written as "/anyOf/", that parent runs through, and
+// whether parent runs through one.
+func compositeBranch(location, keyword, parent string) (string, bool) {
+	rest, ok := strings.CutPrefix(parent, location)
+	if !ok {
+		return "", false
+	}
+	if rest, ok = strings.CutPrefix(rest, keyword); !ok {
+		return "", false
+	}
+	digits := 0
+	for digits < len(rest) && '0' <= rest[digits] && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits < len(rest) && rest[digits] != '/' {
+		return "", false
+	}
+	return parent[:len(parent)-len(rest)+digits], true
 }
 
 // keywordOf names the keyword k failed, and the property its keyword path
@@ -589,7 +781,7 @@ func (p *projection) fixed(s *violationSite) fixedPart {
 	f.keyword, cut = cappedText(s.keyword)
 	f.cut = f.cut || cut
 	if !f.unknown {
-		f.pointer, cut = cappedPointer(s.node.InstanceLocation)
+		f.pointer, cut = cappedPointer(s.at())
 		f.cut = f.cut || cut
 	}
 	f.property, cut = cappedText(s.property)
@@ -614,7 +806,7 @@ func fixedAt(at []string, keyword string, text func(w *cappedWriter)) fixedPart 
 func (p *projection) sides(w *violationWriter, s *violationSite) {
 	var instance any
 	if s.names != nil {
-		instance = s.names.Property
+		instance = s.names.property
 	} else {
 		instance = valueAt(p.inv.instance, s.node.InstanceLocation)
 	}

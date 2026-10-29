@@ -722,6 +722,13 @@ func schemaPointer(location, resourceURL string) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
+	return fragmentTokens(fragment)
+}
+
+// fragmentTokens returns the tokens of fragment, a JSON Pointer as a URL's
+// fragment holds one: its percent-encoding undone, then its escapes, and
+// whether it holds one.
+func fragmentTokens(fragment string) ([]string, bool) {
 	pointer, err := neturl.PathUnescape(fragment)
 	if err != nil {
 		return nil, false

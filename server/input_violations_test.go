@@ -56,8 +56,8 @@ func one(v InputViolation) InputValidationFailure {
 
 const failed = "input schema validation failed: "
 
-// projectionRows holds a call for each keyword the list knows,
-// but propertyNames' and unevaluatedProperties' placements.
+// projectionRows holds a call for each keyword the list knows; the placements
+// of propertyNames and unevaluatedProperties are input_violations_pointer_test.go's.
 func projectionRows() []projectionRow {
 	sevens := "0." + strings.Repeat("7", 1100)
 	widest := new(big.Rat).SetFrac(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)), new(big.Int).Lsh(big.NewInt(1), 255)).FloatString(255)
@@ -93,7 +93,7 @@ func projectionRows() []projectionRow {
 		{
 			name: "propertyNames", schema: `{"propertyNames":{"minLength":5}}`, args: `{"bad":1}`,
 			text: failed + "<root>: minLength: got 3, want 5",
-			want: one(InputViolation{PointerUnknown: true, Keyword: "minLength", SchemaLocation: "/propertyNames/minLength", Property: "bad",
+			want: one(InputViolation{Keyword: "minLength", SchemaLocation: "/propertyNames/minLength", Property: "bad",
 				Expected: ViolationExpected{Limit: new(5)}, Actual: ViolationActual{Kind: "string", Value: `"bad"`, Count: new(3)},
 				Message: "<root>: minLength: got 3, want 5"}),
 		},
@@ -605,7 +605,8 @@ func TestProjectionBudgets(t *testing.T) {
 
 // The list is the same from run to run, though the library walks an object's
 // members in map order: the 10 least by pointer segments, then schema
-// location, then keyword, and an unknown pointer after every known one.
+// location, then keyword (TestProjectionUnknownPointerSortsLast for an
+// unknown pointer).
 func TestProjectionOrderIsStable(t *testing.T) {
 	schema := `{"required":["q"],"additionalProperties":{"minimum":10,"multipleOf":3}}`
 	args := `{"m00":1,"m01":1,"m02":1,"m03":1,"m04":1,"m05":1,"m06":1}`
@@ -624,14 +625,6 @@ func TestProjectionOrderIsStable(t *testing.T) {
 	assert.Equal(t, 5, first.Omitted)
 	for range 100 {
 		require.Equal(t, first, projectFailure(invalidCall(t, schema, args)))
-	}
-
-	named := `{"required":["q"],"propertyNames":{"maxLength":2},"properties":{"abc":{"type":"string"}}}`
-	for range 100 {
-		f := projectFailure(invalidCall(t, named, `{"abc":1}`))
-		require.Len(t, f.Violations, 3)
-		assert.Equal(t, []bool{false, false, true}, []bool{f.Violations[0].PointerUnknown, f.Violations[1].PointerUnknown, f.Violations[2].PointerUnknown})
-		assert.Equal(t, []string{"required", "type", "maxLength"}, []string{f.Violations[0].Keyword, f.Violations[1].Keyword, f.Violations[2].Keyword})
 	}
 }
 
