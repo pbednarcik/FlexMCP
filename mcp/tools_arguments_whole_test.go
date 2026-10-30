@@ -535,3 +535,39 @@ func TestRequireWholeIntInProcessIsNeverMarked(t *testing.T) {
 		assert.Equal(t, int64(9007199254740993), int64(got))
 	})
 }
+
+// BenchmarkRequireWholeIntRaw measures RequireWholeInt of a whole number past
+// 2^53 that the client sent as an integer literal, which the getter reads
+// exactly from the raw arguments. The scan walks the 256 KiB beside it: string
+// is one string, array is a flat array of numbers.
+func BenchmarkRequireWholeIntRaw(b *testing.B) {
+	if strconv.IntSize != 64 {
+		b.Skip("the literal is a 64-bit value")
+	}
+	const size = 256 << 10
+	for _, leg := range []struct{ name, pad string }{
+		{"string", `"` + strings.Repeat("x", size-2) + `"`},
+		{"array", "[" + strings.Repeat("1234567,", size/8-1) + "1]"},
+	} {
+		b.Run(leg.name, func(b *testing.B) {
+			raw := `{"pad":` + leg.pad + `,"limit":9007199254740993}`
+			var p CallToolParams
+			if err := json.Unmarshal([]byte(`{"name":"x","arguments":`+raw+`}`), &p); err != nil {
+				b.Fatal(err)
+			}
+			r := CallToolRequest{Params: p}
+
+			// One call outside the loop proves the getter reads the literal from
+			// the raw bytes: the map holds the rounded float64.
+			if got, err := r.RequireWholeInt("limit"); err != nil || int64(got) != 9007199254740993 {
+				b.Fatalf("leg %s: got %d, %v", leg.name, got, err)
+			}
+
+			b.SetBytes(int64(len(raw)))
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = r.RequireWholeInt("limit")
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,19 +15,22 @@ import (
 // BenchmarkStreamableHTTPToolCallValidated drives ServeHTTP with one modern
 // tools/call per iteration to a tool whose input is validated: bench/compare's
 // small and complex calls, the complex one with an item's id written with an
-// exponent, and with a before-call hook, after which validation reads the
-// arguments the hook left.
+// exponent, with a before-call hook, after which validation reads the
+// arguments the hook left, and with an input validation handler, which a
+// passing call never reaches.
 func BenchmarkStreamableHTTPToolCallValidated(b *testing.B) {
 	for _, leg := range []struct {
 		name     string
 		complex  bool
 		exponent bool
 		hook     bool
+		handler  bool
 	}{
 		{name: "small"},
 		{name: "complex", complex: true},
 		{name: "complex-exponent", complex: true, exponent: true},
 		{name: "complex-hook", complex: true, hook: true},
+		{name: "complex-handler", complex: true, handler: true},
 	} {
 		b.Run(leg.name, func(b *testing.B) {
 			options := []ServerOption{WithToolCapabilities(false), WithInputSchemaValidation()}
@@ -34,6 +38,9 @@ func BenchmarkStreamableHTTPToolCallValidated(b *testing.B) {
 				hooks := &Hooks{}
 				hooks.AddBeforeCallTool(func(context.Context, any, *mcp.CallToolRequest) {})
 				options = append(options, WithHooks(hooks))
+			}
+			if leg.handler {
+				options = append(options, refusingInputValidation())
 			}
 			schema, arguments, filler := json.RawMessage(smallSchema), json.RawMessage(smallArguments), ""
 			if leg.complex {
@@ -61,6 +68,8 @@ func BenchmarkStreamableHTTPToolCallValidated(b *testing.B) {
 			bad := bytes.Replace(body, []byte(`"region":"us-east-1"`), []byte(`"region":5`), 1)
 			if w := serveOne(httpSrv, bad, header); !bytes.Contains(w.Body.Bytes(), []byte(`"isError":true`)) {
 				b.Fatalf("leg %s: invalid region not refused: %.300s", leg.name, w.Body.String())
+			} else if leg.handler && !bytes.Contains(w.Body.Bytes(), []byte(`refused 1+0`)) {
+				b.Fatalf("leg %s: invalid region not refused by the handler: %.300s", leg.name, w.Body.String())
 			}
 
 			b.ReportAllocs()
@@ -179,4 +188,73 @@ func BenchmarkInputValidationRegister(b *testing.B) {
 			})
 		})
 	}
+}
+
+// BenchmarkInputValidationFailing drives ServeHTTP with one modern tools/call
+// per iteration whose arguments fail input validation: bench/compare's complex
+// call with 15 of its item ids written as strings, where the schema wants
+// integers. hook=none is the default refusal; hook=refuse has an input
+// validation handler, which reads the failure it is given and refuses with a
+// result of its own.
+func BenchmarkInputValidationFailing(b *testing.B) {
+	for _, leg := range []struct {
+		name   string
+		option ServerOption
+		answer string
+	}{
+		{"hook=none", WithInputSchemaValidation(), "input schema validation failed: "},
+		{"hook=refuse", refusingInputValidation(), "refused 10+5"},
+	} {
+		b.Run(leg.name, func(b *testing.B) {
+			srv := NewMCPServer("bench", "1.0.0", WithToolCapabilities(false), leg.option)
+			srv.AddTool(mcp.NewToolWithRawSchema("echo", "echoes region", complexRawSchema()),
+				func(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return mcp.NewToolResultText(request.GetString("region", "") + complexResultFiller), nil
+				})
+			httpSrv := NewStreamableHTTPServer(srv)
+			body, header := modernToolCall(b, failingComplexArguments(b))
+
+			// One call outside the loop proves the leg refuses with its own
+			// answer, and that the arguments it fails are the complex call's, which
+			// the same server answers when they are valid.
+			if w := serveOne(httpSrv, body, header); !bytes.Contains(w.Body.Bytes(), []byte(`"isError":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(leg.answer)) {
+				b.Fatalf("leg %s: not refused as %q: %.300s", leg.name, leg.answer, w.Body.String())
+			}
+			goodBody, goodHeader := modernToolCall(b, complexArguments())
+			if w := serveOne(httpSrv, goodBody, goodHeader); w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"text":"us-east-1`)) {
+				b.Fatalf("leg %s: valid call: status %d body %.300s", leg.name, w.Code, w.Body.String())
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				serveOne(httpSrv, body, header)
+			}
+		})
+	}
+}
+
+// failingComplexArguments are complexArguments with the ids of its first 15
+// items written as strings.
+func failingComplexArguments(tb testing.TB) json.RawMessage {
+	tb.Helper()
+	args := []byte(complexArguments())
+	for i := range 15 {
+		old := fmt.Appendf(nil, `"id":%d,`, i)
+		if !bytes.Contains(args, old) {
+			tb.Fatalf("no item id %d to write as a string", i)
+		}
+		args = bytes.Replace(args, old, []byte(`"id":"bad",`), 1)
+	}
+	if n := bytes.Count(args, []byte(`"id":"bad",`)); n != 15 {
+		tb.Fatalf("%d ids written as strings, want 15", n)
+	}
+	return json.RawMessage(args)
+}
+
+// refusingInputValidation is an input validation handler that reads the
+// failure it is given and refuses with a result of its own.
+func refusingInputValidation() ServerOption {
+	return WithInputValidationHandler(func(_ context.Context, _ mcp.Tool, _ CallArguments, failure InputValidationFailure) (*mcp.CallToolResult, bool) {
+		return mcp.NewToolResultError(fmt.Sprintf("refused %d+%d", len(failure.Violations), failure.Omitted)), true
+	})
 }
