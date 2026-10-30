@@ -572,6 +572,39 @@ func TestInputValidationHandlerPassingCallAllocations(t *testing.T) {
 	assert.Equal(t, plain, hooked, "a hook costs a passing call")
 }
 
+// A hook that answers a failure itself pays nothing for the default text:
+// answering with the text costs at least the text's own allocations more.
+func TestInputValidationHandlerOwnRefusalBuildsNoDefaultText(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	const schema = `{"type":"object","properties":{"a":{"type":"string"},"b":{"minimum":10},"c":{"enum":["x"]}}}`
+	const args = `{"a":1,"b":5,"c":"y"}`
+	msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"checked","arguments":` + args + `}}`)
+	measure := func(answer *mcp.CallToolResult) float64 {
+		srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), WithInputValidationHandler(refuseWith(answer)))
+		srv.AddTool(mcp.NewToolWithRawSchema("checked", "", json.RawMessage(schema)), okHandler)
+		ctx := t.Context()
+		out, err := json.Marshal(srv.HandleMessage(ctx, msg))
+		require.NoError(t, err)
+		require.Contains(t, string(out), `"isError":true`)
+		return testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
+	}
+	own, withText := measure(mcp.NewToolResultError("refused")), measure(nil)
+	inv := invalidCall(t, schema, args)
+	text := testing.AllocsPerRun(1000, func() { validationText(inv.cause) })
+	assert.GreaterOrEqual(t, withText-own, text, "allocations: %v answering with the text, %v without", withText, own)
+}
+
+// The default text is built once, on its first read.
+func TestInputInvalidTextIsBuiltOnce(t *testing.T) {
+	inv := invalidCall(t, `{"properties":{"a":{"type":"string"}}}`, `{"a":1}`)
+	assert.Equal(t, "input schema validation failed: /a: got number, want string", inv.Error())
+	if !raceEnabled {
+		assert.Zero(t, testing.AllocsPerRun(10, func() { _ = inv.Error() }))
+	}
+}
+
 type hookContextKey struct{}
 
 // The hook gets the request's own context at both sites: its values and its

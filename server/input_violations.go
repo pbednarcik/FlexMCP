@@ -157,8 +157,16 @@ type inputInvalid struct {
 	unencodable bool
 }
 
-// Error returns the text of the default refusal.
-func (e *inputInvalid) Error() string { return e.text }
+// Error returns the text of the default refusal, built on its first read: a
+// handler that answers the failure itself never needs it. The text is never
+// empty, and e stays with the goroutine that handles the call, since a handler
+// is given what projectFailure makes of e, never e.
+func (e *inputInvalid) Error() string {
+	if e.text == "" {
+		e.text = validationText(e.cause)
+	}
+	return e.text
+}
 
 // Unwrap returns the failure validation returned.
 func (e *inputInvalid) Unwrap() error { return e.cause }
@@ -171,7 +179,6 @@ func invalidInput(schema *cachedToolSchema, instance any, cause error) *inputInv
 		instance:    instance,
 		resourceURL: strings.TrimSuffix(schema.compiled.Location, "#"),
 		schema:      schema,
-		text:        validationText(cause),
 	}
 }
 
