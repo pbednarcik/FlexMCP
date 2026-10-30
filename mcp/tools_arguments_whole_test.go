@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"math/rand/v2"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pbednarcik/flexmcp/internal/argsdecode"
 	"github.com/stretchr/testify/assert"
@@ -316,6 +319,108 @@ func TestLastTopLevelLiteral(t *testing.T) {
 		allocs := testing.AllocsPerRun(100, func() { _, _ = lastTopLevelLiteral(raw, "日本語") })
 		assert.Zero(t, allocs)
 	})
+}
+
+// skipStringByBytes is skipString as one loop over every byte: the reference
+// its answers are compared with.
+func skipStringByBytes(raw []byte, i int) int {
+	for i++; i < len(raw); i++ {
+		switch raw[i] {
+		case '\\':
+			i++
+		case '"':
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// skipString answers as the byte loop does on every string the sweep reaches:
+// each short string over quote, backslash and letter, at every offset across
+// the stretches, and so with a quote, a backslash or an unterminated end on
+// each boundary, and a run of backslashes of each length before a quote across
+// them.
+func TestSkipStringMatchesTheByteLoop(t *testing.T) {
+	check := func(raw []byte, start int) {
+		if got, want := skipString(raw, start), skipStringByBytes(raw, start); got != want {
+			t.Fatalf("skipString(%q, %d) = %d, the byte loop answers %d", raw, start, got, want)
+		}
+	}
+	const sweep = 3*stringStretch + 4
+	t.Run("short strings at every offset", func(t *testing.T) {
+		for _, pad := range []string{"a", `\\`, `\"`} {
+			for offset := range sweep {
+				prefix := append([]byte(`"`), strings.Repeat(pad, offset/len(pad)+1)[:offset]...)
+				var extend func(raw []byte, left int)
+				extend = func(raw []byte, left int) {
+					check(raw, 0)
+					if left > 0 {
+						for _, c := range []byte(`a\"`) {
+							extend(append(slices.Clip(raw), c), left-1)
+						}
+					}
+				}
+				extend(prefix, 6)
+			}
+		}
+	})
+	t.Run("runs of backslashes before a quote", func(t *testing.T) {
+		for offset := range sweep {
+			for run := range sweep {
+				raw := `"` + strings.Repeat("a", offset) + strings.Repeat(`\`, run)
+				check([]byte(raw), 0)
+				check([]byte(raw+`"`), 0)
+				check([]byte(raw+`"b"`), 0)
+				check([]byte(raw+`"`+strings.Repeat("b", sweep)+`"`), 0)
+			}
+		}
+	})
+	t.Run("a string inside a buffer", func(t *testing.T) {
+		for offset := range sweep {
+			padding := strings.Repeat("a", offset)
+			check([]byte(`{"k":"`+padding+`","n":1}`), 5)
+			check([]byte(`{"k":"`+padding), 5)
+			check([]byte(`{"k":"`+padding+`\`), 5)
+		}
+	})
+	t.Run("random strings", func(t *testing.T) {
+		letters := []byte(`ab\\"xn`)
+		rng := rand.New(rand.NewPCG(1, 2))
+		for range 300000 {
+			raw := make([]byte, 1+rng.IntN(4*stringStretch))
+			raw[0] = '"'
+			density := 1 + rng.IntN(16)
+			for j := 1; j < len(raw); j++ {
+				raw[j] = 'a'
+				if rng.IntN(density) == 0 {
+					raw[j] = letters[rng.IntN(len(letters))]
+				}
+			}
+			check(raw, 0)
+		}
+	})
+}
+
+// Past its first stretch skipString jumps instead of reading every byte: it
+// is far faster than the byte loop over a long string. The times are of many
+// passes, past the coarse clock, and the best of each, past a busy machine.
+func TestSkipStringJumpsAcrossALongString(t *testing.T) {
+	raw := []byte(`"` + strings.Repeat("x", 1<<20) + `"`)
+	best := func(skip func([]byte, int) int) time.Duration {
+		lowest := time.Hour
+		for range 3 {
+			start := time.Now()
+			for range 64 {
+				if skip(raw, 0) != len(raw) {
+					t.Fatal("the string's end was missed")
+				}
+			}
+			lowest = min(lowest, time.Since(start))
+		}
+		return lowest
+	}
+	jumps, bytes := best(skipString), best(skipStringByBytes)
+	assert.Less(t, 4*jumps, bytes, "%v in jumps, %v by bytes", jumps, bytes)
 }
 
 // keyIs reads a key as decoding does, whatever its bytes: each key below is

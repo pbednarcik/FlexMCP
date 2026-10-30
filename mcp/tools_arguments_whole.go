@@ -203,16 +203,44 @@ func skipSpace(raw []byte, i int) int {
 	return i
 }
 
+// stringStretch is how many bytes skipString reads one at a time before it
+// jumps: a shorter string costs more in a jump than in the loop, and a string
+// full of escaped quotes pays one jump per stretch.
+const stringStretch = 32
+
 // skipString returns the index after the string that starts at raw[i], a
-// quote, or -1 when it is not closed.
+// quote, or -1 when it is not closed. It reads a stretch a byte at a time, then
+// jumps to the next quote; backslashes before that quote are counted back to
+// where the jump began, a place outside any escape, and an even number leaves
+// the quote closing the string.
 func skipString(raw []byte, i int) int {
-	for i++; i < len(raw); i++ {
-		switch raw[i] {
-		case '\\':
-			i++
-		case '"':
+	i++
+	for i < len(raw) {
+		for end := min(i+stringStretch, len(raw)); i < end; i++ {
+			switch raw[i] {
+			case '\\':
+				i++
+			case '"':
+				return i + 1
+			}
+		}
+		if i >= len(raw) {
+			return -1
+		}
+		start := i
+		n := bytes.IndexByte(raw[i:], '"')
+		if n < 0 {
+			return -1
+		}
+		i += n
+		back := i
+		for back > start && raw[back-1] == '\\' {
+			back--
+		}
+		if (i-back)%2 == 0 {
 			return i + 1
 		}
+		i++
 	}
 	return -1
 }
