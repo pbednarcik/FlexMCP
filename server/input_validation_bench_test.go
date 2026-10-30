@@ -195,7 +195,13 @@ func BenchmarkInputValidationRegister(b *testing.B) {
 // call with 15 of its item ids written as strings, where the schema wants
 // integers. hook=none is the default refusal; hook=refuse has an input
 // validation handler, which reads the failure it is given and refuses with a
-// result of its own.
+// result of its own. The other legs are shapes that reach further:
+//   - exclusive: an exclusive bound fails, which asks whether the 8 KB schema
+//     holds a draft-4 schema;
+//   - longkey: 10 failures under a 1 MiB key of characters the pointer escapes,
+//     their lines cut as they are written;
+//   - propertyNames: a name fails under a $ref and a properties keyword, whose
+//     place in the arguments is derived.
 func BenchmarkInputValidationFailing(b *testing.B) {
 	for _, leg := range []struct {
 		name   string
@@ -223,6 +229,78 @@ func BenchmarkInputValidationFailing(b *testing.B) {
 			goodBody, goodHeader := modernToolCall(b, complexArguments())
 			if w := serveOne(httpSrv, goodBody, goodHeader); w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"text":"us-east-1`)) {
 				b.Fatalf("leg %s: valid call: status %d body %.300s", leg.name, w.Code, w.Body.String())
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				serveOne(httpSrv, body, header)
+			}
+		})
+	}
+
+	// A hook that names what it was given proves which path a leg reached.
+	naming := WithInputValidationHandler(func(_ context.Context, _ mcp.Tool, _ CallArguments, failure InputValidationFailure) (*mcp.CallToolResult, bool) {
+		first := failure.Violations[0]
+		return mcp.NewToolResultError(fmt.Sprintf("refused %d+%d %s at %.8s of %.8s: %.32s", len(failure.Violations), failure.Omitted, first.Keyword, first.Pointer, first.Property, first.SchemaLocation)), true
+	})
+	key := strings.Repeat("~", 1<<20)
+	failures := make([]any, 10)
+	for i := range failures {
+		failures[i] = "x"
+	}
+	for _, leg := range []struct {
+		name, schema string
+		arguments    map[string]any
+		option       ServerOption
+		answer       string
+		proof        func(*MCPServer) bool
+	}{
+		{
+			name: "exclusive/hook=refuse", option: naming,
+			schema:    strings.Replace(string(complexRawSchema()), `"properties":{"region":{"type":"string"}`, `"properties":{"n":{"exclusiveMaximum":5},"region":{"type":"string"}`, 1),
+			arguments: map[string]any{"region": "us-east-1", "items": []any{}, "n": 9},
+			answer:    "refused 1+0 exclusiveMaximum at /n of : /properties/n/exclusiveMaximum",
+			proof:     func(srv *MCPServer) bool { return srv.toolInputSchemas["echo"].draft4.Load() == draft4Absent },
+		},
+		{
+			name: "longkey/hook=none", option: WithInputSchemaValidation(),
+			schema:    `{"type":"object","additionalProperties":{"type":"array","items":{"type":"integer"}}}`,
+			arguments: map[string]any{key: failures},
+			answer:    `/~0~0~0~0`,
+		},
+		{
+			name: "longkey/hook=refuse", option: naming,
+			schema:    `{"type":"object","additionalProperties":{"type":"array","items":{"type":"integer"}}}`,
+			arguments: map[string]any{key: failures},
+			answer:    "refused 10+0 type at /~0~0~0~ of : /additionalProperties/items/type",
+		},
+		{
+			name: "propertyNames/hook=refuse", option: naming,
+			schema: `{"$ref":"#/$defs/box","$defs":{"box":{"type":"object","properties":{"inner":{"type":"object","propertyNames":{"maxLength":2}}}}}}`,
+			arguments: map[string]any{"inner": map[string]any{
+				"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+			}},
+			answer: "refused 10+2 maxLength at /inner of eight: /$defs/box/properties/inner/prop",
+		},
+	} {
+		b.Run(leg.name, func(b *testing.B) {
+			srv := NewMCPServer("bench", "1.0.0", WithToolCapabilities(false), leg.option)
+			srv.AddTool(mcp.NewToolWithRawSchema("echo", "", json.RawMessage(leg.schema)), okHandler)
+			httpSrv := NewStreamableHTTPServer(srv)
+			body, header := modernToolCall(b, leg.arguments)
+
+			// One call outside the loop proves the leg reaches its path: its
+			// answer names what the hook was given, or the cut pointer, and the
+			// default text stays within its lines.
+			w := serveOne(httpSrv, body, header)
+			if !bytes.Contains(w.Body.Bytes(), []byte(`"isError":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(leg.answer)) {
+				b.Fatalf("leg %s: not refused as %q: %.300s", leg.name, leg.answer, w.Body.String())
+			}
+			if w.Body.Len() > 16<<10 {
+				b.Fatalf("leg %s: %d bytes refused", leg.name, w.Body.Len())
+			}
+			if leg.proof != nil && !leg.proof(srv) {
+				b.Fatalf("leg %s: the path was not reached", leg.name)
 			}
 
 			b.ReportAllocs()
