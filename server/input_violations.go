@@ -314,6 +314,7 @@ func (p *projection) preCheck(f fixedPart, sides func(w *violationWriter)) Input
 func (p *projection) tree(verr *jsonschema.ValidationError) InputValidationFailure {
 	p.walk(verr, nil, nil)
 	b := newFailureBuilder()
+	b.failure.Violations = make([]InputViolation, 0, len(p.kept))
 	for i := range p.kept {
 		site := &p.kept[i]
 		b.add(p.fixed(site), func(w *violationWriter) { p.sides(w, site) })
@@ -923,11 +924,12 @@ func (b *failureBuilder) add(f fixedPart, sides func(w *violationWriter)) {
 		return
 	}
 	room := budget - size
+	b.failure.Violations = append(b.failure.Violations, InputViolation{
+		Pointer: f.pointer, PointerUnknown: f.unknown, Keyword: f.keyword, SchemaLocation: f.location,
+		Property: f.property, Message: f.message,
+	})
 	w := &violationWriter{
-		v: InputViolation{
-			Pointer: f.pointer, PointerUnknown: f.unknown, Keyword: f.keyword, SchemaLocation: f.location,
-			Property: f.property, Message: f.message,
-		},
+		v:     &b.failure.Violations[len(b.failure.Violations)-1],
 		room:  room,
 		cut:   f.cut,
 		nodes: &b.nodes,
@@ -938,13 +940,13 @@ func (b *failureBuilder) add(f fixedPart, sides func(w *violationWriter)) {
 	w.v.Cut = w.cut
 	b.failure.Cut = b.failure.Cut || w.cut
 	b.bytes -= size + room - w.room
-	b.failure.Violations = append(b.failure.Violations, w.v)
 }
 
 // violationWriter writes a violation's sides within the room its budget
-// leaves them, counted in the bytes of their values.
+// leaves them, counted in the bytes of their values. v is the violation in
+// the list, good until the list's next add.
 type violationWriter struct {
-	v     InputViolation
+	v     *InputViolation
 	room  int
 	cut   bool
 	nodes *previewBudget

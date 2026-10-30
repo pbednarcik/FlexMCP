@@ -804,6 +804,24 @@ func TestProjectionIndexesTheSchemaOnDemand(t *testing.T) {
 	}
 }
 
+// A failure's list is sized once, and each violation is written in place: ten
+// violations cost the list once, not its growth and a copy of each.
+func TestProjectionListIsSizedOnce(t *testing.T) {
+	inv := invalidCall(t, `{"properties":{"a":{"items":{"type":"integer"}}}}`, `{"a":["x","x","x","x","x","x","x","x","x","x"]}`)
+	f := projectFailure(inv)
+	require.Len(t, f.Violations, 10)
+	assert.Equal(t, 10, cap(f.Violations))
+	if raceEnabled {
+		return
+	}
+	measure := func() uint64 {
+		before := allocatedBytes()
+		projectFailure(inv)
+		return allocatedBytes() - before
+	}
+	assert.Less(t, min(measure(), measure(), measure()), uint64(16<<10), "bytes of a failure of 10 violations")
+}
+
 // A failing call without a handler builds no violation list, only the
 // default refusal: at most 48 allocations for one failure and 104 for three.
 func TestInputValidationFailingCallAllocations(t *testing.T) {
