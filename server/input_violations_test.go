@@ -822,6 +822,23 @@ func TestProjectionListIsSizedOnce(t *testing.T) {
 	assert.Less(t, min(measure(), measure(), measure()), uint64(16<<10), "bytes of a failure of 10 violations")
 }
 
+// The walk's ancestors are one stack: internal nodes do not copy them, even at
+// depth 30, where a chain that grows by doubling is full.
+func TestProjectionAncestorsAreNotCopiedPerNode(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	const schema = `{"$ref":"#/$defs/n","$defs":{"n":{"type":"object","properties":{"c":{"$ref":"#/$defs/n"},` +
+		`"v":{"type":"array","items":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}}}}}}}}`
+	allocs := func(internalNodes int) float64 {
+		items := strings.TrimSuffix(strings.Repeat(`{"x":"a","y":"b"},`, internalNodes), ",")
+		inv := invalidCall(t, schema, strings.Repeat(`{"c":`, 30)+`{"v":[`+items+`]}`+strings.Repeat(`}`, 30))
+		return testing.AllocsPerRun(5, func() { projectFailure(inv) })
+	}
+	few, many := allocs(10), allocs(1000)
+	assert.InDelta(t, few, many, 20, "allocations at 10 internal nodes, then at 1,000")
+}
+
 // A failing call without a handler builds no violation list, only the
 // default refusal: at most 48 allocations for one failure and 104 for three.
 func TestInputValidationFailingCallAllocations(t *testing.T) {

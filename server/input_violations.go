@@ -236,6 +236,9 @@ type projection struct {
 	// maxValidationMessages, the least first; total counts them all.
 	kept  []violationSite
 	total int
+	// chain is the walk's stack: the nodes from the root to the parent of the
+	// node it visits. What a site keeps of it is copied out of it.
+	chain []*jsonschema.ValidationError
 	// locations indexes a schema holding draft 4 by location; draft4 builds it,
 	// at most once.
 	locations map[string]*jsonschema.Schema
@@ -312,7 +315,7 @@ func (p *projection) preCheck(f fixedPart, sides func(w *violationWriter)) Input
 // tree projects the validator's error tree: the least violations, each
 // within the budgets, and the count of the rest.
 func (p *projection) tree(verr *jsonschema.ValidationError) InputValidationFailure {
-	p.walk(verr, nil, nil)
+	p.walk(verr, nil)
 	b := newFailureBuilder()
 	b.failure.Violations = make([]InputViolation, 0, len(p.kept))
 	for i := range p.kept {
@@ -325,31 +328,32 @@ func (p *projection) tree(verr *jsonschema.ValidationError) InputValidationFailu
 }
 
 // walk visits node and the nodes under it once, adding each violation it
-// finds. ancestors are the nodes from the root to node's parent, the context
-// a violation under propertyNames is placed from (propertyNamesPointer);
-// names is the propertyNames node node is under, nil for none.
+// finds. p.chain is the context a violation under propertyNames is placed
+// from (propertyNamesPointer); names is the propertyNames node node is under,
+// nil for none.
 //
 // A node without causes is a violation, whatever its kind; so is a oneOf that
 // matched twice. A node with causes adds its causes, but a contains,
 // minContains or maxContains node is one violation: its causes say why items
 // did not count, not what the call got wrong.
-func (p *projection) walk(node *jsonschema.ValidationError, ancestors []*jsonschema.ValidationError, names *namesPlace) {
+func (p *projection) walk(node *jsonschema.ValidationError, names *namesPlace) {
 	switch k := node.ErrorKind.(type) {
 	case *kind.Contains, *kind.MinContains, *kind.MaxContains:
 		p.add(violationSite{node: node, names: names})
 		return
 	case *kind.PropertyNames:
-		pointer, known := propertyNamesPointer(ancestors, node, p.inv.instance, p.inv.resourceURL)
+		pointer, known := propertyNamesPointer(p.chain, node, p.inv.instance, p.inv.resourceURL)
 		names = &namesPlace{property: k.Property, pointer: pointer, known: known}
 	}
 	if len(node.Causes) == 0 {
-		p.add(violationSite{node: node, names: names, referenced: referencedBy(ancestors, node)})
+		p.add(violationSite{node: node, names: names, referenced: referencedBy(p.chain, node)})
 		return
 	}
-	ancestors = append(ancestors, node)
+	p.chain = append(p.chain, node)
 	for _, cause := range node.Causes {
-		p.walk(cause, ancestors, names)
+		p.walk(cause, names)
 	}
+	p.chain = p.chain[:len(p.chain)-1]
 }
 
 // referencedBy reports whether the last of chain, node's parent, is a
