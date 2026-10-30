@@ -93,7 +93,7 @@ type toolSchemas struct {
 func (s *MCPServer) commitSchemas(name string, schemas toolSchemas) {
 	s.inputValidator.keep(name, schemas.input)
 	s.outputValidator.keep(name, schemas.output)
-	s.retainInputSchema(name, schemas.input.schema())
+	s.retainInputSchema(name, schemas.input)
 	s.retainOutputSchema(name, schemas.output.schema())
 }
 
@@ -123,22 +123,22 @@ func (s *MCPServer) outputSchemaOf(name string) (*jsonschema.Schema, bool) {
 // called name, nil for a tool with none, so a call validates against it
 // without reading the tool's schema again. Nothing is kept with input
 // validation off. Called with toolsMu held.
-func (s *MCPServer) retainInputSchema(name string, compiled *jsonschema.Schema) {
+func (s *MCPServer) retainInputSchema(name string, schema *cachedToolSchema) {
 	if s.inputValidator == nil {
 		return
 	}
-	s.toolInputSchemas[name] = compiled
+	s.toolInputSchemas[name] = schema
 }
 
 // inputSchemaOf returns the input schema registration kept for the tool
 // called name, and whether one was kept. Called with toolsMu held, so the
 // schema belongs to the tool definition read under the same lock.
-func (s *MCPServer) inputSchemaOf(name string) (*jsonschema.Schema, bool) {
+func (s *MCPServer) inputSchemaOf(name string) (*cachedToolSchema, bool) {
 	if s.inputValidator == nil {
 		return nil, false
 	}
-	compiled, ok := s.toolInputSchemas[name]
-	return compiled, ok
+	schema, ok := s.toolInputSchemas[name]
+	return schema, ok
 }
 
 // calledTool is what a tools/call found registered under the name it calls,
@@ -151,7 +151,8 @@ type calledTool struct {
 	registered *ServerTool
 	// taskTool is the task tool's registration when registered is nil.
 	taskTool                          ServerTaskTool
-	inputSchema, outputSchema         *jsonschema.Schema
+	inputSchema                       *cachedToolSchema
+	outputSchema                      *jsonschema.Schema
 	inputSchemaKept, outputSchemaKept bool
 }
 

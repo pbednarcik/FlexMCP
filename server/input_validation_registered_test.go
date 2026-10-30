@@ -167,6 +167,42 @@ func TestInputValidationSchemaIsKeptOnEveryRegistrationPath(t *testing.T) {
 	})
 }
 
+// Whether a schema holds draft 4 is asked by the first failure that needs the
+// answer, which stays with the compiled schema: a call that passes does not
+// ask, nor does a failure of another keyword, and a new schema starts unasked.
+func TestInputValidationDraft4AnswerStaysWithTheCompiledSchema(t *testing.T) {
+	register := func(srv *MCPServer, schema string) *cachedToolSchema {
+		srv.AddTool(mcp.NewToolWithRawSchema("t", "", json.RawMessage(schema)), okHandler)
+		return srv.toolInputSchemas["t"]
+	}
+	srv := NewMCPServer("test", "1.0.0", WithToolCapabilities(false), refusingInputValidation())
+
+	kept := register(srv, `{"type":"object","properties":{"n":{"exclusiveMaximum":5},"s":{"type":"string"}}}`)
+	assert.Equal(t, draft4Unknown, kept.draft4.Load(), "registration does not ask")
+	callTool(t, srv, "t", map[string]any{"n": 1})
+	assert.Equal(t, draft4Unknown, kept.draft4.Load(), "a call that passes does not ask")
+	callTool(t, srv, "t", map[string]any{"s": 1})
+	assert.Equal(t, draft4Unknown, kept.draft4.Load(), "a failure of another keyword does not ask")
+	callTool(t, srv, "t", map[string]any{"n": 9})
+	assert.Equal(t, draft4Absent, kept.draft4.Load(), "an exclusive bound's failure asks")
+
+	kept = register(srv, `{`+draft4+`,"type":"object","properties":{"n":{"maximum":5,"exclusiveMaximum":true}}}`)
+	assert.Equal(t, draft4Unknown, kept.draft4.Load(), "a new schema starts unasked")
+	callTool(t, srv, "t", map[string]any{"n": 5})
+	assert.Equal(t, draft4Held, kept.draft4.Load())
+}
+
+// Failures of one schema may ask at the same moment; run with -race.
+func TestInputValidationDraft4AnswerToConcurrentFailures(t *testing.T) {
+	inv := draft4ExclusiveBranches(t, 2)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() { assert.Len(t, projectFailure(inv).Violations, 2) })
+	}
+	wg.Wait()
+	assert.Equal(t, draft4Held, inv.schema.draft4.Load())
+}
+
 // A raw schema registered again is read again too.
 func TestInputValidationReregistrationUsesTheNewRawSchema(t *testing.T) {
 	raw := func(additional bool) mcp.Tool {

@@ -123,7 +123,7 @@ func validated(t testing.TB, compiled *jsonschema.Schema, args callArguments) st
 			t.Fatalf("validation panicked: %v", r)
 		}
 	}()
-	return validationOutcome(validateArguments(compiled, args))
+	return validationOutcome(validateArguments(&cachedToolSchema{compiled: compiled}, args))
 }
 
 // compileFuzzed compiles schema, nil when it does not compile or when the

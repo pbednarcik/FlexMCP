@@ -33,7 +33,7 @@ func invalidCall(t testing.TB, schema, args string) *inputInvalid {
 // invalidArguments validates args against compiled and returns the failure.
 func invalidArguments(t testing.TB, compiled *jsonschema.Schema, args callArguments) *inputInvalid {
 	t.Helper()
-	ran, err := validateArguments(compiled, args)
+	ran, err := validateArguments(&cachedToolSchema{compiled: compiled}, args)
 	require.True(t, ran)
 	inv, ok := errors.AsType[*inputInvalid](err)
 	require.True(t, ok, "validation must fail with an *inputInvalid, got %v", err)
@@ -659,9 +659,9 @@ func TestProjectionOrdersByTheCompleteLocation(t *testing.T) {
 	}
 }
 
-// Locations that fit are compared as before; one that does not fit is cut to
-// fewer than 256 bytes when a character straddles the cut, which must not make
-// it sort as a prefix of the other. The locations are compared as they are
+// Locations are compared whole, before any cut: one that does not fit is shown
+// cut to fewer than 256 bytes when a character straddles the cut, which must
+// not make it sort as a prefix of the other. The locations are compared as they are
 // shown, percent-encoding undone: the euro sign's first byte, 0xE2, follows
 // "a", where its %E2 in the URL would precede it.
 func TestProjectionComparesLocationsAsShown(t *testing.T) {
@@ -711,6 +711,16 @@ func exclusiveBranches(t *testing.T, n int) *inputInvalid {
 	return invalidCall(t, `{"properties":{"x":{"allOf":[`+strings.Join(branches, ",")+`]}}}`, `{"x":0}`)
 }
 
+// draft4ExclusiveBranches is exclusiveBranches written in draft 4.
+func draft4ExclusiveBranches(t *testing.T, n int) *inputInvalid {
+	t.Helper()
+	branches := make([]string, n)
+	for i := range branches {
+		branches[i] = `{"minimum":` + strconv.Itoa(i) + `,"exclusiveMinimum":true}`
+	}
+	return invalidCall(t, `{`+draft4+`,"properties":{"x":{"allOf":[`+strings.Join(branches, ",")+`]}}}`, `{"x":0}`)
+}
+
 // The projection's work grows with the failures and the schema, not with their
 // product: at four times both, it allocates about four times as much, where
 // walking the schema once per exclusive bound allocates sixteen times as much.
@@ -718,29 +728,80 @@ func TestProjectionAllocationsGrowLinearly(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
-	allocs := func(n int) float64 {
-		inv := exclusiveBranches(t, n)
+	for name, branches := range map[string]func(*testing.T, int) *inputInvalid{
+		"draft 2020": exclusiveBranches,
+		"draft 4":    draft4ExclusiveBranches,
+	} {
+		t.Run(name, func(t *testing.T) {
+			allocs := func(n int) float64 {
+				inv := branches(t, n)
+				return testing.AllocsPerRun(5, func() { projectFailure(inv) })
+			}
+			small, large := allocs(100), allocs(400)
+			assert.Less(t, large, 6*small, "allocations at 100 failures: %.0f, at 400: %.0f", small, large)
+		})
+	}
+}
+
+// A failing exclusive bound costs the same at any schema size: nothing per
+// call walks the schema.
+func TestProjectionExclusiveBoundCostsTheSameAtAnySchemaSize(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	allocs := func(properties int) float64 {
+		filler := make([]string, properties)
+		for i := range filler {
+			filler[i] = `"p` + strconv.Itoa(i) + `":{"type":"string"}`
+		}
+		inv := invalidCall(t, `{"properties":{"n":{"exclusiveMaximum":5},`+strings.Join(filler, ",")+`}}`, `{"n":9}`)
 		return testing.AllocsPerRun(5, func() { projectFailure(inv) })
 	}
-	small, large := allocs(100), allocs(400)
-	assert.Less(t, large, 6*small, "allocations at 100 failures: %.0f, at 400: %.0f", small, large)
+	assert.Equal(t, allocs(10), allocs(1000), "allocations at 10 properties, then at 1,000")
+}
+
+// An exclusive bound is held by maximum or minimum where its own schema is of
+// draft 4, whatever the draft of the schema around it.
+func TestProjectionExclusiveBoundFollowsItsSchemasDraft(t *testing.T) {
+	const later = `"$schema":"https://json-schema.org/draft/2020-12/schema"`
+	for _, tc := range []struct{ name, schema, location string }{
+		{"draft 4", `{` + draft4 + `,"properties":{"x":{"minimum":0,"exclusiveMinimum":true}}}`, "/properties/x/minimum"},
+		{"draft 2020", `{` + later + `,"properties":{"x":{"exclusiveMinimum":0}}}`, "/properties/x/exclusiveMinimum"},
+		{"draft 2020 in a draft-4 root", `{` + draft4 + `,"definitions":{"s":{"id":"urn:s",` + later + `,"$id":"urn:s","exclusiveMinimum":0}},"properties":{"x":{"$ref":"urn:s"}}}`, "/definitions/s/exclusiveMinimum"},
+		{"draft 4 in a draft-2020 root", `{` + later + `,"$defs":{"s":{"$id":"urn:s","id":"urn:s",` + draft4 + `,"minimum":0,"exclusiveMinimum":true}},"properties":{"x":{"$ref":"urn:s"}}}`, "/$defs/s/minimum"},
+		{"draft 2020 beside draft 4 in a draft-2020 root", `{` + later + `,"$defs":{"s":{"$id":"urn:s","id":"urn:s",` + draft4 + `,"minimum":0,"exclusiveMinimum":true}},"properties":{"x":{"exclusiveMinimum":0},"y":{"$ref":"urn:s"}}}`, "/properties/x/exclusiveMinimum"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := projectFailure(invalidCall(t, tc.schema, `{"x":0}`))
+			require.Len(t, f.Violations, 1)
+			assert.Equal(t, "exclusiveMinimum", f.Violations[0].Keyword)
+			assert.Equal(t, tc.location, f.Violations[0].SchemaLocation)
+		})
+	}
 }
 
 // The schemas are indexed by location only for a failure that asks, an
-// exclusive bound's, and once however many ask.
+// exclusive bound's, of a schema that holds a draft-4 schema. A projection
+// builds the index at most once (TestProjectionAllocationsGrowLinearly).
 func TestProjectionIndexesTheSchemaOnDemand(t *testing.T) {
-	p := &projection{inv: exclusiveBranches(t, 12)}
-	verr, ok := errors.AsType[*jsonschema.ValidationError](p.inv.cause)
-	require.True(t, ok)
-	f := p.tree(verr)
-	require.Len(t, f.Violations, 10)
-	require.NotNil(t, p.locations, "an exclusive bound asks for the index")
-
-	p = &projection{inv: invalidCall(t, `{"properties":{"x":{"allOf":[{"minimum":1},{"maximum":-1}]}}}`, `{"x":0}`)}
-	verr, ok = errors.AsType[*jsonschema.ValidationError](p.inv.cause)
-	require.True(t, ok)
-	require.Len(t, p.tree(verr).Violations, 2)
-	assert.Nil(t, p.locations, "no other keyword does")
+	for _, tc := range []struct {
+		name       string
+		inv        *inputInvalid
+		violations int
+		indexed    bool
+	}{
+		{"an exclusive bound without draft 4", exclusiveBranches(t, 12), 10, false},
+		{"an exclusive bound in draft 4", draft4ExclusiveBranches(t, 12), 10, true},
+		{"no other keyword", invalidCall(t, `{`+draft4+`,"properties":{"x":{"allOf":[{"minimum":1},{"maximum":-1}]}}}`, `{"x":0}`), 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &projection{inv: tc.inv}
+			verr, ok := errors.AsType[*jsonschema.ValidationError](p.inv.cause)
+			require.True(t, ok)
+			require.Len(t, p.tree(verr).Violations, tc.violations)
+			assert.Equal(t, tc.indexed, p.locations != nil)
+		})
+	}
 }
 
 // A failing call without a handler builds no violation list, only the
@@ -803,6 +864,7 @@ func TestInputValidationUnencodableCallAllocations(t *testing.T) {
 	assert.EqualError(t, inv, "invalid arguments: json: unsupported value: NaN")
 	_, isMarshalError := errors.AsType[*json.UnsupportedValueError](inv)
 	assert.True(t, isMarshalError, "the refusal wraps the marshal error")
-	allocs = testing.AllocsPerRun(1000, func() { _, _ = validateArguments(compiled, args) })
+	schema := &cachedToolSchema{compiled: compiled}
+	allocs = testing.AllocsPerRun(1000, func() { _, _ = validateArguments(schema, args) })
 	assert.LessOrEqual(t, allocs, 17.0, "allocations to refuse unencodable arguments")
 }

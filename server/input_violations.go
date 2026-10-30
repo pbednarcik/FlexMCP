@@ -152,7 +152,7 @@ type inputInvalid struct {
 	cause       error
 	instance    any
 	resourceURL string
-	schema      *jsonschema.Schema
+	schema      *cachedToolSchema
 	text        string
 	unencodable bool
 }
@@ -163,14 +163,14 @@ func (e *inputInvalid) Error() string { return e.text }
 // Unwrap returns the failure validation returned.
 func (e *inputInvalid) Unwrap() error { return e.cause }
 
-// invalidInput is instance failing compiled: cause is the validator's error
-// or a pre-check's refusal.
-func invalidInput(compiled *jsonschema.Schema, instance any, cause error) *inputInvalid {
+// invalidInput is instance failing schema: cause is the validator's error or
+// a pre-check's refusal.
+func invalidInput(schema *cachedToolSchema, instance any, cause error) *inputInvalid {
 	return &inputInvalid{
 		cause:       cause,
 		instance:    instance,
-		resourceURL: strings.TrimSuffix(compiled.Location, "#"),
-		schema:      compiled,
+		resourceURL: strings.TrimSuffix(schema.compiled.Location, "#"),
+		schema:      schema,
 		text:        validationText(cause),
 	}
 }
@@ -182,12 +182,12 @@ func validationText(cause error) string {
 }
 
 // unencodableInput is arguments that could not be read for validation
-// against compiled, such as in-process ones json.Marshal refuses.
-func unencodableInput(compiled *jsonschema.Schema, err error) *inputInvalid {
+// against schema, such as in-process ones json.Marshal refuses.
+func unencodableInput(schema *cachedToolSchema, err error) *inputInvalid {
 	return &inputInvalid{
 		cause:       err,
-		resourceURL: strings.TrimSuffix(compiled.Location, "#"),
-		schema:      compiled,
+		resourceURL: strings.TrimSuffix(schema.compiled.Location, "#"),
+		schema:      schema,
 		text:        "invalid arguments: " + err.Error(),
 		unencodable: true,
 	}
@@ -229,7 +229,8 @@ type projection struct {
 	// maxValidationMessages, the least first; total counts them all.
 	kept  []violationSite
 	total int
-	// locations indexes the schema by location; draft4 builds it, at most once.
+	// locations indexes a schema holding draft 4 by location; draft4 builds it,
+	// at most once.
 	locations map[string]*jsonschema.Schema
 }
 
@@ -724,8 +725,11 @@ func (p *projection) keywordTokens(node *jsonschema.ValidationError) []string {
 // draft4 reports whether the schema at location is of draft 4, where an
 // exclusive bound is maximum's or minimum's and exclusiveMaximum a boolean.
 func (p *projection) draft4(location string) bool {
+	if !p.inv.schema.holdsDraft4() {
+		return false
+	}
 	if p.locations == nil {
-		p.locations = schemasByLocation(p.inv.schema)
+		p.locations = schemasByLocation(p.inv.schema.compiled)
 	}
 	s := p.locations[location]
 	return s != nil && s.DraftVersion == 4

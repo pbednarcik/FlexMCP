@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -49,6 +50,34 @@ type cachedToolSchema struct {
 	digest     string
 	compiled   *jsonschema.Schema
 	compileErr error
+	// draft4 keeps holdsDraft4's answer: one of the draft4 constants.
+	draft4 atomic.Int32
+}
+
+// What is known of whether a compiled schema holds a draft-4 schema.
+const (
+	draft4Unknown int32 = iota
+	draft4Absent
+	draft4Held
+)
+
+// holdsDraft4 reports whether e's schema, or any it applies or refers to, is
+// of draft 4. Only a failure that needs it asks, so a call that passes, and a
+// registration, pay nothing. The first to ask walks the schema and the answer
+// stays with e; failures that ask at the same moment each walk it, and agree.
+func (e *cachedToolSchema) holdsDraft4() bool {
+	if known := e.draft4.Load(); known != draft4Unknown {
+		return known == draft4Held
+	}
+	answer := draft4Absent
+	for _, s := range schemasByLocation(e.compiled) {
+		if s.DraftVersion == 4 {
+			answer = draft4Held
+			break
+		}
+	}
+	e.draft4.Store(answer)
+	return answer == draft4Held
 }
 
 // newCompiledSchemaCache returns a fresh empty schema cache.
@@ -177,7 +206,7 @@ func (v *inputSchemaValidator) validate(tool mcp.Tool, args callArguments) (bool
 	if entry.compileErr != nil {
 		return false, nil
 	}
-	return validateArguments(entry.compiled, args)
+	return validateArguments(entry, args)
 }
 
 // validateRegistered validates raw arguments against the schema registration
@@ -185,24 +214,25 @@ func (v *inputSchemaValidator) validate(tool mcp.Tool, args callArguments) (bool
 // without a kept schema falls back to validate, which reads the schema from
 // the tool, so a registration path that forgets the cache degrades to the
 // per-call read rather than switching validation off.
-func (v *inputSchemaValidator) validateRegistered(tool mcp.Tool, compiled *jsonschema.Schema, kept bool, args callArguments) (bool, error) {
+func (v *inputSchemaValidator) validateRegistered(tool mcp.Tool, schema *cachedToolSchema, kept bool, args callArguments) (bool, error) {
 	if !kept {
 		return v.validate(tool, args)
 	}
-	return validateArguments(compiled, args)
+	return validateArguments(schema, args)
 }
 
 // validateArguments validates raw arguments against a compiled input schema;
 // a nil schema validates nothing. The results are validate's; a failure is an
 // *inputInvalid, whose text is the default refusal's.
-func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, error) {
+func validateArguments(schema *cachedToolSchema, args callArguments) (bool, error) {
+	compiled := schema.schema()
 	if compiled == nil {
 		return false, nil
 	}
 
 	value, bounded, err := args.normalize()
 	if err != nil {
-		return true, unencodableInput(compiled, err)
+		return true, unencodableInput(schema, err)
 	}
 
 	validate := validateTree
@@ -210,7 +240,7 @@ func validateArguments(compiled *jsonschema.Schema, args callArguments) (bool, e
 		validate = validateRead
 	}
 	if err := validate(compiled, value); err != nil {
-		return true, invalidInput(compiled, value, err)
+		return true, invalidInput(schema, value, err)
 	}
 	return true, nil
 }
