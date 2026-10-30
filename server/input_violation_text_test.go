@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"math"
 	"math/big"
+	"os"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -335,6 +339,31 @@ var everyKind = []string{
 	"ExclusiveMaximum", "MultipleOf",
 }
 
+// TestEveryKindIsListed compares everyKind with what kind/kind.go declares, read
+// from its source: a kind a new version adds fails here until someone reads it,
+// since a text that grows with the request is one kindText has to write piece by
+// piece.
+func TestEveryKindIsListed(t *testing.T) {
+	pc := reflect.ValueOf((*kind.Enum).KeywordPath).Pointer()
+	file, _ := runtime.FuncForPC(pc).FileLine(pc)
+	if _, err := os.Stat(file); err != nil {
+		t.Skipf("no source for the kinds at %s", file)
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.SkipObjectResolution)
+	require.NoError(t, err)
+	var declared []string
+	for _, decl := range parsed.Decls {
+		if method, ok := decl.(*ast.FuncDecl); ok && method.Name.Name == "LocalizedString" {
+			receiver := method.Recv.List[0].Type
+			if pointer, ok := receiver.(*ast.StarExpr); ok {
+				receiver = pointer.X
+			}
+			declared = append(declared, receiver.(*ast.Ident).Name)
+		}
+	}
+	assert.ElementsMatch(t, everyKind, declared)
+}
+
 const (
 	draft7  = `"$schema":"http://json-schema.org/draft-07/schema#"`
 	draft4  = `"$schema":"http://json-schema.org/draft-04/schema#"`
@@ -378,6 +407,12 @@ func smallFailures() []struct{ name, schema, instance string } {
 		{"minLength", `{"minLength":3}`, `"ab"`},
 		{"maxLength", `{"maxLength":1}`, `"ab"`},
 		{"pattern", `{"pattern":"^a"}`, `"b'c\"d"`},
+		{"pattern, a backslash last", `{"pattern":"^a"}`, `"C:\\temp\\"`},
+		{"const, two backslashes last", `{"const":"a\\\\"}`, `"c"`},
+		{"enum, a backslash last", `{"enum":["a\\","b"]}`, `"c"`},
+		{"required, a backslash last", `{"required":["a\\"]}`, `{}`},
+		{"dependentRequired, a backslash last", `{"dependentRequired":{"a":["b\\"]}}`, `{"a":1}`},
+		{"additionalProperties, a backslash last", `{"additionalProperties":false}`, `{"odd\\":1}`},
 		{"contentEncoding", `{"contentEncoding":"base64"}`, `"!!!"`},
 		{"contentMediaType", `{"contentMediaType":"application/json"}`, `"{"`},
 		{"contentSchema", `{"contentMediaType":"application/json","contentSchema":{"type":"string"}}`, `"5"`},
@@ -399,6 +434,28 @@ func smallFailures() []struct{ name, schema, instance string } {
 	}
 }
 
+// wholeValidationLine is the line with its pointer and text built whole: the
+// reference the capped line's bytes are compared with.
+func wholeValidationLine(at []string, text string) string {
+	var pointer strings.Builder
+	for _, segment := range at {
+		pointer.WriteByte('/')
+		pointer.WriteString(strings.ReplaceAll(strings.ReplaceAll(segment, "~", "~0"), "/", "~1"))
+	}
+	location := pointer.String()
+	if location == "" {
+		location = "<root>"
+	}
+	msg := location + ": " + text
+	if room := max(maxValidationMessageBytes-len("...: ")-len(text), minShownLocation); len(msg) > maxValidationMessageBytes && len(location) > room {
+		msg = cutAtRune(location, room) + "...: " + text
+	}
+	if len(msg) > maxValidationMessageBytes {
+		msg = cutAtRune(msg, maxValidationMessageBytes) + "..."
+	}
+	return msg
+}
+
 // lineLocations are instance locations of every size the line's layout cares
 // about, built once.
 var lineLocations = sync.OnceValue(func() map[string][]string {
@@ -408,6 +465,9 @@ var lineLocations = sync.OnceValue(func() map[string][]string {
 		"escaped":     {"a/b", "~", "c"},
 		"empty":       {""},
 		"long key":    {strings.Repeat("k", 300)},
+		"line":        {strings.Repeat("k", maxValidationMessageBytes-1)},
+		"past a line": {strings.Repeat("k", maxValidationMessageBytes)},
+		"line tilde":  {strings.Repeat("~", maxValidationMessageBytes/2)},
 		"1 MiB tilde": {strings.Repeat("~", 1<<20)},
 		"64 KiB 中":    {strings.Repeat("中", 64<<10)},
 		"deep":        {"a", "b", "c", "d", "e", "f", strings.Repeat("g", 100)},
@@ -419,10 +479,11 @@ func TestCappedValidationLineMatchesValidationLine(t *testing.T) {
 	check := func(t *testing.T, at []string, k jsonschema.ErrorKind) {
 		t.Helper()
 		seen[kindName(k)] = true
-		want := validationLine(at, k.LocalizedString(validationMessages))
+		want := wholeValidationLine(at, k.LocalizedString(validationMessages))
 		got := cappedValidationLine(at, func(w *cappedWriter) { kindText(k, w) })
 		assert.LessOrEqual(t, len(got), maxValidationMessageBytes+len("..."))
 		assert.Equal(t, want, got, "%s", kindName(k))
+		assert.Equal(t, want, formatLeafMessage(&jsonschema.ValidationError{InstanceLocation: at, ErrorKind: k}), "%s, the default text", kindName(k))
 	}
 	for _, tc := range smallFailures() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -502,6 +563,16 @@ func TestCappedValidationLineMatchesValidationLine(t *testing.T) {
 	})
 }
 
+// A refusal before the validator ran lays out as the validator's failures do.
+func TestPreCheckLinesMatchValidationLine(t *testing.T) {
+	for name, at := range lineLocations() {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, wholeValidationLine(at, "number 1e-2000 is out of range"), (&numberOutOfRange{at: at, literal: "1e-2000"}).Error())
+			assert.Equal(t, wholeValidationLine(at, "value is nested deeper than 128 levels"), (&nestedTooDeep{at: at}).Error())
+		})
+	}
+}
+
 // TestCappedValidationLineLayout sweeps the lengths of the text and of the
 // place, in one-byte and three-byte characters, across the points where
 // validationLine changes how it cuts.
@@ -517,7 +588,7 @@ func TestCappedValidationLineLayout(t *testing.T) {
 					for _, keyLength := range keyLengths {
 						key := strings.Repeat(keyChar, keyLength)
 						at := []string{key}
-						want := validationLine(at, body)
+						want := wholeValidationLine(at, body)
 						got := cappedValidationLine(at, func(w *cappedWriter) { w.WriteString(body) })
 						if want != got {
 							require.Equal(t, want, got, "text %q x %d (+%q), key %q x %d", textChar, textLength, offset, keyChar, keyLength)
@@ -529,7 +600,7 @@ func TestCappedValidationLineLayout(t *testing.T) {
 	}
 	for _, textLength := range textLengths {
 		body := strings.Repeat("t", textLength)
-		assert.Equal(t, validationLine(nil, body), cappedValidationLine(nil, func(w *cappedWriter) { w.WriteString(body) }), "root, text %d", textLength)
+		assert.Equal(t, wholeValidationLine(nil, body), cappedValidationLine(nil, func(w *cappedWriter) { w.WriteString(body) }), "root, text %d", textLength)
 	}
 }
 
@@ -553,6 +624,40 @@ func TestCappedValidationLineBuildsNothingWhole(t *testing.T) {
 		}
 		lowest := min(measure(), measure(), measure())
 		assert.Less(t, lowest, uint64(16<<10), "%s, a 1 MiB place and a text of megabytes", kindName(k))
+	}
+}
+
+// The default text stays within its lines while it is built, whatever the
+// request and the schema hold.
+func TestDefaultTextBuildsNothingWhole(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	huge := strings.Repeat("~", 1<<20)
+	members := make([]string, 100000)
+	values := make([]string, 100000)
+	for i := range members {
+		members[i] = `"name` + strconv.Itoa(i) + `":1`
+		values[i] = `"value-` + strconv.Itoa(i) + `"`
+	}
+	bad := strings.TrimSuffix(strings.Repeat(`"x",`, 10), ",")
+	for name, cause := range map[string]error{
+		"a 1 MiB key, ten failures": invalidCall(t, `{"additionalProperties":{"items":{"type":"integer"}}}`, `{"`+huge+`":[`+bad+`]}`).cause,
+		"a 1 MiB string":            invalidCall(t, `{"properties":{"a":{"pattern":"^x$"}}}`, `{"a":"`+huge+`"}`).cause,
+		"100,000 extra names":       invalidCall(t, `{"additionalProperties":false}`, `{`+strings.Join(members, ",")+`}`).cause,
+		"an enum of 100,000":        invalidCall(t, `{"enum":[`+strings.Join(values, ",")+`]}`, `1`).cause,
+		"100,000 required names":    invalidCall(t, `{"required":[`+strings.Join(values, ",")+`]}`, `{}`).cause,
+		"a number at a 1 MiB key":   &numberOutOfRange{at: []string{huge}, literal: "1e-2000"},
+		"too deep at a 1 MiB key":   &nestedTooDeep{at: []string{huge}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			measure := func() uint64 {
+				before := allocatedBytes()
+				validationText(cause)
+				return allocatedBytes() - before
+			}
+			assert.Less(t, min(measure(), measure(), measure()), uint64(32<<10))
+		})
 	}
 }
 

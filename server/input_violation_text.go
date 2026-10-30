@@ -14,8 +14,9 @@ import (
 	"golang.org/x/text/message"
 )
 
-// The pieces of a violation the hook sees are written within fixed bounds:
-// each writer stops at its cap, so no piece is built whole and then cut.
+// The pieces of a violation the hook sees, and the default text's lines, are
+// written within fixed bounds: each writer stops at its cap, so no piece is
+// built whole and then cut.
 
 // maxBoundBits is the size, in bits, the numerator and the denominator of a
 // bound may have for boundText to render it exactly.
@@ -52,12 +53,25 @@ func (w *cappedWriter) WriteString(s string) bool {
 	}
 	room := w.limit - len(w.buf)
 	if len(s) <= room {
-		w.buf = append(w.buf, s...)
+		w.put(s)
 		return true
 	}
-	w.buf = append(w.buf, s[:cutBoundary(s, room)]...)
+	w.put(s[:cutBoundary(s, room)])
 	w.cut = true
 	return false
+}
+
+// put appends s. It reslices and copies, where append would make the compiler
+// move a buffer on the caller's stack to the heap.
+func (w *cappedWriter) put(s string) {
+	n := len(w.buf)
+	if n+len(s) > cap(w.buf) {
+		grown := make([]byte, n, max(2*cap(w.buf), n+len(s)))
+		copy(grown, w.buf)
+		w.buf = grown
+	}
+	w.buf = w.buf[:n+len(s)]
+	copy(w.buf[n:], s)
 }
 
 // String returns the text written so far.
@@ -93,47 +107,54 @@ func pastLine(w *cappedWriter) bool {
 	return w.cut
 }
 
-// cappedValidationLine renders one failure as validationLine does, without
-// building its pointer or its text whole. text writes the failure's reason
-// into the writer it is given, which holds a line's worth and a character.
-// The pointer is escaped and capped as it is written, to what the text leaves
-// it, and the bytes equal validationLine(at, wholeText) whenever the text
-// fits the writer or is longer than the line.
+// lineTextBytes is how much of a failure's reason a line needs: a line's worth
+// and a character. A longer reason lays out as this much of it does.
+const lineTextBytes = maxValidationMessageBytes + utf8.UTFMax
+
+// cappedValidationLine renders one failure as validationLine does, text
+// writing the failure's reason into the writer it is given, which holds
+// lineTextBytes.
 func cappedValidationLine(at []string, text func(w *cappedWriter)) string {
-	tw := newCappedWriter(maxValidationMessageBytes + utf8.UTFMax)
+	tw := newCappedWriter(lineTextBytes)
 	text(tw)
-	body := tw.buf
-	room := max(maxValidationMessageBytes-len("...: ")-len(body), minShownLocation)
-	var out []byte
+	return validationLine(at, tw.buf)
+}
+
+// validationLine renders one failure as `<path>: <text>` in at most
+// maxValidationMessageBytes and a "...": the path is cut to what the text
+// leaves it, then the line. The path, the RFC 6901 pointer of at or <root>, is
+// escaped and capped as it is written, so it is never built whole.
+func validationLine(at []string, text []byte) string {
+	var line [minShownLocation + len("...: ") + lineTextBytes]byte
+	room := max(maxValidationMessageBytes-len("...: ")-len(text), minShownLocation)
+	out := line[:0]
 	cutLocation := false
 	if len(at) == 0 {
 		out = append(out, "<root>"...)
 	} else {
 		// The pointer is whole when the line fits it, and otherwise cut to
 		// room: so it is written up to the longer of the two.
-		lw := newCappedWriter(max(maxValidationMessageBytes-len(": ")-len(body), room))
-		writePointer(lw, at)
-		location := lw.buf
-		if lw.Cut() || (len(location)+len(": ")+len(body) > maxValidationMessageBytes && len(location) > room) {
-			location = location[:cutBoundary(location, room)]
+		lw := cappedWriter{buf: out, limit: max(maxValidationMessageBytes-len(": ")-len(text), room)}
+		writePointer(&lw, at)
+		out = lw.buf
+		if lw.Cut() {
+			out = out[:cutBoundary(out, room)]
 			cutLocation = true
 		}
-		out = append(out, location...)
 	}
 	if cutLocation {
 		out = append(out, "...: "...)
 	} else {
 		out = append(out, ": "...)
 	}
-	out = append(out, body...)
+	out = append(out, text...)
 	if len(out) > maxValidationMessageBytes {
 		out = append(out[:cutBoundary(out, maxValidationMessageBytes)], "..."...)
 	}
 	return string(out)
 }
 
-// writePointer writes at as a JSON Pointer, as jsonPointer renders it, until
-// w is full.
+// writePointer writes at as a JSON Pointer until w is full.
 func writePointer(w *cappedWriter, at []string) {
 	for _, segment := range at {
 		if !w.WriteString("/") || !writeEscapedSegment(w, segment) {
@@ -142,9 +163,8 @@ func writePointer(w *cappedWriter, at []string) {
 	}
 }
 
-// writeEscapedSegment writes segment with its "~" and "/" escaped, as
-// escapeJSONPointer does, and stops with w. It looks at no more of segment
-// than w has room for.
+// writeEscapedSegment writes segment with its "~" and "/" escaped, and stops
+// with w. It looks at no more of segment than w has room for.
 func writeEscapedSegment(w *cappedWriter, segment string) bool {
 	start := 0
 	for i := 0; i < len(segment); i++ {
@@ -304,8 +324,9 @@ func writeJoinQuoted(w *cappedWriter, names []string) {
 
 // writeQuoted writes s as kind.go's quote does: in single quotes, with the
 // escapes strconv uses for a double-quoted string, except that a double quote
-// stands unescaped and a single quote is escaped. It looks at no more of s
-// than w has room for.
+// stands unescaped, a single quote is escaped and a final backslash is written
+// once, since quote reads it and the closing quote as an escaped quote. It
+// looks at no more of s than w has room for.
 func writeQuoted(w *cappedWriter, s string) bool {
 	if !w.WriteString("'") {
 		return false
@@ -320,6 +341,9 @@ func writeQuoted(w *cappedWriter, s string) bool {
 		} else {
 			piece = strconv.AppendQuoteRune(scratch[:0], r)
 			piece = piece[1 : len(piece)-1]
+			if r == '\\' && i+size == len(s) {
+				piece = piece[:1]
+			}
 		}
 		if !w.WriteString(string(piece)) {
 			return false

@@ -364,7 +364,7 @@ func (e *numberOutOfRange) Error() string {
 	if len(literal) > maxShownNumber {
 		literal = literal[:maxShownNumber] + "..."
 	}
-	return validationLine(e.at, "number "+literal+" is out of range")
+	return validationLine(e.at, []byte("number "+literal+" is out of range"))
 }
 
 // nestedTooDeep is an object or array in a call's arguments nested past
@@ -375,7 +375,7 @@ type nestedTooDeep struct {
 
 // Error renders the failure as formatLeafMessage renders the validator's.
 func (e *nestedTooDeep) Error() string {
-	return validationLine(e.at, "value is nested deeper than "+strconv.Itoa(maxArgumentDepth)+" levels")
+	return validationLine(e.at, []byte("value is nested deeper than "+strconv.Itoa(maxArgumentDepth)+" levels"))
 }
 
 // hasUnreadableNumber reports whether value, a validator tree, holds a number
@@ -1053,26 +1053,13 @@ func collectValidationMessages(verr *jsonschema.ValidationError, out *[]string) 
 // sentences, the form a model can act on.
 var validationMessages = message.NewPrinter(language.English)
 
+// formatLeafMessage is the line of one failure, its reason and its place
+// written on the stack within what a line shows, however long they are whole.
 func formatLeafMessage(verr *jsonschema.ValidationError) string {
-	return validationLine(verr.InstanceLocation, verr.ErrorKind.LocalizedString(validationMessages))
-}
-
-// validationLine renders one failure as `<path>: <text>` in at most
-// maxValidationMessageBytes and a "...": the path is cut to what the text
-// leaves it, then the line.
-func validationLine(at []string, text string) string {
-	location := jsonPointer(at)
-	if location == "" {
-		location = "<root>"
-	}
-	msg := location + ": " + text
-	if room := max(maxValidationMessageBytes-len("...: ")-len(text), minShownLocation); len(msg) > maxValidationMessageBytes && len(location) > room {
-		msg = cutAtRune(location, room) + "...: " + text
-	}
-	if len(msg) > maxValidationMessageBytes {
-		msg = cutAtRune(msg, maxValidationMessageBytes) + "..."
-	}
-	return msg
+	var text [lineTextBytes]byte
+	w := cappedWriter{buf: text[:0], limit: lineTextBytes}
+	kindText(verr.ErrorKind, &w)
+	return validationLine(verr.InstanceLocation, w.buf)
 }
 
 // cutAtRune returns s, longer than n bytes, cut to at most n at a rune's start.
@@ -1081,27 +1068,6 @@ func cutAtRune(s string, n int) string {
 		n--
 	}
 	return s[:n]
-}
-
-// jsonPointer renders a list of path segments as a RFC 6901 JSON Pointer.
-// Empty paths render as the empty string (the validator's convention for the
-// root document) which the caller substitutes for "<root>".
-func jsonPointer(segments []string) string {
-	if len(segments) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, seg := range segments {
-		b.WriteByte('/')
-		b.WriteString(escapeJSONPointer(seg))
-	}
-	return b.String()
-}
-
-func escapeJSONPointer(seg string) string {
-	seg = strings.ReplaceAll(seg, "~", "~0")
-	seg = strings.ReplaceAll(seg, "/", "~1")
-	return seg
 }
 
 // validationToolResult builds the SEP-1303 compliant tool execution error

@@ -840,7 +840,7 @@ func TestProjectionAncestorsAreNotCopiedPerNode(t *testing.T) {
 }
 
 // A failing call without a handler builds no violation list, only the
-// default refusal: at most 48 allocations for one failure and 104 for three.
+// default refusal: at most 47 allocations for one failure and 92 for three.
 func TestInputValidationFailingCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -855,8 +855,8 @@ func TestInputValidationFailingCallAllocations(t *testing.T) {
 		arguments string
 		ceiling   float64
 	}{
-		{`{"a":1}`, 48},
-		{`{"a":1,"b":5,"c":"y"}`, 104},
+		{`{"a":1}`, 47},
+		{`{"a":1,"b":5,"c":"y"}`, 92},
 	} {
 		msg := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"checked","arguments":` + tc.arguments + `}}`)
 		out, err := json.Marshal(srv.HandleMessage(ctx, msg))
