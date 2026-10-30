@@ -857,6 +857,35 @@ func handleValidatedTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 }
 ```
 
+### Reading Whole Numbers
+
+`GetInt` and `RequireInt` truncate a fraction and convert a string without saying so. `RequireWholeInt` refuses what they change, and says why:
+
+```go
+limit, err := req.RequireWholeInt("limit")
+if errors.Is(err, mcp.ErrArgumentFraction) {
+    return mcp.NewToolResultError("limit must be a whole number"), nil
+}
+if err != nil {
+    return mcp.NewToolResultError(err.Error()), nil
+}
+```
+
+The error is an `*mcp.ArgumentError` with the `Key`, the offending `Value` for a scalar (the client's literal when the getter judged that, cut at 64 bytes) and a `Reason`, which is one of these, tested with `errors.Is`:
+
+| Reason | Meaning |
+|---|---|
+| `ErrArgumentMissing` | the key is absent or `null` |
+| `ErrArgumentNotANumber` | a string (with text off), a boolean, an object, a NaN, a `json.Number` that is not a JSON number literal |
+| `ErrArgumentFraction` | the number has a fractional part |
+| `ErrArgumentOutOfRange` | the number is outside the range of `int` |
+| `ErrArgumentInexact` | a `float64` that stands for more than one whole number (below) |
+| `ErrArgumentBadText` | with text on, a string `strconv.Atoi` refuses for its syntax (a range error is `ErrArgumentOutOfRange`) |
+
+`1.0` and `1e2` are whole numbers and are accepted. `RequireWholeIntText` also accepts a string that `strconv.Atoi` accepts, so `"+5"` is 5 and `"007"` is 7, while `" 5"`, `"1e2"` and `""` are `ErrArgumentBadText`.
+
+When the request carries the client's own bytes, a whole number past 2^53 is read exactly from the client's literal, so `9007199254740993` returns itself and not its rounded `float64`. A server with input validation on and a before-call or before-any hook is the exception. Validation then checks a re-encoded copy of the hook's arguments, in which a `float64` of 2^53 or more in size stands for several literals the client could have sent: `9007199254740993` and `9007199254740992` are the same `float64`. The getter answers `ErrArgumentInexact` for such a value instead of guessing. A value past the range of `int` is still `ErrArgumentOutOfRange`, and an `int64` or `json.Number` a hook wrote is judged exactly.
+
 ### Available Helper Methods
 
 ```go
@@ -908,6 +937,73 @@ func validateURL(url string) error {
     return nil
 }
 ```
+
+### Answering Input Validation Failures
+
+With `WithInputSchemaValidation` on, a call whose arguments fail the tool's input schema is refused with an `isError` result that lists the failures in English. `WithInputValidationHandler` lets the server answer the failure itself, or let the call through. It turns input validation on, as `WithInputSchemaValidation` does; a nil handler answers with the default refusal, as if no handler were set.
+
+```go
+s := server.NewMCPServer("demo", "1.0.0",
+    server.WithToolCapabilities(true),
+    server.WithInputValidationHandler(func(ctx context.Context, tool mcp.Tool, args server.CallArguments, failure server.InputValidationFailure) (*mcp.CallToolResult, bool) {
+        var b strings.Builder
+        for _, v := range failure.Violations {
+            if v.PointerUnknown {
+                fmt.Fprintf(&b, "somewhere in the arguments: %s\n", v.Keyword)
+                continue
+            }
+            fmt.Fprintln(&b, v.Message)
+        }
+        if failure.Omitted > 0 {
+            fmt.Fprintf(&b, "and %d more", failure.Omitted)
+        }
+        return mcp.NewToolResultError(b.String()), true
+    }),
+)
+```
+
+The handler runs only on a failure, before the middleware, with the request's context. It may run concurrently, so it must be safe for concurrent use. It runs on the task path of an earlier protocol version too, before the task is created.
+
+#### Refuse or proceed
+
+The handler returns `(result, refuse)`.
+
+- With `refuse` true, the call is answered with `result` as an error result. FlexMCP sets `IsError`, whatever the handler set. A nil `result` answers FlexMCP's default text. The result is limited by `WithToolResultSizeLimit` like any other, and output validation does not run on it.
+- With `refuse` false, the call runs as if its arguments had passed, and `result` is ignored. The tool handler sees the arguments untouched. **The tool handler then takes on the duty to validate them**: the specification requires a server to validate tool inputs, and FlexMCP has stopped doing it for this call.
+- A `result` that sets `Task`, `InputRequests`, `RequestState` or `ResultType` is a fault, and so is a panic, which FlexMCP recovers whether or not `WithRecovery` is set. Both answer a JSON-RPC internal error (-32603) that the error hooks see. The detail stays on the server.
+
+A number that does not fit a `float64`, such as `1e400`, fails earlier, as invalid params, and the handler is not called.
+
+#### What the handler receives
+
+`CallArguments.Effective` is the object validation checked, which is the arguments after any before-call or before-any hook: `{}` for null or none, nil when the arguments are not an object. A number in it is a `float64` or a `json.Number`, depending on the call. It is a `json.Number` whenever such a hook is registered, for a request built in process, and when any number in the arguments has an exponent or more than 15 digits; otherwise it is a `float64`. The form can differ between calls of the same tool, so accept both, with a type switch, or read the facts from the violations. Treat `Effective` as read-only, because it can be the tool handler's own map. `Raw` is the client's bytes for context, and nil for a request built in process. It is the request's own slice, not a copy, so treat it as read-only too.
+
+The `InputValidationFailure` holds the `Violations`, each with a JSON Pointer into `Effective`, the failing `Keyword`, a `SchemaLocation` pointer into the tool's input schema, what the schema `Expected` and the arguments `Actual` held, and a `Message`, FlexMCP's English line for it, as the default refusal writes it. They are in a fixed order, so the same call gives the same list: by pointer, then schema location, then keyword.
+
+#### Budgets
+
+The list is built within fixed budgets, whatever the request or the schema holds:
+
+| Budget | Value |
+|---|---|
+| violations | 10 |
+| entries per list side | 20 |
+| each string | 256 bytes, cut on a UTF-8 boundary |
+| `Message` | 512 bytes plus `...` |
+| per violation | 2 KiB |
+| per list | 16 KiB and 512 nodes |
+
+`Omitted` counts the violations left out. `Cut` is set on the failure, or on a violation, when a budget shortened a field or dropped an entry.
+
+The budgets count the raw bytes of the field values, each string's bytes and each number's decimal digits; their JSON encoding may take more where characters are escaped.
+
+#### PointerUnknown
+
+For some `propertyNames` failures the validator reports no location that holds, and FlexMCP cannot derive one exactly, for example an object held in an array, or one reached through `if`, `dependentSchemas`, `patternProperties` or `additionalProperties`. The violation then has `PointerUnknown` set and an empty `Pointer`. An empty `Pointer` otherwise means the root, so test `PointerUnknown` first. Such violations come last in the list.
+
+#### Incomplete
+
+Some arguments are refused before the validator reads them: a number with more than 1,100 digits or a decimal scale past 1,100 (`numberOutOfRange`), nesting deeper than 128 levels (`nestedTooDeep`), or, for a request built in process, arguments that cannot be encoded (`unencodable`), such as a NaN a before-call hook wrote. The failure has one violation with that keyword, and `Incomplete` is set. Validation stopped early, so `Omitted` is then a lower bound; without `Incomplete` it is exact.
 
 ## Result Types
 
