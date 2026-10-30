@@ -236,6 +236,7 @@ type MCPServer struct {
 	activeTasks              int                          // Tasks whose handler may still be running
 	inflightCancels          sync.Map                     // inflightID -> *inflightRequest, the requests in flight
 	inputValidator           *inputSchemaValidator
+	inputValidationHandler   InputValidationHandler // Answers input validation failures; nil for the default refusal
 	outputValidator          *outputSchemaValidator
 	strictInputSchemaDefault bool
 	tracer                   tracing.Tracer

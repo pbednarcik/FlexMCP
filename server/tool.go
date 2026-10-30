@@ -647,14 +647,21 @@ func (s *MCPServer) handleToolCallChecked(
 	// Validate the incoming arguments against the tool's input schema, when
 	// schema validation has been enabled via WithInputSchemaValidation. A
 	// validation failure is returned as a SEP-1303 tool execution error so the
-	// model receives feedback in its context window and can self-correct.
+	// model receives feedback in its context window and can self-correct, or
+	// as the input validation handler answers it, which may let the call run.
 	if s.inputValidator != nil {
 		ran, err := s.inputValidator.validateRegistered(tool.Tool, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, tool.ArgumentsOnDemand))
 		if ran {
 			s.markRoundTrip(&request.Params)
 		}
 		if err != nil {
-			return s.limitToolResult(validationToolResult(err)), nil
+			refusal, proceed, fault := s.answerInvalidInput(ctx, tool.Tool, request, err)
+			if fault != nil {
+				return nil, internalError(id, fault)
+			}
+			if !proceed {
+				return s.limitToolResult(refusal), nil
+			}
 		}
 	}
 

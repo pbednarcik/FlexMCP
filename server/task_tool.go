@@ -86,11 +86,13 @@ func (s *MCPServer) handleToolCallAsTask(
 	}
 
 	// The arguments are validated as on the synchronous path (Tools.md row
-	// 23): ones that fail never reach the handler. The task is still
-	// created, so the client fetches the same tool error through
-	// tasks/result; it takes no concurrency slot, since no handler runs for
-	// it, so the limit does not hide the validation error.
-	var invalid error
+	// 23): ones that fail never reach the handler, unless the input
+	// validation handler lets them through. The task is still created, so
+	// the client fetches the same tool error through tasks/result; it takes
+	// no concurrency slot, since no handler runs for it, so the limit does
+	// not hide the validation error. A fault of the input validation
+	// handler creates no task.
+	var invalid *mcp.CallToolResult
 	if s.inputValidator != nil {
 		toolDef := regularTool.Tool
 		if hasTaskHandler {
@@ -101,7 +103,13 @@ func (s *MCPServer) handleToolCallAsTask(
 			s.markRoundTrip(&request.Params)
 		}
 		if err != nil {
-			invalid = err
+			refusal, proceed, fault := s.answerInvalidInput(ctx, toolDef, request, err)
+			if fault != nil {
+				return nil, internalError(id, fault)
+			}
+			if !proceed {
+				invalid = refusal
+			}
 		}
 	}
 
@@ -127,7 +135,7 @@ func (s *MCPServer) handleToolCallAsTask(
 	if invalid != nil {
 		// No handler runs for this task: it is completed here. A hook may
 		// have cancelled it meanwhile, which completeTask leaves as it is.
-		s.completeTask(entry, s.limitToolResult(validationToolResult(invalid)), nil)
+		s.completeTask(entry, s.limitToolResult(invalid), nil)
 		s.tasksMu.RLock()
 		taskCopy := entry.task
 		s.tasksMu.RUnlock()
