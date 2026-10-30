@@ -94,13 +94,20 @@ func (s *MCPServer) handleMessageRead(
 	}
 
 	if baseMessage.ID == nil {
+		// A cancellation needs only its exact id, which the decode below would
+		// read as a float64 and refuse when it is past that range.
+		if method.Name == string(mcp.MethodNotificationCancelled) {
+			s.cancelInflight(ctx, message)
+			return nil
+		}
+
 		// A notification is never answered, not even one whose params cannot
 		// be read: it is dropped.
 		var notification mcp.JSONRPCNotification
 		if err := json.Unmarshal(message, &notification); err != nil {
 			return nil
 		}
-		s.handleNotification(ctx, notification, message)
+		s.handleNotification(ctx, notification)
 		return nil
 	}
 

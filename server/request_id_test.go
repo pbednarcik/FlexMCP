@@ -28,6 +28,9 @@ const (
 	idTwoTo63     = "9223372036854775808"
 )
 
+// idPastAFloat64 is an integer past a float64's range: 2 times 10^308.
+var idPastAFloat64 = "2" + strings.Repeat("0", 308)
+
 // A response carries its request's id exactly as sent (JSON-RPC 2.0, section
 // 5), however large an integer it is.
 func TestHandleMessage_EchoesALargeIntegerIDExactly(t *testing.T) {
@@ -81,6 +84,60 @@ func TestCancelledNotificationTellsLargeIDsApart(t *testing.T) {
 			t.Fatal("the request did not end after its own cancel")
 		}
 	})
+}
+
+// A request whose id a float64 cannot hold at all is cancelled by that id.
+func TestCancelledNotificationCancelsAnIDPastAFloat64(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, started := blockingToolServer(t)
+		ctx := srv.WithContext(t.Context(), cancelTestSession("cancel-session"))
+		responses := make(chan mcp.JSONRPCMessage, 1)
+		go func() {
+			responses <- srv.HandleMessage(ctx, json.RawMessage(`{"jsonrpc":"2.0","id":`+idPastAFloat64+`,"method":"tools/call","params":{"name":"block"}}`))
+		}()
+		<-started
+
+		require.Nil(t, srv.HandleMessage(ctx, json.RawMessage(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":`+idPastAFloat64+`}}`)))
+		synctest.Wait()
+		select {
+		case <-responses:
+		default:
+			t.Fatal("the request did not end after its own cancel")
+		}
+	})
+}
+
+// Over stdio too, the handler of a request whose id a float64 cannot hold ends
+// on its cancel, not only its response.
+func TestStdioServer_CancelsAnIDPastAFloat64(t *testing.T) {
+	started, ended := make(chan struct{}), make(chan struct{})
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+	mcpServer.AddTool(mcp.NewTool("hold"), func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		close(started)
+		<-ctx.Done()
+		close(ended)
+		return nil, ctx.Err()
+	})
+	stdioServer := NewStdioServer(mcpServer)
+	stdioServer.SetErrorLogger(log.New(io.Discard, "", 0))
+
+	stdin, input := io.Pipe()
+	listened := make(chan error, 1)
+	go func() { listened <- stdioServer.Listen(t.Context(), stdin, io.Discard) }()
+
+	_, err := fmt.Fprintln(input, `{"jsonrpc":"2.0","id":`+idPastAFloat64+`,"method":"tools/call","params":{"name":"hold"}}`)
+	require.NoError(t, err)
+	<-started
+	_, err = fmt.Fprintln(input, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":`+idPastAFloat64+`}}`)
+	require.NoError(t, err)
+
+	select {
+	case <-ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the cancel did not reach the handler")
+	}
+	require.NoError(t, input.Close())
+	require.NoError(t, <-listened)
 }
 
 // The stdio transport keys its replies and cancellations by the exact id: a

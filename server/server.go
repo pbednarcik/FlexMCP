@@ -624,30 +624,27 @@ func (s *MCPServer) handleSetLevel(
 	}
 }
 
-func (s *MCPServer) handleNotification(
-	ctx context.Context,
-	notification mcp.JSONRPCNotification,
-	message json.RawMessage,
-) mcp.JSONRPCMessage {
-	// Handle cancellation notifications per MCP spec. The request is named by
-	// its exact id, read from message as the request's own key was.
-	if notification.Method == string(mcp.MethodNotificationCancelled) {
-		var cancelled struct {
-			Params struct {
-				RequestID json.RawMessage `json:"requestId"`
-			} `json:"params"`
-		}
-		if json.Unmarshal(message, &cancelled) == nil && len(cancelled.Params.RequestID) > 0 {
-			id, valid := requestIDValue(cancelled.Params.RequestID)
-			if key, ok := inflightKey(ctx, id); valid && ok {
-				if request, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
-					request.(*inflightRequest).fire()
-				}
-			}
-		}
-		return nil
+// cancelInflight handles a notifications/cancelled message per the MCP spec.
+// The request is named by its exact id, read from message as the request's
+// own key was.
+func (s *MCPServer) cancelInflight(ctx context.Context, message json.RawMessage) {
+	var cancelled struct {
+		Params struct {
+			RequestID json.RawMessage `json:"requestId"`
+		} `json:"params"`
 	}
+	if json.Unmarshal(message, &cancelled) != nil || len(cancelled.Params.RequestID) == 0 {
+		return
+	}
+	id, valid := requestIDValue(cancelled.Params.RequestID)
+	if key, ok := inflightKey(ctx, id); valid && ok {
+		if request, loaded := s.inflightCancels.LoadAndDelete(key); loaded {
+			request.(*inflightRequest).fire()
+		}
+	}
+}
 
+func (s *MCPServer) handleNotification(ctx context.Context, notification mcp.JSONRPCNotification) {
 	s.notificationHandlersMu.RLock()
 	handler, ok := s.notificationHandlers[notification.Method]
 	s.notificationHandlersMu.RUnlock()
@@ -655,5 +652,4 @@ func (s *MCPServer) handleNotification(
 	if ok {
 		handler(ctx, notification)
 	}
-	return nil
 }
