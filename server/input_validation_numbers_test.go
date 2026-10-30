@@ -69,7 +69,7 @@ func TestScanArgumentsReadsNumbersExactly(t *testing.T) {
 		if !json.Valid([]byte(raw)) {
 			t.Fatalf("%s is not JSON", raw)
 		}
-		exact, _ := scanArguments([]byte(raw))
+		exact, _ := scanArguments([]byte(raw), 0)
 		assert.Equal(t, want, exact, raw)
 	}
 }
@@ -77,7 +77,7 @@ func TestScanArgumentsReadsNumbersExactly(t *testing.T) {
 // The scan allocates nothing.
 func TestScanArgumentsAllocations(t *testing.T) {
 	raw := []byte(`{"a":[1,2.5,{"b":"c\"d"}],"n":123456789012345}`)
-	assert.Zero(t, testing.AllocsPerRun(100, func() { scanArguments(raw) }))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { scanArguments(raw, 0) }))
 }
 
 // numbersSchema puts kw on the number n, on the items of the array a, and on
@@ -194,7 +194,7 @@ func checkNumbers(t testing.TB, compiled *jsonschema.Schema, args string, tally 
 	if tally == nil {
 		return
 	}
-	if exact, _ := scanArguments(p.RawArguments); !exact {
+	if exact, _ := scanArguments(p.RawArguments, 0); !exact {
 		tally.sent++
 		err := compiled.Validate(p.Arguments)
 		if err != nil {

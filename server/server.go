@@ -236,6 +236,7 @@ type MCPServer struct {
 	activeTasks              int                          // Tasks whose handler may still be running
 	inflightCancels          sync.Map                     // inflightID -> *inflightRequest, the requests in flight
 	inputValidator           *inputSchemaValidator
+	maxValidatedValues       int
 	inputValidationHandler   InputValidationHandler // Answers input validation failures; nil for the default refusal
 	outputValidator          *outputSchemaValidator
 	strictInputSchemaDefault bool
@@ -351,12 +352,16 @@ func NewMCPServer(
 			tasks:       nil,
 			completions: nil,
 		},
-		tracer:     tracing.NoopTracer(),
-		propagator: tracing.NoopPropagator(),
+		tracer:             tracing.NoopTracer(),
+		propagator:         tracing.NoopPropagator(),
+		maxValidatedValues: DefaultMaxValidatedValues,
 	}
 
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.inputValidator != nil {
+		s.inputValidator.maxValues = s.maxValidatedValues
 	}
 	// The identity is final once the options ran. Boxed here, every modern
 	// result carries it without boxing its own copy: a boxed struct is copied

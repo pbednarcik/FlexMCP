@@ -246,12 +246,33 @@ func WithRecovery() ServerOption {
 // annotation: the schema is compiled once there and kept, so no call pays
 // for it, and no tool is served unvalidated by mistake.
 //
+// A call past the bounds on its arguments is refused before the schema is
+// checked; WithMaxValidatedValues sets one of them.
+//
 // [SEP-1303]: https://modelcontextprotocol.io/seps/1303-input-validation-errors-as-tool-execution-errors
 func WithInputSchemaValidation() ServerOption {
 	return func(s *MCPServer) {
 		if s.inputValidator == nil {
 			s.inputValidator = newInputSchemaValidator()
 		}
+	}
+}
+
+// DefaultMaxValidatedValues is the cap on a call's values when
+// WithMaxValidatedValues is not given.
+const DefaultMaxValidatedValues = 100_000
+
+// WithMaxValidatedValues refuses, before the schema is checked, a call whose
+// arguments hold more than n values, as a tool execution error whose violation
+// has the Keyword "tooManyValues" and the Expected.Limit n. A value is an item
+// of an array or a member of an object, an empty one counts as one, and a
+// string is one value at any length. The default is
+// DefaultMaxValidatedValues; zero or less removes the cap. The option does
+// nothing without input validation, and its order among the options doesn't
+// matter.
+func WithMaxValidatedValues(n int) ServerOption {
+	return func(s *MCPServer) {
+		s.maxValidatedValues = n
 	}
 }
 

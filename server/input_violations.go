@@ -52,7 +52,8 @@ type InputViolation struct {
 	// or "maximum", "false" for a false schema, "unevaluatedProperties" for a
 	// member its false refused, "refCycle" or "invalidJsonValue" for a failure
 	// of the validator itself, or, for arguments refused before the validator
-	// read them, "numberOutOfRange", "nestedTooDeep" or "unencodable".
+	// read them, "numberOutOfRange", "nestedTooDeep", "tooManyValues" or
+	// "unencodable".
 	Keyword string
 	// SchemaLocation is an RFC 6901 JSON Pointer into the tool's input schema
 	// to the failing keyword, such as "/properties/x/anyOf/1/type"; under a
@@ -85,7 +86,8 @@ type ViolationExpected struct {
 	Values []string
 	// Bound is the numeric bound a number failed.
 	Bound *ViolationBound
-	// Limit is the count the schema sets, such as minLength's or minItems'.
+	// Limit is the count the schema sets, such as minLength's or minItems', or
+	// for tooManyValues the server's cap.
 	Limit *int
 	// Pattern is the regular expression a string failed.
 	Pattern string
@@ -220,6 +222,13 @@ func projectFailure(inv *inputInvalid) InputValidationFailure {
 		})
 		return p.preCheck(f, func(w *violationWriter) {
 			w.str(&w.v.Actual.Kind, instanceKind(valueAt(inv.instance, tooDeep.at)))
+		})
+	}
+	if tooMany, ok := errors.AsType[*tooManyValues](inv.cause); ok {
+		f := fixedAt(nil, "tooManyValues", func(w *cappedWriter) { w.WriteString(tooMany.reason()) })
+		return p.preCheck(f, func(w *violationWriter) {
+			w.number(&w.v.Expected.Limit, tooMany.limit)
+			w.str(&w.v.Actual.Kind, instanceKind(inv.instance))
 		})
 	}
 	if verr, ok := errors.AsType[*jsonschema.ValidationError](inv.cause); ok {

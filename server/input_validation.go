@@ -142,6 +142,9 @@ func (e *cachedToolSchema) schema() *jsonschema.Schema {
 // cost of JSON Schema compilation across calls.
 type inputSchemaValidator struct {
 	*compiledSchemaCache
+	// maxValues is the cap on the values of a call's arguments, zero or less
+	// for none. See WithMaxValidatedValues.
+	maxValues int
 }
 
 // newInputSchemaValidator returns a fresh validator with an empty cache.
@@ -206,6 +209,7 @@ func (v *inputSchemaValidator) validate(tool mcp.Tool, args callArguments) (bool
 	if entry.compileErr != nil {
 		return false, nil
 	}
+	args.maxValues = v.maxValues
 	return validateArguments(entry, args)
 }
 
@@ -218,6 +222,7 @@ func (v *inputSchemaValidator) validateRegistered(tool mcp.Tool, schema *cachedT
 	if !kept {
 		return v.validate(tool, args)
 	}
+	args.maxValues = v.maxValues
 	return validateArguments(schema, args)
 }
 
@@ -233,6 +238,9 @@ func validateArguments(schema *cachedToolSchema, args callArguments) (bool, erro
 	value, bounded, err := args.normalize()
 	if err != nil {
 		return true, unencodableInput(schema, err)
+	}
+	if !bounded && args.pastCap(value) {
+		return true, invalidInput(schema, value, &tooManyValues{limit: args.maxValues})
 	}
 
 	validate := validateTree
@@ -378,6 +386,21 @@ func (e *nestedTooDeep) Error() string {
 	return validationLine(e.at, []byte("value is nested deeper than "+strconv.Itoa(maxArgumentDepth)+" levels"))
 }
 
+// tooManyValues is a call's arguments holding more values than limit.
+type tooManyValues struct {
+	limit int
+}
+
+// reason is the failure's reason, without its place.
+func (e *tooManyValues) reason() string {
+	return "arguments hold more than " + strconv.Itoa(e.limit) + " values"
+}
+
+// Error renders the failure as formatLeafMessage renders the validator's.
+func (e *tooManyValues) Error() string {
+	return validationLine(nil, []byte(e.reason()))
+}
+
 // hasUnreadableNumber reports whether value, a validator tree, holds a number
 // big.Rat cannot read: findNumberOutOfRange's answer, without the order and
 // the place it finds one in.
@@ -488,6 +511,38 @@ func numberPastBounds(literal string) bool {
 	}
 	scale := exponent - fraction
 	return scale > maxNumberScale || scale < -maxNumberScale
+}
+
+// valuesPast takes value's values out of *room and reports whether they ran
+// past it, stopping at the first past it. An array counts its items, an object
+// its members, and an empty one counts as one. scanArguments counts each
+// opening bracket and comma of the text, the same number but for a repeated
+// member name, which the text holds and the tree doesn't. So the text never
+// counts less: its scan clears a call, and only this walk refuses one.
+func valuesPast(value any, room *int) bool {
+	switch v := value.(type) {
+	case []any:
+		*room -= max(len(v), 1)
+		if *room < 0 {
+			return true
+		}
+		for _, item := range v {
+			if valuesPast(item, room) {
+				return true
+			}
+		}
+	case map[string]any:
+		*room -= max(len(v), 1)
+		if *room < 0 {
+			return true
+		}
+		for _, member := range v {
+			if valuesPast(member, room) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // argumentsPastBounds reports whether value, a call's arguments as the
@@ -812,26 +867,42 @@ func compileRecovering(c *jsonschema.Compiler, resourceURL string) (recovered *r
 type callArguments struct {
 	raw     json.RawMessage
 	decoded any
+	// maxValues is the validator's cap on the arguments' values.
+	maxValues int
 }
 
 // normalize returns the arguments in the form the JSON Schema validator
 // reads, as normalizeArgumentsForValidation does for either form. Arguments
 // sent as raw are read as sent, numbers exact: from their decode when every
 // number in them reads the same there (scanArguments), else from a
-// second decode that keeps each number's literal. bounded reports that the
-// scan of raw found nothing argumentsPastBounds would.
+// second decode that keeps each number's literal. Only a call past a.maxValues
+// stays in its decode, its numbers rounded. bounded reports that the scan of
+// raw found nothing argumentsPastBounds would, and that the values are within
+// a.maxValues.
 func (a callArguments) normalize() (value any, bounded bool, err error) {
 	if a.raw == nil {
 		value, err = normalizeArgumentsForValidation(a.decoded)
 		return value, false, err
 	}
 	if a.decoded != nil {
-		if exact, shallow := scanArguments(a.raw); exact {
-			return a.decoded, shallow, nil
+		if exact, within := scanArguments(a.raw, a.maxValues); exact {
+			return a.decoded, within, nil
+		}
+		// A call past the cap is refused whatever its numbers read as, so it
+		// never costs the second decode.
+		if a.pastCap(a.decoded) {
+			return a.decoded, false, nil
 		}
 	}
 	value, err = normalizeRawArguments(a.raw)
 	return value, false, err
+}
+
+// pastCap reports whether value, these arguments as read, holds more values
+// than a.maxValues allows.
+func (a callArguments) pastCap(value any) bool {
+	room := a.maxValues
+	return room > 0 && valuesPast(value, &room)
 }
 
 // argumentsToValidate is what input validation reads of a call: the arguments
@@ -921,8 +992,10 @@ func normalizeRawArguments(raw json.RawMessage) (any, error) {
 // scanArguments reports whether the validator reads every number in raw, a
 // JSON text, the same from the float64 decoding raw into an any makes of it as
 // from its literal (exact), and whether no object or array in it nests past
-// maxArgumentDepth (shallow). The validator reads a float64 through big.Rat as
-// the shortest decimal that rounds to it: 2^53+1 would be read as 2^53.
+// maxArgumentDepth and its text counts at most maxValues values as valuesPast
+// describes, zero or less for any number of them (within). The validator reads
+// a float64 through big.Rat as the shortest decimal that rounds to it: 2^53+1
+// would be read as 2^53.
 //
 // The rule is on the literal of each number outside a string: it has no
 // exponent ('e' or 'E') and at most 15 digits. Every digit counts: the
@@ -936,11 +1009,14 @@ func normalizeRawArguments(raw json.RawMessage) (any, error) {
 // decimal of the float64 nearest it, up to trailing zeros: 10^15 < 2^52, so no
 // two such decimals round to the same float64. A minus zero reads as zero
 // either way. The scan reads raw once and allocates nothing.
-func scanArguments(raw []byte) (exact, shallow bool) {
-	depth, deepest := 0, 0
+func scanArguments(raw []byte, maxValues int) (exact, within bool) {
+	depth, deepest, values := 0, 0, 0
 	for i := 0; i < len(raw); i++ {
 		switch c := raw[i]; {
+		case c == ',':
+			values++
 		case c == '[' || c == '{':
+			values++
 			depth++
 			deepest = max(deepest, depth)
 		case c == ']' || c == '}':
@@ -972,7 +1048,7 @@ func scanArguments(raw []byte) (exact, shallow bool) {
 			i--
 		}
 	}
-	return true, deepest <= maxArgumentDepth
+	return true, deepest <= maxArgumentDepth && (maxValues <= 0 || values <= maxValues)
 }
 
 // A failing call's feedback is bounded: the first maxValidationMessages
@@ -1010,6 +1086,9 @@ func formatValidationText(err error) (text string, known bool) {
 	}
 	if tooDeep, ok := errors.AsType[*nestedTooDeep](err); ok {
 		return validationFailed + tooDeep.Error(), true
+	}
+	if tooMany, ok := errors.AsType[*tooManyValues](err); ok {
+		return validationFailed + tooMany.Error(), true
 	}
 	var verr *jsonschema.ValidationError
 	if !errors.As(err, &verr) {

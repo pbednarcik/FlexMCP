@@ -24,8 +24,9 @@ type InputValidationHandler func(ctx context.Context, tool mcp.Tool, args CallAr
 type CallArguments struct {
 	// Effective is the object validation checked, after any before-call or
 	// before-any hook: {} for null or none, nil for a non-object. A number is
-	// a float64, or a json.Number under such a hook, in process, or when any
-	// number sent has an exponent or over 15 digits: accept both.
+	// a float64, or a json.Number under such a hook, in process, or, within
+	// WithMaxValidatedValues, when any number sent has an exponent or over 15
+	// digits: accept both.
 	Effective map[string]any
 	// Raw is the client's bytes, shared with the request; nil in process.
 	Raw json.RawMessage
