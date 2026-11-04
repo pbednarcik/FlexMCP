@@ -90,8 +90,8 @@ func (r *HTTPRequest) asHTTPRequest() *http.Request {
 // Implementations whose underlying transport buffers the response (and so
 // cannot deliver SSE streams) MUST return false from CanStream and SHOULD
 // make Flush a no-op. The server uses CanStream to decide whether to
-// upgrade a POST response to text/event-stream and whether GET (which
-// requires streaming) is supported at all.
+// upgrade a POST response to text/event-stream and whether it serves a
+// subscriptions/listen, which is a stream, at all.
 type HTTPResponseWriter interface {
 	// Header returns the response header map. The same semantics as
 	// http.ResponseWriter.Header apply: changes after WriteHeader has been
@@ -110,7 +110,7 @@ type HTTPResponseWriter interface {
 	Flush()
 	// CanStream reports whether Flush actually delivers bytes to the client
 	// immediately. When false, the server will not upgrade POST responses to
-	// SSE and will reject GET requests with 405 Method Not Allowed.
+	// SSE, and refuses a subscriptions/listen with 500 and an internal error.
 	CanStream() bool
 }
 
@@ -127,7 +127,9 @@ func newHTTPResponseWriterAdapter(w http.ResponseWriter) *httpResponseWriterAdap
 }
 
 // canFlush reports whether FlushError reaches a layer of w that flushes: at
-// each layer FlushError or Flush, else the layer beneath through Unwrap.
+// each layer FlushError or Flush, else the layer beneath through Unwrap. A
+// wrapper that offers Unwrap is taken to pass a flush through, as
+// http.ResponseController takes it.
 func canFlush(w http.ResponseWriter) bool {
 	for {
 		switch t := w.(type) {
@@ -228,7 +230,8 @@ func writeHTTPError(w HTTPResponseWriter, msg string, code int) {
 //   - GET, HEAD and DELETE answer 405 Method Not Allowed in either era, as
 //     through ServeHTTP. When w.CanStream() returns false, POST responses
 //     that would otherwise upgrade to text/event-stream stay as a single
-//     buffered application/json reply.
+//     buffered application/json reply, and a subscriptions/listen is refused
+//     with 500 and an internal error.
 func (s *StreamableHTTPServer) Handle(w HTTPResponseWriter, r *HTTPRequest) {
 	if r == nil {
 		writeHTTPError(w, "nil request", http.StatusBadRequest)

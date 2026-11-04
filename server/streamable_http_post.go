@@ -139,11 +139,9 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		// the notifications the server broadcasts, such as
 		// notifications/tools/list_changed.
 		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil
-		// The stream cannot reach the client through a writer that cannot
-		// stream: refuse it now, as GET is refused, rather than hold the
-		// request open with nothing ever written to it. The fault is the
-		// deployment's, not the request's, so it goes out as 500 rather than
-		// the 200 httpStatusForJSONRPCError gives an internal error.
+		// A writer that cannot stream would hold the listen open with nothing
+		// ever written: refuse it now, with 500, since the fault is the
+		// deployment's (httpStatusForJSONRPCError would give 200).
 		if listening && !w.CanStream() {
 			s.logger.Error("subscriptions/listen refused: the response writer cannot stream")
 			s.writeJSONRPCErrorStatus(w, requestID, mcp.INTERNAL_ERROR,

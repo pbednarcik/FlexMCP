@@ -154,9 +154,7 @@ func (s *MCPServer) handleTaskResult(
 	cancelled := entry.task.Status == mcp.TaskStatusCancelled
 	s.tasksMu.RUnlock()
 
-	// A cancelled task answers what its cancelled request would have: an
-	// error, whichever way the cancel came, never a success with nothing in
-	// it.
+	// A cancelled task answers an error, whichever way the cancel came.
 	if cancelled {
 		return nil, &requestError{id: id, code: mcp.REQUEST_INTERRUPTED, err: errTaskCancelled}
 	}
