@@ -104,6 +104,9 @@ func (s *MCPServer) handleListTasks(
 	return &result, nil
 }
 
+// errTaskCancelled is the error tasks/result answers for a cancelled task.
+var errTaskCancelled = errors.New("task was cancelled")
+
 // handleTaskResult handles tasks/result requests to get task results.
 func (s *MCPServer) handleTaskResult(
 	ctx context.Context,
@@ -148,7 +151,15 @@ func (s *MCPServer) handleTaskResult(
 	storedResult := entry.result
 	resultErr := entry.resultErr
 	taskID := entry.task.TaskId
+	cancelled := entry.task.Status == mcp.TaskStatusCancelled
 	s.tasksMu.RUnlock()
+
+	// A cancelled task answers what its cancelled request would have: an
+	// error, whichever way the cancel came, never a success with nothing in
+	// it.
+	if cancelled {
+		return nil, &requestError{id: id, code: mcp.REQUEST_INTERRUPTED, err: errTaskCancelled}
+	}
 
 	// Return error if task failed
 	if resultErr != nil {
