@@ -87,7 +87,10 @@ type ProtectedResourceMetadataConfig struct {
 //
 // For a path-qualified resource (e.g. "https://mcp.example.com/mcp") the
 // resource path is appended after the well-known segment, producing
-// "/.well-known/oauth-protected-resource/mcp".
+// "/.well-known/oauth-protected-resource/mcp". The path keeps the resource's
+// escapes, so "https://mcp.example.com/a%2Fb" gives
+// "/.well-known/oauth-protected-resource/a%2Fb": a valid http.ServeMux
+// pattern whose escaped slash stays inside its segment.
 //
 // If resource is empty, cannot be parsed as a URL, or is not an absolute URI
 // (i.e. lacks a scheme and host), the bare well-known path is returned. RFC
@@ -102,11 +105,43 @@ func ProtectedResourceMetadataPath(resource string) string {
 	if err != nil || !u.IsAbs() || u.Host == "" {
 		return WellKnownProtectedResourcePath
 	}
-	p := strings.Trim(u.Path, "/")
+	p := strings.Trim(u.EscapedPath(), "/")
 	if p == "" {
 		return WellKnownProtectedResourcePath
 	}
 	return path.Join(WellKnownProtectedResourcePath, p)
+}
+
+// metadataPathMatches reports whether the escaped request path names the
+// metadata path, comparing them segment by segment as http.ServeMux does: each
+// segment unescaped, so an escape's case does not matter and an escaped slash
+// stays inside its segment. A path with no escapes is compared without
+// allocating.
+func metadataPathMatches(requestPath, metadataPath string) bool {
+	if requestPath == metadataPath {
+		return true
+	}
+	for {
+		requestSegment, requestRest, requestMore := strings.Cut(requestPath, "/")
+		metadataSegment, metadataRest, metadataMore := strings.Cut(metadataPath, "/")
+		if requestSegment != metadataSegment {
+			if !strings.Contains(requestSegment, "%") && !strings.Contains(metadataSegment, "%") {
+				return false
+			}
+			requestSegment, requestErr := url.PathUnescape(requestSegment)
+			metadataSegment, metadataErr := url.PathUnescape(metadataSegment)
+			if requestErr != nil || metadataErr != nil || requestSegment != metadataSegment {
+				return false
+			}
+		}
+		if requestMore != metadataMore {
+			return false
+		}
+		if !requestMore {
+			return true
+		}
+		requestPath, metadataPath = requestRest, metadataRest
+	}
 }
 
 // NewProtectedResourceMetadataHandler returns an http.Handler that serves

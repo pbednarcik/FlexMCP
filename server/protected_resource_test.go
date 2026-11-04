@@ -70,6 +70,36 @@ func TestProtectedResourceMetadataPath(t *testing.T) {
 			resource: "/mcp",
 			want:     "/.well-known/oauth-protected-resource",
 		},
+		{
+			name:     "escaped space keeps its escape",
+			resource: "https://mcp.example.com/tenant/acme%20corp/mcp",
+			want:     "/.well-known/oauth-protected-resource/tenant/acme%20corp/mcp",
+		},
+		{
+			name:     "escaped UTF-8 keeps its escapes",
+			resource: "https://mcp.example.com/tenant/%E4%B8%AD%E6%96%87/mcp",
+			want:     "/.well-known/oauth-protected-resource/tenant/%E4%B8%AD%E6%96%87/mcp",
+		},
+		{
+			name:     "unescaped UTF-8 is escaped",
+			resource: "https://mcp.example.com/tenant/中文/mcp",
+			want:     "/.well-known/oauth-protected-resource/tenant/%E4%B8%AD%E6%96%87/mcp",
+		},
+		{
+			name:     "escaped percent keeps its escape",
+			resource: "https://mcp.example.com/tenant/acme%25/mcp",
+			want:     "/.well-known/oauth-protected-resource/tenant/acme%25/mcp",
+		},
+		{
+			name:     "escaped slash stays inside its segment",
+			resource: "https://mcp.example.com/tenant/acme%2Fcorp/mcp",
+			want:     "/.well-known/oauth-protected-resource/tenant/acme%2Fcorp/mcp",
+		},
+		{
+			name:     "escaped braces stay escaped",
+			resource: "https://mcp.example.com/tenant/%7Bteam%7D/mcp",
+			want:     "/.well-known/oauth-protected-resource/tenant/%7Bteam%7D/mcp",
+		},
 	}
 
 	for _, tt := range tests {
@@ -294,4 +324,67 @@ func TestStreamableHTTPServer_WithoutProtectedResourceMetadata_NoMetadataServed(
 	// We just need to ensure we are NOT serving PRM JSON when not configured.
 	assert.NotEqual(t, "application/json", resp.Header.Get("Content-Type"),
 		"well-known endpoint must not return PRM JSON when not configured")
+}
+
+// The derived path is a ServeMux pattern for the route Start registers and
+// for a caller's own mux: an escaped space must not split it into a method and
+// a path, and escaped braces must stay literal rather than become a wildcard.
+func TestProtectedResourceMetadataPath_IsAServeMuxPattern(t *testing.T) {
+	const prefix = "/.well-known/oauth-protected-resource"
+	tests := []struct {
+		name     string
+		resource string
+		served   string
+		notFound string
+	}{
+		{
+			name:     "escaped space",
+			resource: "https://mcp.example.com/tenant/acme%20corp/mcp",
+			served:   prefix + "/tenant/acme%20corp/mcp",
+			notFound: prefix + "/tenant/acme/mcp",
+		},
+		{
+			name:     "escaped braces",
+			resource: "https://mcp.example.com/tenant/%7Bteam%7D/mcp",
+			served:   prefix + "/tenant/%7Bteam%7D/mcp",
+			notFound: prefix + "/tenant/other/mcp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := server.ProtectedResourceMetadataConfig{Resource: tt.resource}
+			mux := http.NewServeMux()
+			require.NotPanics(t, func() {
+				mux.Handle(server.ProtectedResourceMetadataPath(cfg.Resource), server.NewProtectedResourceMetadataHandler(cfg))
+			})
+			get := func(path string) int {
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://mcp.example.com"+path, nil))
+				return rec.Code
+			}
+			assert.Equal(t, http.StatusOK, get(tt.served))
+			assert.Equal(t, http.StatusNotFound, get(tt.notFound))
+		})
+	}
+}
+
+// ServeHTTP matches the metadata path segment by segment as ServeMux does: an
+// escape may be spelled in either case, but an escaped slash names one segment,
+// so a request whose slash is real names another path.
+func TestStreamableHTTPServer_WithProtectedResourceMetadata_EscapedPath(t *testing.T) {
+	const prefix = "/.well-known/oauth-protected-resource"
+	cfg := server.ProtectedResourceMetadataConfig{Resource: "https://mcp.example.com/tenant/acme%2Fcorp/mcp"}
+	httpSrv := server.NewStreamableHTTPServer(server.NewMCPServer("test", "1.0.0"),
+		server.WithProtectedResourceMetadata(cfg))
+	servesMetadata := func(path string) bool {
+		rec := httptest.NewRecorder()
+		httpSrv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://mcp.example.com"+path, nil))
+		return rec.Code == http.StatusOK && rec.Header().Get("Content-Type") == "application/json"
+	}
+
+	assert.True(t, servesMetadata(prefix+"/tenant/acme%2Fcorp/mcp"), "the escaped path a client builds")
+	assert.True(t, servesMetadata(prefix+"/tenant/acme%2fcorp/mcp"), "the same escape in lower case")
+	assert.False(t, servesMetadata(prefix+"/tenant/acme/corp/mcp"), "a real slash where the resource has an escaped one")
+	assert.False(t, servesMetadata(prefix+"/tenant/acme%2Fcorp"), "one segment short")
+	assert.False(t, servesMetadata(prefix+"/tenant/acme%2Fcorp/mcp/extra"), "one segment long")
 }
