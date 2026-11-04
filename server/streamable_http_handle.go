@@ -115,29 +115,38 @@ type HTTPResponseWriter interface {
 }
 
 // httpResponseWriterAdapter adapts an http.ResponseWriter to
-// HTTPResponseWriter. Streaming support is detected via http.Flusher.
+// HTTPResponseWriter. It streams when a layer of the writer can flush, found
+// as FlushError finds it.
 type httpResponseWriterAdapter struct {
-	w       http.ResponseWriter
-	flusher http.Flusher // nil when underlying writer cannot stream
+	w         http.ResponseWriter
+	canStream bool
 }
 
 func newHTTPResponseWriterAdapter(w http.ResponseWriter) *httpResponseWriterAdapter {
-	a := &httpResponseWriterAdapter{w: w}
-	if f, ok := w.(http.Flusher); ok {
-		a.flusher = f
+	return &httpResponseWriterAdapter{w: w, canStream: canFlush(w)}
+}
+
+// canFlush reports whether FlushError reaches a layer of w that flushes: at
+// each layer FlushError or Flush, else the layer beneath through Unwrap.
+func canFlush(w http.ResponseWriter) bool {
+	for {
+		switch t := w.(type) {
+		case interface{ FlushError() error }, http.Flusher:
+			return true
+		case interface{ Unwrap() http.ResponseWriter }:
+			w = t.Unwrap()
+		default:
+			return false
+		}
 	}
-	return a
 }
 
 func (a *httpResponseWriterAdapter) Header() http.Header         { return a.w.Header() }
 func (a *httpResponseWriterAdapter) WriteHeader(status int)      { a.w.WriteHeader(status) }
 func (a *httpResponseWriterAdapter) Write(p []byte) (int, error) { return a.w.Write(p) }
 
-func (a *httpResponseWriterAdapter) Flush() {
-	if a.flusher != nil {
-		a.flusher.Flush()
-	}
-}
+// Flush flushes as FlushError does, without its report.
+func (a *httpResponseWriterAdapter) Flush() { _ = a.FlushError() }
 
 // FlushError flushes as Flush does and reports a flush that failed, which
 // net/http's writer does for a write deadline that passed with the bytes
@@ -173,7 +182,7 @@ func (a *httpResponseWriterAdapter) SetWriteDeadline(t time.Time) error {
 	return http.ErrNotSupported
 }
 
-func (a *httpResponseWriterAdapter) CanStream() bool { return a.flusher != nil }
+func (a *httpResponseWriterAdapter) CanStream() bool { return a.canStream }
 
 // httpErrorTextHeader sets the conventional headers for plain-text HTTP
 // errors, matching net/http's http.Error behavior for response writers that

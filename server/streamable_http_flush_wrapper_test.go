@@ -77,3 +77,89 @@ func TestStreamableHTTP_FlushGoesThroughAWrappersOwnFlush(t *testing.T) {
 	}
 	require.NotContains(t, all.String(), "never reached", "the progress event stayed in the wrapper's buffer until the end")
 }
+
+// unwrapOnlyWriter stands for a middleware that offers Unwrap, as
+// http.ResponseController asks, but no Flush of its own.
+type unwrapOnlyWriter struct {
+	http.ResponseWriter
+}
+
+func (w *unwrapOnlyWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// flushErrorWriter stands for a middleware that flushes through FlushError
+// alone, with no Flush.
+type flushErrorWriter struct {
+	inner http.ResponseWriter
+}
+
+func (w *flushErrorWriter) Header() http.Header         { return w.inner.Header() }
+func (w *flushErrorWriter) Write(p []byte) (int, error) { return w.inner.Write(p) }
+func (w *flushErrorWriter) WriteHeader(status int)      { w.inner.WriteHeader(status) }
+func (w *flushErrorWriter) FlushError() error {
+	w.inner.(http.Flusher).Flush()
+	return nil
+}
+
+// plainWriter is a ResponseWriter that cannot flush at all.
+type plainWriter struct {
+	header http.Header
+}
+
+func (w *plainWriter) Header() http.Header         { return w.header }
+func (w *plainWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *plainWriter) WriteHeader(int)             {}
+
+// A writer streams when a layer under it can flush, found the way FlushError
+// and http.ResponseController find it: Unwrap until a layer has FlushError or
+// Flush. Flush reaches that layer too.
+func TestHTTPResponseWriterAdapter_StreamsThroughUnwrap(t *testing.T) {
+	tests := []struct {
+		name      string
+		wrap      func(http.ResponseWriter) http.ResponseWriter
+		base      func() http.ResponseWriter
+		canStream bool
+	}{
+		{"net/http's writer", func(w http.ResponseWriter) http.ResponseWriter { return w }, nil, true},
+		{"Unwrap to a writer that flushes", func(w http.ResponseWriter) http.ResponseWriter { return &unwrapOnlyWriter{w} }, nil, true},
+		{"two Unwraps deep", func(w http.ResponseWriter) http.ResponseWriter { return &unwrapOnlyWriter{&unwrapOnlyWriter{w}} }, nil, true},
+		{"a layer with FlushError only", func(w http.ResponseWriter) http.ResponseWriter { return &unwrapOnlyWriter{&flushErrorWriter{w}} }, nil, true},
+		{"a wrapper with no Unwrap", func(w http.ResponseWriter) http.ResponseWriter { return &hiddenFlusherWriter{w} }, nil, false},
+		{
+			"Unwrap to a writer that cannot flush",
+			func(w http.ResponseWriter) http.ResponseWriter { return &unwrapOnlyWriter{w} },
+			func() http.ResponseWriter { return &plainWriter{header: http.Header{}} },
+			false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			var base http.ResponseWriter = rec
+			if tt.base != nil {
+				base = tt.base()
+			}
+			a := newHTTPResponseWriterAdapter(tt.wrap(base))
+			require.Equal(t, tt.canStream, a.CanStream())
+			a.Flush()
+			if tt.base == nil {
+				require.Equal(t, tt.canStream, rec.Flushed, "Flush reached net/http's writer")
+			}
+		})
+	}
+}
+
+// A listen through a middleware that offers Unwrap but no Flush is a live
+// stream, not a refusal.
+func TestStreamableHTTP_ListenStreamsThroughAWrapperWithoutFlush(t *testing.T) {
+	mcpServer := NewMCPServer("test", "1.0.0", WithToolCapabilities(true))
+	h := NewStreamableHTTPServer(mcpServer)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(&unwrapOnlyWriter{w}, r)
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ack := nextListenMessage(t, openListenStream(ctx, t, ts.URL, 3, map[string]any{"toolsListChanged": true}))
+	require.Equal(t, mcp.MethodNotificationSubscriptionsAcknowledged, ack.Method)
+}
