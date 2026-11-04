@@ -673,10 +673,11 @@ const (
 // in that order: on HTTP/2 a body's Close can wait until the context ends.
 // Ending the context first stops net/http draining what is left of the body,
 // so a short body of known length is read to its end before, for at most
-// maxDrainTime, and its HTTP/1.1 connection serves the next request. resp may
-// be nil.
+// maxDrainTime, and its HTTP/1.1 connection serves the next request. An event
+// stream is never read here: its body went to an SSE reader, which may still
+// be reading it. resp may be nil.
 func releaseResponse(cancel context.CancelFunc, resp *http.Response) {
-	if resp != nil && resp.ContentLength > 0 && resp.ContentLength <= maxDrainBytes {
+	if resp != nil && resp.ContentLength > 0 && resp.ContentLength <= maxDrainBytes && !isEventStream(resp) {
 		timer := time.AfterFunc(maxDrainTime, cancel)
 		_, _ = io.Copy(io.Discard, resp.Body)
 		timer.Stop()
@@ -685,6 +686,13 @@ func releaseResponse(cancel context.CancelFunc, resp *http.Response) {
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
+}
+
+// isEventStream reports whether resp is an SSE stream, by the check the
+// callers make before they hand its body to an SSE reader.
+func isEventStream(resp *http.Response) bool {
+	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	return mediaType == "text/event-stream"
 }
 
 // SendNotification sends a JSON-RPC notification to the server without expecting a response.

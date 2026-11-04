@@ -204,23 +204,29 @@ func (b countingBody) Read(p []byte) (int, error) {
 func (countingBody) Close() error { return nil }
 
 // releaseResponse reads a body only when its length is stated and at most
-// maxDrainBytes: a longer one, or one of unknown length, is closed unread.
+// maxDrainBytes: a longer one, or one of unknown length, is closed unread. An
+// event stream is never read: its body went to an SSE reader, which may still
+// be reading it.
 func TestReleaseResponseDrainsOnlyAShortBodyOfKnownLength(t *testing.T) {
 	tests := []struct {
 		name          string
+		contentType   string
 		contentLength int64
 		drained       bool
 	}{
-		{"a short body", 8, true},
-		{"a body of the limit", maxDrainBytes, true},
-		{"a body past the limit", maxDrainBytes + 1, false},
-		{"a body of unknown length", -1, false},
+		{"a short body", "application/json", 8, true},
+		{"a body of the limit", "application/json", maxDrainBytes, true},
+		{"a body past the limit", "application/json", maxDrainBytes + 1, false},
+		{"a body of unknown length", "application/json", -1, false},
+		{"an event stream", "text/event-stream", 8, false},
+		{"an event stream with parameters", "text/event-stream; charset=utf-8", 8, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var read atomic.Int64
 			size := max(tt.contentLength, 8)
 			resp := &http.Response{
+				Header:        http.Header{"Content-Type": {tt.contentType}},
 				ContentLength: tt.contentLength,
 				Body:          countingBody{Reader: strings.NewReader(strings.Repeat("x", int(size))), read: &read},
 			}
