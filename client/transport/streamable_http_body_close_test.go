@@ -58,38 +58,42 @@ func (m cancelFirstTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // on the body's Close nor leaves the body open.
 func TestStreamableHTTPCancelsBeforeClosingAnErrorBody(t *testing.T) {
 	request := JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "tools/list"}
+	// send runs on a goroutine of its own, so it only returns what the call
+	// answered; terminated says the answer must be ErrSessionTerminated.
 	tests := []struct {
-		name   string
-		status int
-		send   func(ctx context.Context, tr *StreamableHTTP)
+		name       string
+		status     int
+		terminated bool
+		send       func(ctx context.Context, tr *StreamableHTTP) error
 	}{
-		{"the GET stream, an error status", http.StatusInternalServerError, func(ctx context.Context, tr *StreamableHTTP) {
-			_, _ = tr.createGETConnectionToServer(ctx)
-		}},
-		{"the GET stream, 404", http.StatusNotFound, func(ctx context.Context, tr *StreamableHTTP) {
+		{"the GET stream, an error status", http.StatusInternalServerError, false, func(ctx context.Context, tr *StreamableHTTP) error {
 			_, err := tr.createGETConnectionToServer(ctx)
-			assert.ErrorIs(t, err, ErrSessionTerminated)
+			return err
 		}},
-		{"a resumed stream, 404", http.StatusNotFound, func(ctx context.Context, tr *StreamableHTTP) {
+		{"the GET stream, 404", http.StatusNotFound, true, func(ctx context.Context, tr *StreamableHTTP) error {
+			_, err := tr.createGETConnectionToServer(ctx)
+			return err
+		}},
+		{"a resumed stream, 404", http.StatusNotFound, true, func(ctx context.Context, tr *StreamableHTTP) error {
 			_, err := tr.resumeSSE(ctx, &sseCursor{lastEventID: "1", hasRetry: true}, func(string, string) {})
-			assert.ErrorIs(t, err, ErrSessionTerminated)
+			return err
 		}},
-		{"a request, 404", http.StatusNotFound, func(ctx context.Context, tr *StreamableHTTP) {
+		{"a request, 404", http.StatusNotFound, true, func(ctx context.Context, tr *StreamableHTTP) error {
 			_, err := tr.SendRequest(ctx, request)
-			assert.ErrorIs(t, err, ErrSessionTerminated)
+			return err
 		}},
-		{"a notification, 404", http.StatusNotFound, func(ctx context.Context, tr *StreamableHTTP) {
-			notification := mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/initialized"}
-			assert.ErrorIs(t, tr.SendNotification(ctx, notification), ErrSessionTerminated)
+		{"a notification, 404", http.StatusNotFound, true, func(ctx context.Context, tr *StreamableHTTP) error {
+			return tr.SendNotification(ctx, mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/initialized"})
 		}},
-		{"a response to the server, 404", http.StatusNotFound, func(ctx context.Context, tr *StreamableHTTP) {
+		{"a response to the server, 404", http.StatusNotFound, false, func(ctx context.Context, tr *StreamableHTTP) error {
 			tr.sendResponseToServer(ctx, NewJSONRPCResultResponse(mcp.NewRequestId(int64(1)), []byte(`{}`)))
+			return nil
 		}},
 		// Close's DELETE has a 5 s timeout of its own, so the wait below is
 		// shorter than it.
-		{"Close's DELETE", http.StatusOK, func(_ context.Context, tr *StreamableHTTP) {
+		{"Close's DELETE", http.StatusOK, false, func(_ context.Context, tr *StreamableHTTP) error {
 			tr.sessionID.Store("session-1")
-			_ = tr.Close()
+			return tr.Close()
 		}},
 	}
 	for _, tt := range tests {
@@ -100,13 +104,13 @@ func TestStreamableHTTPCancelsBeforeClosingAnErrorBody(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = tr.Close() })
 
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				tt.send(t.Context(), tr)
-			}()
+			done := make(chan error, 1)
+			go func() { done <- tt.send(t.Context(), tr) }()
 			select {
-			case <-done:
+			case err := <-done:
+				if tt.terminated {
+					assert.ErrorIs(t, err, ErrSessionTerminated)
+				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("the body's Close ran before the request's context ended")
 			}

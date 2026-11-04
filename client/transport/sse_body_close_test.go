@@ -62,40 +62,45 @@ func (m sseCancelFirstTransport) RoundTrip(req *http.Request) (*http.Response, e
 // The legacy SSE transport ends a request's context before it closes an error
 // answer's body, and closes it, as Streamable HTTP does.
 func TestSSECancelsBeforeClosingAnErrorBody(t *testing.T) {
+	// started rows open the stream on the test's goroutine first; send runs
+	// on a goroutine of its own and returns the error the call must answer.
 	tests := []struct {
-		name      string
-		getStatus int
-		send      func(ctx context.Context, tr *SSE)
+		name    string
+		started bool
+		send    func(ctx context.Context, tr *SSE) error
 	}{
-		{"the stream, an error status", http.StatusInternalServerError, func(ctx context.Context, tr *SSE) {
-			assert.Error(t, tr.Start(ctx))
+		{"the stream, an error status", false, func(ctx context.Context, tr *SSE) error {
+			return tr.Start(ctx)
 		}},
-		{"a request, an error status", http.StatusOK, func(ctx context.Context, tr *SSE) {
-			require.NoError(t, tr.Start(ctx))
+		{"a request, an error status", true, func(ctx context.Context, tr *SSE) error {
 			_, err := tr.SendRequest(ctx, JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)), Method: "tools/list"})
-			assert.Error(t, err)
+			return err
 		}},
-		{"a notification, an error status", http.StatusOK, func(ctx context.Context, tr *SSE) {
-			require.NoError(t, tr.Start(ctx))
-			assert.Error(t, tr.SendNotification(ctx, mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/initialized"}))
+		{"a notification, an error status", true, func(ctx context.Context, tr *SSE) error {
+			return tr.SendNotification(ctx, mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/initialized"})
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			getStatus := http.StatusInternalServerError
+			if tt.started {
+				getStatus = http.StatusOK
+			}
 			var closed atomic.Bool
 			tr, err := NewSSE("http://mock-server/sse", WithHTTPClient(&http.Client{
-				Transport: sseCancelFirstTransport{getStatus: tt.getStatus, postStatus: http.StatusInternalServerError, closed: &closed},
+				Transport: sseCancelFirstTransport{getStatus: getStatus, postStatus: http.StatusInternalServerError, closed: &closed},
 			}))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = tr.Close() })
+			if tt.started {
+				require.NoError(t, tr.Start(t.Context()))
+			}
 
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				tt.send(t.Context(), tr)
-			}()
+			done := make(chan error, 1)
+			go func() { done <- tt.send(t.Context(), tr) }()
 			select {
-			case <-done:
+			case err := <-done:
+				assert.Error(t, err)
 			case <-time.After(3 * time.Second):
 				t.Fatal("the body's Close ran before the request's context ended")
 			}
