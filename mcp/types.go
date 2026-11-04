@@ -249,35 +249,32 @@ func (p NotificationParams) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// UnmarshalJSON implements custom JSON unmarshaling
+// UnmarshalJSON implements custom JSON unmarshaling. The params hold the
+// decoded message alone, in maps of their own: a value decoded into twice
+// keeps nothing of the first message, and maps handed out after it are left
+// as they were. null keeps the value, as encoding/json does.
 func (p *NotificationParams) UnmarshalJSON(data []byte) error {
-	// Create a map to hold all fields
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
 	}
-
-	// Initialize maps if they're nil
-	if p.Meta == nil {
-		p.Meta = make(map[string]any)
-	}
-	if p.AdditionalFields == nil {
-		p.AdditionalFields = make(map[string]any)
-	}
-
-	// Process all fields
-	for k, v := range m {
-		if k == "_meta" {
-			// Handle Meta field
-			if meta, ok := v.(map[string]any); ok {
-				p.Meta = meta
-			}
-		} else {
-			// Handle additional fields
-			p.AdditionalFields[k] = v
+	if m == nil {
+		if p.Meta == nil {
+			p.Meta = make(map[string]any)
 		}
+		if p.AdditionalFields == nil {
+			p.AdditionalFields = make(map[string]any)
+		}
+		return nil
 	}
 
+	meta, ok := m["_meta"].(map[string]any)
+	if !ok {
+		meta = make(map[string]any)
+	}
+	delete(m, "_meta")
+	p.Meta = meta
+	p.AdditionalFields = m
 	return nil
 }
 
