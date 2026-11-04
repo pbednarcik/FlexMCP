@@ -371,14 +371,9 @@ func (s *StreamableHTTPServer) Start(addr string) error {
 		return http.ErrServerClosed
 	}
 	if s.httpServer == nil {
-		mux := http.NewServeMux()
-		mux.Handle(s.endpointPath, s)
-		if s.protectedResourceMetadataHandler != nil && s.protectedResourceMetadataPath != s.endpointPath {
-			mux.Handle(s.protectedResourceMetadataPath, s.protectedResourceMetadataHandler)
-		}
 		s.httpServer = &http.Server{
 			Addr:              addr,
-			Handler:           mux,
+			Handler:           s.startMux(),
 			ReadHeaderTimeout: max(s.readHeaderTimeout, 0),
 			IdleTimeout:       max(s.idleTimeout, 0),
 		}
@@ -407,6 +402,26 @@ func (s *StreamableHTTPServer) Start(addr string) error {
 	}
 
 	return srv.ListenAndServe()
+}
+
+// startMux routes the endpoint, and the metadata path when it is configured,
+// for the server Start makes. The metadata route answers the request paths
+// ServeHTTP answers: ServeMux would also take a real trailing slash for an
+// escaped one.
+func (s *StreamableHTTPServer) startMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle(s.endpointPath, s)
+	if s.protectedResourceMetadataHandler != nil && s.protectedResourceMetadataPath != s.endpointPath {
+		path, metadata := s.protectedResourceMetadataPath, s.protectedResourceMetadataHandler
+		mux.Handle(path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !metadataPathMatches(r.URL.EscapedPath(), path) {
+				http.NotFound(w, r)
+				return
+			}
+			metadata.ServeHTTP(w, r)
+		}))
+	}
+	return mux
 }
 
 // Shutdown stops the HTTP server, if this server started one or was given
