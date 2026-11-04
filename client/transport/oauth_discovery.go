@@ -626,23 +626,26 @@ func authorizationServerMetadataURLs(issuerURL string) []string {
 	u.RawQuery = ""
 	u.Fragment = ""
 
-	originalPath := strings.Trim(u.Path, "/")
-
-	var urls []string
-	if originalPath == "" {
-		u.Path = "/.well-known/oauth-authorization-server"
-		urls = append(urls, u.String())
-		u.Path = "/.well-known/openid-configuration"
-		urls = append(urls, u.String())
-		return urls
+	// The issuer path keeps its escapes, so an escaped slash stays inside its
+	// segment.
+	originalPath := strings.Trim(u.EscapedPath(), "/")
+	withPath := func(escapedPath string) string {
+		u.Path, _ = url.PathUnescape(escapedPath)
+		u.RawPath = escapedPath
+		return u.String()
 	}
-	u.Path = "/.well-known/oauth-authorization-server/" + originalPath
-	urls = append(urls, u.String())
-	u.Path = "/.well-known/openid-configuration/" + originalPath
-	urls = append(urls, u.String())
-	u.Path = "/" + originalPath + "/.well-known/openid-configuration"
-	urls = append(urls, u.String())
-	return urls
+
+	if originalPath == "" {
+		return []string{
+			withPath("/.well-known/oauth-authorization-server"),
+			withPath("/.well-known/openid-configuration"),
+		}
+	}
+	return []string{
+		withPath("/.well-known/oauth-authorization-server/" + originalPath),
+		withPath("/.well-known/openid-configuration/" + originalPath),
+		withPath("/" + originalPath + "/.well-known/openid-configuration"),
+	}
 }
 
 // GetServerMetadata is a public wrapper for getServerMetadata
