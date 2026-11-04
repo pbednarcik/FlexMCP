@@ -22,7 +22,8 @@ import (
 // A POST whose answer is not read keeps its HTTP/1.1 connection when the
 // server answers 202 with a short body of known length: the body is read to
 // its end before the request's context ends, as net/http's own drain on
-// Close would have.
+// Close would have. The answer's content type does not matter: no SSE reader
+// was handed this body, so nothing else reads it.
 func TestPOSTAnswersWithABodyKeepTheConnection(t *testing.T) {
 	const posts = 10
 	notification := mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/initialized"}
@@ -58,32 +59,35 @@ func TestPOSTAnswersWithABodyKeepTheConnection(t *testing.T) {
 		}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var conns atomic.Int64
-			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodGet {
-					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = w.Write([]byte("event: endpoint\ndata: /message\n\n"))
-					w.(http.Flusher).Flush()
-					<-r.Context().Done()
-					return
+		for _, contentType := range []string{"text/plain", "text/event-stream; charset=utf-8"} {
+			t.Run(tt.name+", "+contentType, func(t *testing.T) {
+				var conns atomic.Int64
+				srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = w.Write([]byte("event: endpoint\ndata: /message\n\n"))
+						w.(http.Flusher).Flush()
+						<-r.Context().Done()
+						return
+					}
+					w.Header().Set("Content-Type", contentType)
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = w.Write([]byte("Accepted"))
+				}))
+				srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+					if state == http.StateNew {
+						conns.Add(1)
+					}
 				}
-				w.WriteHeader(http.StatusAccepted)
-				_, _ = w.Write([]byte("Accepted"))
-			}))
-			srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-				if state == http.StateNew {
-					conns.Add(1)
-				}
-			}
-			srv.Start()
-			t.Cleanup(srv.Close)
-			client := &http.Client{Transport: &http.Transport{}}
-			t.Cleanup(client.CloseIdleConnections)
+				srv.Start()
+				t.Cleanup(srv.Close)
+				client := &http.Client{Transport: &http.Transport{}}
+				t.Cleanup(client.CloseIdleConnections)
 
-			tt.run(t, srv.URL, client)
-			assert.LessOrEqual(t, conns.Load(), tt.conns, "connections opened for %d posts", posts)
-		})
+				tt.run(t, srv.URL, client)
+				assert.LessOrEqual(t, conns.Load(), tt.conns, "connections opened for %d posts", posts)
+			})
+		}
 	}
 }
 
@@ -204,9 +208,8 @@ func (b countingBody) Read(p []byte) (int, error) {
 func (countingBody) Close() error { return nil }
 
 // releaseResponse reads a body only when its length is stated and at most
-// maxDrainBytes: a longer one, or one of unknown length, is closed unread. An
-// event stream is never read: its body went to an SSE reader, which may still
-// be reading it.
+// maxDrainBytes: a longer one, or one of unknown length, is closed unread,
+// whatever its content type.
 func TestReleaseResponseDrainsOnlyAShortBodyOfKnownLength(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -218,8 +221,7 @@ func TestReleaseResponseDrainsOnlyAShortBodyOfKnownLength(t *testing.T) {
 		{"a body of the limit", "application/json", maxDrainBytes, true},
 		{"a body past the limit", "application/json", maxDrainBytes + 1, false},
 		{"a body of unknown length", "application/json", -1, false},
-		{"an event stream", "text/event-stream", 8, false},
-		{"an event stream with parameters", "text/event-stream; charset=utf-8", 8, false},
+		{"an event stream no reader was handed", "text/event-stream", 8, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -234,4 +236,14 @@ func TestReleaseResponseDrainsOnlyAShortBodyOfKnownLength(t *testing.T) {
 			assert.Equal(t, tt.drained, read.Load() > 0)
 		})
 	}
+}
+
+// releaseUnread never reads the body: an SSE reader may still be reading it.
+func TestReleaseUnreadDoesNotReadTheBody(t *testing.T) {
+	var read atomic.Int64
+	cancelled := false
+	resp := &http.Response{ContentLength: 8, Body: countingBody{Reader: strings.NewReader("xxxxxxxx"), read: &read}}
+	releaseUnread(func() { cancelled = true }, resp)
+	assert.True(t, cancelled)
+	assert.Zero(t, read.Load())
 }

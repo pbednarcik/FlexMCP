@@ -181,6 +181,8 @@ func (c *StreamableHTTP) resumeSSE(ctx context.Context, cursor *sseCursor, handl
 		releaseResponse(cancel, resp)
 		return false, err
 	}
+	// readSSEWithCursor reads the body on this goroutine and is done with it
+	// when it returns, so the body is released as any other.
 	defer releaseResponse(cancel, resp)
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("unexpected status %d", resp.StatusCode)

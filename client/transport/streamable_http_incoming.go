@@ -107,7 +107,8 @@ func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) (opene
 		releaseResponse(cancel, resp)
 		return false, fmt.Errorf("failed to send request: %w", err)
 	}
-	defer releaseResponse(cancel, resp)
+	release := releaseResponse
+	defer func() { release(cancel, resp) }()
 
 	// Check if we got an error response
 	if resp.StatusCode == http.StatusMethodNotAllowed {
@@ -131,6 +132,7 @@ func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) (opene
 	// messages. To be more compatible, we should handle this response, however, as the transport layer is message-based,
 	// currently, there is no convenient way to handle this response.
 	// So we ignore the response here. It's not a bug, but may be not compatible with other SDKs.
+	release = releaseUnread
 	_, err = c.handleSSEResponse(ctx, resp.Body, nil)
 	if err != nil {
 		return true, fmt.Errorf("failed to handle SSE response: %w", err)
