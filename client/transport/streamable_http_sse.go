@@ -181,8 +181,7 @@ func (c *StreamableHTTP) resumeSSE(ctx context.Context, cursor *sseCursor, handl
 		releaseResponse(cancel, resp)
 		return false, err
 	}
-	// Cancel before closing the body, as SendRequest does.
-	defer func() { cancel(); resp.Body.Close() }()
+	defer releaseResponse(cancel, resp)
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}

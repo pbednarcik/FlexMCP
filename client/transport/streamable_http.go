@@ -473,7 +473,7 @@ func (c *StreamableHTTP) SendRequest(
 	// select on cs.donec (stream cleanup) or cs.ctx.Done() (context cancellation).
 	// If cc.wmu is contended, cs.donec may never close, making ctx.Done() the only
 	// exit path. Canceling first guarantees Close() returns promptly.
-	defer func() { cancel(); resp.Body.Close() }()
+	defer releaseResponse(cancel, resp)
 
 	// Check if we got an error response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {

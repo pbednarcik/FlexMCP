@@ -2,9 +2,13 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,5 +120,112 @@ func TestReleaseResponseDrainIsCut(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("the drain of a stalled body held the notification")
+	}
+}
+
+// countConnections starts handler on a server that counts the connections
+// its clients open.
+func countConnections(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var conns atomic.Int64
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv, &conns
+}
+
+// A request keeps its connection whatever the size of its JSON answer. The
+// decoder stops at the closing brace, before json.Encoder's newline, and at
+// these sizes the body's last read ends on that brace.
+func TestSendRequestKeepsTheConnectionAfterAJSONAnswer(t *testing.T) {
+	for _, size := range []int{129, 257, 513, 1025} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			srv, conns := countConnections(t, func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					ID json.RawMessage `json:"id"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				head := `{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"pad":"`
+				tail := `"}}`
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(json.RawMessage(head + strings.Repeat("x", size-1-len(head)-len(tail)) + tail))
+			})
+			client := &http.Client{Transport: &http.Transport{}}
+			t.Cleanup(client.CloseIdleConnections)
+			tr, err := NewStreamableHTTP(srv.URL, WithHTTPBasicClient(client))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tr.Close() })
+
+			for i := range 10 {
+				resp, err := tr.SendRequest(t.Context(), JSONRPCRequest{JSONRPC: "2.0", ID: mcp.NewRequestId(int64(i + 1)), Method: "tools/list"})
+				require.NoError(t, err)
+				require.Nil(t, resp.Error)
+			}
+			assert.Equal(t, int64(1), conns.Load(), "connections opened for 10 requests")
+		})
+	}
+}
+
+// A resumed stream the server refuses with a body keeps its connection.
+func TestResumeSSEKeepsTheConnectionAfterARefusal(t *testing.T) {
+	srv, conns := countConnections(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no such stream", http.StatusBadRequest)
+	})
+	client := &http.Client{Transport: &http.Transport{}}
+	t.Cleanup(client.CloseIdleConnections)
+	tr, err := NewStreamableHTTP(srv.URL, WithHTTPBasicClient(client))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tr.Close() })
+
+	for range 10 {
+		_, err := tr.resumeSSE(t.Context(), &sseCursor{lastEventID: "1", hasRetry: true}, func(string, string) {})
+		require.Error(t, err)
+	}
+	assert.Equal(t, int64(1), conns.Load(), "connections opened for 10 refused resumes")
+}
+
+// countingBody counts the bytes read from it.
+type countingBody struct {
+	io.Reader
+	read *atomic.Int64
+}
+
+func (b countingBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	b.read.Add(int64(n))
+	return n, err
+}
+
+func (countingBody) Close() error { return nil }
+
+// releaseResponse reads a body only when its length is stated and at most
+// maxDrainBytes: a longer one, or one of unknown length, is closed unread.
+func TestReleaseResponseDrainsOnlyAShortBodyOfKnownLength(t *testing.T) {
+	tests := []struct {
+		name          string
+		contentLength int64
+		drained       bool
+	}{
+		{"a short body", 8, true},
+		{"a body of the limit", maxDrainBytes, true},
+		{"a body past the limit", maxDrainBytes + 1, false},
+		{"a body of unknown length", -1, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var read atomic.Int64
+			size := max(tt.contentLength, 8)
+			resp := &http.Response{
+				ContentLength: tt.contentLength,
+				Body:          countingBody{Reader: strings.NewReader(strings.Repeat("x", int(size))), read: &read},
+			}
+			releaseResponse(func() {}, resp)
+			assert.Equal(t, tt.drained, read.Load() > 0)
+		})
 	}
 }
