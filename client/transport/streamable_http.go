@@ -460,7 +460,7 @@ func (c *StreamableHTTP) SendRequest(
 	// connection go out.
 	resp, err := c.sendHTTP(ctx, http.MethodPost, bytes.NewReader(requestBody), "application/json, text/event-stream", request.Header, c.startsConnection(request))
 	if err != nil {
-		cancel()
+		releaseResponse(cancel, resp)
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
@@ -554,6 +554,10 @@ func (c *StreamableHTTP) SendRequest(
 
 // sendHTTP sends an HTTP request to the server. Once the session has ended,
 // it refuses to, unless startsSession is set.
+//
+// A 404 that ends the session returns ErrSessionTerminated with the response,
+// its body still open: the caller ends the request's context and then closes
+// it, with releaseResponse, as for any other response.
 func (c *StreamableHTTP) sendHTTP(
 	ctx context.Context,
 	method string,
@@ -652,11 +656,20 @@ func (c *StreamableHTTP) sendHTTP(
 		if startsSession {
 			return resp, nil
 		}
-		resp.Body.Close()
-		return nil, ErrSessionTerminated
+		return resp, ErrSessionTerminated
 	}
 
 	return resp, nil
+}
+
+// releaseResponse ends a request's context and then closes its response body,
+// in that order: on HTTP/2 a body's Close can wait until the context ends.
+// resp may be nil.
+func releaseResponse(cancel context.CancelFunc, resp *http.Response) {
+	cancel()
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 }
 
 // SendNotification sends a JSON-RPC notification to the server without expecting a response.
@@ -672,7 +685,7 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 
 	resp, err := c.sendHTTP(ctx, http.MethodPost, bytes.NewReader(requestBody), "application/json, text/event-stream", nil, false)
 	if err != nil {
-		cancel()
+		releaseResponse(cancel, resp)
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() { cancel(); resp.Body.Close() }()

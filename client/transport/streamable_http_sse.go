@@ -178,7 +178,7 @@ func (c *StreamableHTTP) resumeSSE(ctx context.Context, cursor *sseCursor, handl
 	header.Set("Last-Event-ID", cursor.lastEventID)
 	resp, err := c.sendHTTP(ctx, http.MethodGet, nil, "text/event-stream", header, false)
 	if err != nil {
-		cancel()
+		releaseResponse(cancel, resp)
 		return false, err
 	}
 	// Cancel before closing the body, as SendRequest does.
