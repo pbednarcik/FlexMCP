@@ -295,7 +295,7 @@ func (c *StreamableHTTP) Close() error {
 				c.logger.Error("failed to send close request", "err", err)
 				return
 			}
-			res.Body.Close()
+			releaseResponse(cancel, res)
 		}
 	})
 	return nil

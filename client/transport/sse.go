@@ -295,7 +295,7 @@ func (c *SSE) start(ctx context.Context) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		releaseResponse(cancel, resp)
 		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {
 			return authorizationError(resp, c.oauthHandler, c.oauthRecipient)
 		}
@@ -517,7 +517,7 @@ func (c *SSE) SendRequest(
 	} else {
 		body, err = io.ReadAll(resp.Body)
 	}
-	resp.Body.Close()
+	releaseResponse(cancelPost, resp)
 
 	if err != nil {
 		deleteResponseChan()
@@ -683,7 +683,7 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 		}
 		return fmt.Errorf("failed to send %s: %w", what, err)
 	}
-	defer resp.Body.Close()
+	defer releaseResponse(cancelPost, resp)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {

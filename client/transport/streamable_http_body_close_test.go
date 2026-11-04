@@ -85,6 +85,12 @@ func TestStreamableHTTPCancelsBeforeClosingAnErrorBody(t *testing.T) {
 		{"a response to the server, 404", http.StatusNotFound, func(ctx context.Context, tr *StreamableHTTP) {
 			tr.sendResponseToServer(ctx, NewJSONRPCResultResponse(mcp.NewRequestId(int64(1)), []byte(`{}`)))
 		}},
+		// Close's DELETE has a 5 s timeout of its own, so the wait below is
+		// shorter than it.
+		{"Close's DELETE", http.StatusOK, func(_ context.Context, tr *StreamableHTTP) {
+			tr.sessionID.Store("session-1")
+			_ = tr.Close()
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -101,7 +107,7 @@ func TestStreamableHTTPCancelsBeforeClosingAnErrorBody(t *testing.T) {
 			}()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(3 * time.Second):
 				t.Fatal("the body's Close ran before the request's context ended")
 			}
 			assert.True(t, closed.Load(), "the response body was left open")
