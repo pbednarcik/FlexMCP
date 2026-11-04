@@ -662,10 +662,25 @@ func (c *StreamableHTTP) sendHTTP(
 	return resp, nil
 }
 
+// maxDrainBytes and maxDrainTime bound releaseResponse's read of a body left
+// unread, as net/http bounds its own drain on Close.
+const (
+	maxDrainBytes = 256 << 10
+	maxDrainTime  = 50 * time.Millisecond
+)
+
 // releaseResponse ends a request's context and then closes its response body,
 // in that order: on HTTP/2 a body's Close can wait until the context ends.
-// resp may be nil.
+// Ending the context first stops net/http draining what is left of the body,
+// so a short body of known length is read to its end before, for at most
+// maxDrainTime, and its HTTP/1.1 connection serves the next request. resp may
+// be nil.
 func releaseResponse(cancel context.CancelFunc, resp *http.Response) {
+	if resp != nil && resp.ContentLength > 0 && resp.ContentLength <= maxDrainBytes {
+		timer := time.AfterFunc(maxDrainTime, cancel)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		timer.Stop()
+	}
 	cancel()
 	if resp != nil {
 		_ = resp.Body.Close()
@@ -688,7 +703,7 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 		releaseResponse(cancel, resp)
 		return fmt.Errorf("failed to send request: %w", err)
 	}
-	defer func() { cancel(); resp.Body.Close() }()
+	defer releaseResponse(cancel, resp)
 
 	switch {
 	case resp.StatusCode == http.StatusOK, resp.StatusCode == http.StatusAccepted, resp.StatusCode == http.StatusNoContent:

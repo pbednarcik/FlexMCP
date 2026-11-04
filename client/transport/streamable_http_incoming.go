@@ -245,7 +245,7 @@ func (c *StreamableHTTP) sendResponseToServer(ctx context.Context, response *JSO
 		c.logger.Error("failed to send response to server", "err", err)
 		return
 	}
-	defer func() { cancel(); resp.Body.Close() }()
+	defer releaseResponse(cancel, resp)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)
