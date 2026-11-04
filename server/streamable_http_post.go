@@ -139,6 +139,17 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		// the notifications the server broadcasts, such as
 		// notifications/tools/list_changed.
 		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil
+		// The stream cannot reach the client through a writer that cannot
+		// stream: refuse it now, as GET is refused, rather than hold the
+		// request open with nothing ever written to it. The fault is the
+		// deployment's, not the request's, so it goes out as 500 rather than
+		// the 200 httpStatusForJSONRPCError gives an internal error.
+		if listening && !w.CanStream() {
+			s.logger.Error("subscriptions/listen refused: the response writer cannot stream")
+			s.writeJSONRPCErrorStatus(w, requestID, mcp.INTERNAL_ERROR,
+				"subscriptions/listen needs a response that can stream", http.StatusInternalServerError)
+			return
+		}
 	}
 	session := &x.session
 	// The core takes the transport's read only of a body the transport read
