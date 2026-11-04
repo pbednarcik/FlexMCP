@@ -812,7 +812,9 @@ func startMockStreamableWithGETSupport(getSupport bool) (string, func(), chan bo
 }
 
 func TestContinuousListening(t *testing.T) {
+	origRetryInterval := retryInterval
 	retryInterval = 10 * time.Millisecond
+	t.Cleanup(func() { retryInterval = origRetryInterval })
 	// Start mock server with GET support
 	url, closeServer, disconnectCh, _ := startMockStreamableWithGETSupport(true)
 
@@ -1653,7 +1655,9 @@ func TestContinuousListeningGoroutineExitsOnContextCancel(t *testing.T) {
 // with WithContinuousListening enabled — the GET SSE connection hangs forever on
 // a stateless server, and we verify it doesn't block POST requests.
 func TestSendRequestSSEStreamStaysOpenWithContinuousListening(t *testing.T) {
+	origRetryInterval := retryInterval
 	retryInterval = 10 * time.Millisecond
+	t.Cleanup(func() { retryInterval = origRetryInterval })
 	serverURL, closeServer := startMockStatelessSSEServer()
 	defer closeServer()
 

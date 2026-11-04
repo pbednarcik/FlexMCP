@@ -79,7 +79,7 @@ func (c *StreamableHTTP) listenForever(ctx context.Context) {
 
 		// Use context-aware sleep
 		select {
-		case <-time.After(retryInterval):
+		case <-time.After(c.retryInterval):
 		case <-ctx.Done():
 			return
 		}

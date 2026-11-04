@@ -132,6 +132,10 @@ type StreamableHTTP struct {
 	host                string
 	logger              *slog.Logger
 	getListeningEnabled bool
+	// retryInterval is how long the GET listener waits before it connects
+	// again, taken from the package variable when the transport is made: the
+	// listener outlives Close, and must not read a variable tests set.
+	retryInterval time.Duration
 
 	sessionID       atomic.Value // string
 	protocolVersion atomic.Value // string
@@ -189,6 +193,8 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 		headers:     make(map[string]string),
 		logger:      slog.Default(),
 		initialized: make(chan struct{}),
+
+		retryInterval: retryInterval,
 	}
 	smc.closing, smc.closeTransport = context.WithCancel(context.Background())
 	smc.closed = smc.closing.Done()
