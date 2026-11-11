@@ -56,6 +56,10 @@ type SSE struct {
 	// nothing is left to read their answers.
 	attempt atomic.Uint64
 	ended   atomic.Bool
+	// endCause is why the reader ended the current attempt's stream
+	// itself, ErrMessageTooLarge, or nil. Set under mu before the pending
+	// requests are failed, and cleared under it when an attempt begins.
+	endCause error
 	// answers bounds the answers to server requests; Close cancels it.
 	answers         context.Context
 	stopAnswers     context.CancelFunc
@@ -74,6 +78,8 @@ type SSE struct {
 
 	endpointTimeout time.Duration
 	responseTimeout time.Duration
+	// maxMessageBytes bounds the data of one event; zero or less is no bound.
+	maxMessageBytes int64
 
 	// OAuth support
 	oauthHandler *OAuthHandler
@@ -84,6 +90,20 @@ type SSE struct {
 
 // ClientOption configures an SSE transport client.
 type ClientOption func(*SSE)
+
+// WithMaxMessageBytes bounds the size of the data of one event the client
+// reads from the server's SSE stream, and of every line of the stream, a
+// comment's too, with a few bytes more for the field's name and line end. A
+// larger event or line ends the stream: the connection-lost handler gets
+// ErrMessageTooLarge, and a request waiting on the stream, or a Start still
+// under way, fails with an error that is both ErrMessageTooLarge and
+// ErrTransportClosed. The default is DefaultMaxMessageBytes; zero or less
+// removes the bound.
+func WithMaxMessageBytes(n int64) ClientOption {
+	return func(sc *SSE) {
+		sc.maxMessageBytes = n
+	}
+}
 
 // WithSSELogger sets a custom structured logger for the SSE client.
 // A nil logger falls back to slog.Default().
@@ -174,6 +194,7 @@ func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 		logger:          slog.Default(),
 		endpointTimeout: 30 * time.Second,
 		responseTimeout: 60 * time.Second,
+		maxMessageBytes: DefaultMaxMessageBytes,
 	}
 	smc.answers, smc.stopAnswers = context.WithCancel(context.Background())
 
@@ -259,6 +280,7 @@ func (c *SSE) start(ctx context.Context) error {
 	c.cancelSSEStream = cancel
 	c.mu.Lock()
 	c.stream = ctx
+	c.endCause = nil
 	c.mu.Unlock()
 	attempt := c.attempt.Add(1)
 	c.ended.Store(false)
@@ -326,6 +348,11 @@ func (c *SSE) start(ctx context.Context) error {
 	case <-endpointChan:
 		// Endpoint received, proceed
 	case <-ctx.Done():
+		// The reader ends the stream itself, and with it ctx, on a line over
+		// the bound: that is why the wait ended.
+		if cause := c.streamEndCause(); cause != nil {
+			return fmt.Errorf("%w: %w", errEndedAwaitingEndpoint, cause)
+		}
 		return fmt.Errorf("context cancelled while waiting for endpoint: %w", ctx.Err())
 	case <-timer.C:
 		cancel()
@@ -342,6 +369,9 @@ func (c *SSE) start(ctx context.Context) error {
 	}
 	if c.ended.Load() {
 		c.lifecycleMu.Unlock()
+		if cause := c.streamEndCause(); cause != nil {
+			return fmt.Errorf("%w: %w", errEndedStarting, cause)
+		}
 		return errors.New("the SSE stream ended while starting")
 	}
 	c.started.Store(true)
@@ -350,11 +380,13 @@ func (c *SSE) start(ctx context.Context) error {
 	return nil
 }
 
-// failPending fails the requests waiting on a stream that ended. Requests
-// register under mu after checking ended, which is set first, so each is
-// either failed here or refused.
-func (c *SSE) failPending() {
+// failPending fails the requests waiting on a stream that ended, for cause
+// when the reader ended it itself. Requests register under mu after
+// checking ended, which is set first, so each is either failed here or
+// refused.
+func (c *SSE) failPending(cause error) {
 	c.mu.Lock()
+	c.endCause = cause
 	for _, ch := range c.responses {
 		close(ch)
 	}
@@ -372,9 +404,19 @@ func (c *SSE) streamError() error {
 		return errSSEClosed
 	}
 	if c.ended.Load() {
+		if cause := c.streamEndCause(); cause != nil {
+			return fmt.Errorf("%w: %w", errStreamEnded, cause)
+		}
 		return errStreamEnded
 	}
 	return nil
+}
+
+// streamEndCause is why the reader ended the stream itself, if it did.
+func (c *SSE) streamEndCause() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.endCause
 }
 
 // closedError is an error that reads as its own text and is
@@ -391,6 +433,12 @@ const (
 	// errConnectionClosed is the error of a request whose answer can no
 	// longer arrive: Close ran, or the stream ended, while it waited.
 	errConnectionClosed closedError = "connection has been closed"
+	// errEndedAwaitingEndpoint and errEndedStarting are the errors of a
+	// Start whose stream the reader ended itself, before the endpoint
+	// arrived or after it, wrapped with the cause as a waiting request's
+	// error is.
+	errEndedAwaitingEndpoint closedError = "the SSE stream ended while waiting for endpoint"
+	errEndedStarting         closedError = "the SSE stream ended while starting"
 )
 
 // SetNotificationHandler sets the handler for incoming JSON-RPC notifications.
@@ -565,6 +613,9 @@ func (c *SSE) SendRequest(
 	case response, ok := <-responseChan:
 		if ok {
 			return response, nil
+		}
+		if cause := c.streamEndCause(); cause != nil {
+			return nil, fmt.Errorf("%w: %w", errConnectionClosed, cause)
 		}
 		return nil, errConnectionClosed
 	}

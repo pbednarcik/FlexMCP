@@ -109,6 +109,20 @@ func WithStreamableHTTPHost(host string) StreamableHTTPCOption {
 	}
 }
 
+// WithHTTPMaxMessageBytes bounds the size of a message the client reads from
+// the server: a JSON response body, or the data of one SSE event. Every line
+// of an SSE stream, a comment's too, is bounded as well, with a few bytes more
+// for the field's name and line end. A request whose response, or an event or
+// line on its stream, is larger fails with ErrMessageTooLarge, and its stream
+// is not resumed. A larger event or line on the GET stream ends that stream,
+// which the client then opens again. The default is DefaultMaxMessageBytes;
+// zero or less removes the bound.
+func WithHTTPMaxMessageBytes(n int64) StreamableHTTPCOption {
+	return func(sc *StreamableHTTP) {
+		sc.maxMessageBytes = n
+	}
+}
+
 // StreamableHTTP implements Streamable HTTP transport.
 //
 // It transmits JSON-RPC messages over individual HTTP requests. One message per request.
@@ -132,6 +146,9 @@ type StreamableHTTP struct {
 	host                string
 	logger              *slog.Logger
 	getListeningEnabled bool
+	// maxMessageBytes bounds a JSON answer and the data of one SSE event;
+	// zero or less is no bound.
+	maxMessageBytes int64
 	// retryInterval is how long the GET listener waits before it connects
 	// again, taken from the package variable when the transport is made: the
 	// listener outlives Close, and must not read a variable tests set.
@@ -194,7 +211,8 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 		logger:      slog.Default(),
 		initialized: make(chan struct{}),
 
-		retryInterval: retryInterval,
+		retryInterval:   retryInterval,
+		maxMessageBytes: DefaultMaxMessageBytes,
 	}
 	smc.closing, smc.closeTransport = context.WithCancel(context.Background())
 	smc.closed = smc.closing.Done()
@@ -527,9 +545,16 @@ func (c *StreamableHTTP) SendRequest(
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	switch mediaType {
 	case "application/json":
-		// Single response
+		// Single response. One whose stated length is over the bound fails
+		// without being decoded, and only releaseResponse's bounded drain
+		// may read it; any other is read up to the bound, as the length
+		// stated is not trusted to end it: a RoundTripper may state less
+		// than it delivers.
+		if c.maxMessageBytes > 0 && resp.ContentLength > c.maxMessageBytes {
+			return unanswered(fmt.Errorf("failed to decode response: %w", ErrMessageTooLarge))
+		}
 		var response JSONRPCResponse
-		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		if err := decodeBounded(resp.Body, c.maxMessageBytes, &response); err != nil {
 			return unanswered(fmt.Errorf("failed to decode response: %w", err))
 		}
 		if err := answers(request, &response); err != nil {
@@ -671,17 +696,28 @@ const (
 	maxDrainTime  = 50 * time.Millisecond
 )
 
+// drainReaders keeps the readers releaseResponse bounds its read through,
+// one per release and empty between, so that bounding it allocates none:
+// io.CopyN would allocate its LimitedReader for every release.
+var drainReaders = sync.Pool{New: func() any { return new(io.LimitedReader) }}
+
 // releaseResponse ends a request's context and then closes its response body,
 // in that order: on HTTP/2 a body's Close can wait until the context ends.
 // Ending the context first stops net/http draining what is left of the body,
 // so a short body of known length is read to its end before, for at most
-// maxDrainTime, and its HTTP/1.1 connection serves the next request. A body
-// handed to an SSE reader is released with releaseUnread instead. resp may be
-// nil.
+// maxDrainTime, and its HTTP/1.1 connection serves the next request. The
+// length stated is not trusted to end the read, as a RoundTripper may state
+// less than it delivers: no more than maxDrainBytes is read, through a
+// reader from drainReaders. A body handed to an SSE reader is released with
+// releaseUnread instead. resp may be nil.
 func releaseResponse(cancel context.CancelFunc, resp *http.Response) {
 	if resp != nil && resp.ContentLength > 0 && resp.ContentLength <= maxDrainBytes {
 		timer := time.AfterFunc(maxDrainTime, cancel)
-		_, _ = io.Copy(io.Discard, resp.Body)
+		lr := drainReaders.Get().(*io.LimitedReader)
+		lr.R, lr.N = resp.Body, maxDrainBytes
+		_, _ = io.Copy(io.Discard, lr)
+		lr.R = nil
+		drainReaders.Put(lr)
 		timer.Stop()
 	}
 	cancel()

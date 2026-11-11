@@ -238,6 +238,20 @@ func TestReleaseResponseDrainsOnlyAShortBodyOfKnownLength(t *testing.T) {
 	}
 }
 
+// releaseResponse reads no more than maxDrainBytes of a body that is longer
+// than the length it states, as one from a RoundTripper that misreports it.
+func TestReleaseResponseDrainsNoMoreThanTheBoundOfABodyLongerThanStated(t *testing.T) {
+	var read atomic.Int64
+	resp := &http.Response{
+		Header:        http.Header{"Content-Type": {"application/json"}},
+		ContentLength: 8,
+		Body:          countingBody{Reader: strings.NewReader(strings.Repeat("x", 4*maxDrainBytes)), read: &read},
+	}
+	releaseResponse(func() {}, resp)
+	assert.Positive(t, read.Load(), "the body was not drained")
+	assert.LessOrEqual(t, read.Load(), int64(maxDrainBytes))
+}
+
 // releaseUnread never reads the body: an SSE reader may still be reading it.
 func TestReleaseUnreadDoesNotReadTheBody(t *testing.T) {
 	var read atomic.Int64

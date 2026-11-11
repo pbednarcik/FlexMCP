@@ -30,9 +30,15 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// resumeErr is why the stream couldn't be resumed. It is written before
-	// responseChan is closed and read after, so the close orders the two.
-	var resumeErr error
+	// end is why the stream ended without the response: failure, that it
+	// broke off or couldn't be resumed, and brokenOff, whether it broke
+	// off. It is written before responseChan is closed and read after, so
+	// the close orders the two; one variable, so that the reader's closure
+	// keeps one.
+	var end struct {
+		failure   error
+		brokenOff bool
+	}
 
 	// Start a goroutine to process the SSE stream
 	go func() {
@@ -120,21 +126,30 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 		// Before protocol version 2026-07-28, a server may end the stream
 		// before the response, once it has sent an event ID, and the client
 		// polls it by reconnecting (SEP-1699). A stream that breaks off
-		// fails the request, as before.
+		// fails the request with its read error, as does one an event over
+		// the bound ended: a resume would have the server replay the event.
 		for ended && !ignoreResponse && !delivered && ctx.Err() == nil && cursor.lastEventID != "" && !c.isModern() {
+			var resumeErr error
 			ended, resumeErr = c.resumeSSE(ctx, &cursor, handle)
 			if resumeErr != nil {
+				end.failure = fmt.Errorf("failed to resume the SSE stream for the response: %w", resumeErr)
 				return
 			}
 		}
+		// A listening stream answers no request: why it broke off, which
+		// brokeOff has logged, is not reported again.
+		if cursor.err != nil && !ignoreResponse {
+			end.failure = fmt.Errorf("failed to read the SSE stream for the response: %w", cursor.err)
+		}
+		end.brokenOff = cursor.err != nil
 	}()
 
 	// Wait for the response or context cancellation
 	select {
 	case response := <-responseChan:
 		if response == nil {
-			if resumeErr != nil {
-				return nil, fmt.Errorf("failed to resume the SSE stream for the response: %w", resumeErr)
+			if end.failure != nil || end.brokenOff {
+				return nil, end.failure
 			}
 			return nil, errors.New("unexpected nil response")
 		}
@@ -206,11 +221,13 @@ func (c *StreamableHTTP) readSSE(ctx context.Context, reader io.ReadCloser, hand
 
 // sseCursor holds what a client needs to resume an SSE stream (SEP-1699):
 // the ID of the last event dispatched and the reconnection time the server
-// asked for with the retry field, if any.
+// asked for with the retry field, if any. err is why the stream last broke
+// off, if it did: a read error, or ErrMessageTooLarge.
 type sseCursor struct {
 	lastEventID string
 	retry       time.Duration
 	hasRetry    bool
+	err         error
 }
 
 // readSSEWithCursor is readSSE that also records the id and retry fields
@@ -236,8 +253,11 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 	// The line and the event's data are read into buffers kept from one
 	// event to the next, as the SSE transport's reader does; one a message
 	// grew past maxRetainedLine is let go. The event's name and id are made
-	// strings only when the stream names them.
+	// strings only when the stream names them. A line over lineLimit, or
+	// data that would grow past the message bound, breaks the stream off
+	// before it is held.
 	var line, data []byte
+	lineLimit := sseLineLimit(c.maxMessageBytes)
 	var event, id string
 	var hasID bool
 	commitID := func() {
@@ -252,7 +272,7 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 			line = nil
 		}
 		var err error
-		line, err = readLine(br, line)
+		line, err = readLineMax(br, line, lineLimit)
 		if err != nil {
 			// Context was cancelled — reader was closed by the goroutine above.
 			if ctx.Err() != nil {
@@ -264,8 +284,7 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 				// the event before delivers it whole.
 				return true
 			}
-			c.logger.Error("SSE stream error", "err", err)
-			return false
+			return c.brokeOff(cursor, err)
 		}
 
 		if len(line) == 0 {
@@ -292,6 +311,9 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 			// is handled by when it names none.
 			event = sseEventName(bytes.TrimSpace(after))
 		} else if after, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			if !sseDataFits(data, after, c.maxMessageBytes) {
+				return c.brokeOff(cursor, ErrMessageTooLarge)
+			}
 			if len(data) == 0 {
 				// The event's first data line is moved to the front of the
 				// line's buffer, which becomes the data's, and the data's
@@ -316,4 +338,14 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 			}
 		}
 	}
+}
+
+// brokeOff records err as why the stream broke off, in cursor when there is
+// one, and reports that the server did not end the stream.
+func (c *StreamableHTTP) brokeOff(cursor *sseCursor, err error) bool {
+	c.logger.Error("SSE stream error", "err", err)
+	if cursor != nil {
+		cursor.err = err
+	}
+	return false
 }

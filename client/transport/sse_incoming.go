@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -25,62 +26,18 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 	// from one event to the next; one a message grew past maxRetainedLine is
 	// let go.
 	var line, event, data []byte
+	// A line over lineLimit, or data that would grow past the message bound,
+	// ends the stream before it is held: an event over the bound cannot be
+	// skipped, as whoever waits on it is not known until it is read.
+	lineLimit := sseLineLimit(c.maxMessageBytes)
 
 	for {
 		// when close or start's ctx cancel, the reader will be closed
 		// and the for loop will break.
 		var err error
-		line, err = readLine(br, line)
+		line, err = readLineMax(br, line, lineLimit)
 		if err != nil {
-			// Close() cancels the stream context, which surfaces here as a read
-			// error; firing the handler would reconnect a transport the caller
-			// just shut down.
-			if c.closed.Load() {
-				return
-			}
-			// An event the stream ended before its blank line is unfinished,
-			// and SSE discards it.
-			if c.testHookStreamEnding != nil {
-				c.testHookStreamEnding()
-			}
-			// A stream an earlier attempt opened ends nothing a later one
-			// serves. Under lifecycleMu, as Start publishes its success: the
-			// end is reported to the handler if Start succeeded first, and
-			// by Start's error otherwise. The pending requests are failed
-			// under it too: a retry's Start waits for it, so none of the
-			// retry's requests is among them. Close sets closed under it as
-			// well, so a Close since the check above is seen here: the end of
-			// a stream the caller shut down is not reported, and Close fails
-			// the pending requests itself.
-			c.lifecycleMu.Lock()
-			current := !c.closed.Load() && c.attempt.Load() == attempt
-			var endStream context.CancelFunc
-			if current {
-				c.ended.Store(true)
-				endStream = c.cancelSSEStream
-				c.failPending()
-			}
-			started := current && c.started.Load()
-			c.lifecycleMu.Unlock()
-			if !current {
-				return
-			}
-			// The POSTs sent on this stream end with it.
-			if endStream != nil {
-				endStream()
-			}
-			if !started {
-				return
-			}
-			c.connectionLostMu.RLock()
-			handler := c.onConnectionLost
-			c.connectionLostMu.RUnlock()
-			if handler != nil {
-				// Notify that the connection will be closed due to an error
-				handler(err)
-			} else {
-				c.logger.Error("SSE stream error", "err", err)
-			}
+			c.settleStreamEnd(err, attempt)
 			return
 		}
 
@@ -97,11 +54,76 @@ func (c *SSE) readSSE(reader io.ReadCloser, endpointChan chan struct{}, endpoint
 		if after, ok := bytes.CutPrefix(line, []byte("event:")); ok {
 			event = append(event[:0], bytes.TrimSpace(after)...)
 		} else if after, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			if !sseDataFits(data, after, c.maxMessageBytes) {
+				c.settleStreamEnd(ErrMessageTooLarge, attempt)
+				return
+			}
 			data = appendSSEDataBytes(data, after)
 		}
 		if cap(line) > maxRetainedLine {
 			line = nil
 		}
+	}
+}
+
+// settleStreamEnd settles attempt's stream, which ended with err: a read
+// error, or ErrMessageTooLarge when the reader ended it itself.
+func (c *SSE) settleStreamEnd(err error, attempt uint64) {
+	// Close() cancels the stream context, which surfaces here as a read
+	// error; firing the handler would reconnect a transport the caller
+	// just shut down.
+	if c.closed.Load() {
+		return
+	}
+	// An event the stream ended before its blank line is unfinished,
+	// and SSE discards it.
+	if c.testHookStreamEnding != nil {
+		c.testHookStreamEnding()
+	}
+	// Only an end the reader chose is kept as the cause the pending
+	// requests fail with: one the server or the network made tells them
+	// nothing beyond the end itself.
+	var cause error
+	if errors.Is(err, ErrMessageTooLarge) {
+		cause = err
+	}
+	// A stream an earlier attempt opened ends nothing a later one
+	// serves. Under lifecycleMu, as Start publishes its success: the
+	// end is reported to the handler if Start succeeded first, and
+	// by Start's error otherwise. The pending requests are failed
+	// under it too: a retry's Start waits for it, so none of the
+	// retry's requests is among them. Close sets closed under it as
+	// well, so a Close since the check above is seen here: the end of
+	// a stream the caller shut down is not reported, and Close fails
+	// the pending requests itself.
+	c.lifecycleMu.Lock()
+	current := !c.closed.Load() && c.attempt.Load() == attempt
+	var endStream context.CancelFunc
+	if current {
+		c.ended.Store(true)
+		endStream = c.cancelSSEStream
+		c.failPending(cause)
+	}
+	started := current && c.started.Load()
+	c.lifecycleMu.Unlock()
+	if !current {
+		return
+	}
+	// The POSTs sent on this stream end with it.
+	if endStream != nil {
+		endStream()
+	}
+	if !started {
+		return
+	}
+	c.connectionLostMu.RLock()
+	handler := c.onConnectionLost
+	c.connectionLostMu.RUnlock()
+	if handler != nil {
+		// Notify that the connection will be closed due to an error
+		handler(err)
+	} else {
+		c.logger.Error("SSE stream error", "err", err)
 	}
 }
 

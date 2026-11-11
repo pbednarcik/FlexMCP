@@ -22,11 +22,22 @@ const maxRetainedLine = 1 << 20
 // keeps it, and joined once at its length, rather than growing buf by every
 // part.
 func readLine(r *bufio.Reader, buf []byte) ([]byte, error) {
+	return readLineMax(r, buf, 0)
+}
+
+// readLineMax is readLine refusing a line longer than limit bytes, its line
+// end included, with ErrMessageTooLarge: the check comes before each part of
+// the line is kept, so a longer line is never held whole. A limit of zero or
+// less is no limit.
+func readLineMax(r *bufio.Reader, buf []byte, limit int) ([]byte, error) {
 	buf = buf[:0]
 	var parts [][]byte
 	n := 0
 	for {
 		chunk, err := r.ReadSlice('\n')
+		if limit > 0 && n+len(chunk) > limit {
+			return buf[:0], ErrMessageTooLarge
+		}
 		n += len(chunk)
 		if errors.Is(err, bufio.ErrBufferFull) {
 			if parts == nil && n <= cap(buf) {
