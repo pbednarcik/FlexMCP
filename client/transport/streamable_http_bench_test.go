@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -193,8 +194,8 @@ func fewestAllocs(rounds, runs int, f func()) float64 {
 	return fewest
 }
 
-// An answer on an event stream costs a bounded number of allocations: 55
-// for an empty text and 61 for 16 KiB of it.
+// An answer on an event stream costs a bounded number of allocations: 53
+// for an empty text and 59 for 16 KiB of it.
 func TestStreamableHTTPSSEAnswerAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -202,7 +203,7 @@ func TestStreamableHTTPSSEAnswerAllocations(t *testing.T) {
 	for _, tc := range []struct {
 		size int
 		max  float64
-	}{{0, 55}, {16 << 10, 61}} {
+	}{{0, 53}, {16 << 10, 59}} {
 		t.Run(fmt.Sprint(tc.size), func(t *testing.T) {
 			c, err := NewStreamableHTTP("http://127.0.0.1:1/mcp", WithHTTPBasicClient(&http.Client{
 				Transport: eventStreamRoundTripper{body: eventStreamAnswer(tc.size)},
@@ -221,5 +222,36 @@ func TestStreamableHTTPSSEAnswerAllocations(t *testing.T) {
 				t.Errorf("%v allocations per request, want at most %v", allocs, tc.max)
 			}
 		})
+	}
+}
+
+// An answer on an event stream of one large event allocates about three
+// bytes per byte of it: the parts of its line, the line, and the decoded
+// result. The line is not grown by every part it is read in, and the data
+// is not copied out of it.
+func TestStreamableHTTPSSEAnswerBytes(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	body := eventStreamAnswer(1 << 20)
+	c, err := NewStreamableHTTP("http://127.0.0.1:1/mcp", WithHTTPBasicClient(&http.Client{
+		Transport: eventStreamRoundTripper{body: body},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	request := JSONRPCRequest{JSONRPC: "2.0", Method: "tools/call", ID: mcp.NewRequestId(int64(7))}
+	const n = 4
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range n {
+		if _, err := c.SendRequest(t.Context(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.ReadMemStats(&after)
+	if perByte := float64(after.TotalAlloc-before.TotalAlloc) / n / float64(len(body)); perByte > 3.5 {
+		t.Errorf("%.2f bytes allocated per byte of the event, want at most 3.5", perByte)
 	}
 }

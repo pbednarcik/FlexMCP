@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,14 +18,31 @@ const maxRetainedLine = 1 << 20
 
 // readLine reads the next line from r into buf, whose storage it reuses, and
 // returns it without its line end. The line lives in buf until the next read.
+// A line longer than buf's storage is kept in parts, as bufio's ReadBytes
+// keeps it, and joined once at its length, rather than growing buf by every
+// part.
 func readLine(r *bufio.Reader, buf []byte) ([]byte, error) {
 	buf = buf[:0]
+	var parts [][]byte
+	n := 0
 	for {
 		chunk, err := r.ReadSlice('\n')
-		buf = append(buf, chunk...)
+		n += len(chunk)
 		if errors.Is(err, bufio.ErrBufferFull) {
+			if parts == nil && n <= cap(buf) {
+				buf = append(buf, chunk...)
+			} else {
+				parts = append(parts, bytes.Clone(chunk))
+			}
 			continue
 		}
+		if parts != nil {
+			buf = slices.Grow(buf, n-len(buf))
+			for _, part := range parts {
+				buf = append(buf, part...)
+			}
+		}
+		buf = append(buf, chunk...)
 		return bytes.TrimRight(buf, "\r\n"), err
 	}
 }

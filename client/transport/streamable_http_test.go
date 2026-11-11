@@ -1518,7 +1518,7 @@ func TestReadSSEContextCancellation(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		c.readSSE(ctx, pr, func(event, data string) {
+		c.readSSE(ctx, pr, func(event string, data []byte) {
 			handlerCalled <- struct{}{}
 		})
 	}()
@@ -1549,10 +1549,31 @@ func TestReadSSEDiscardsAnEventTheStreamEndsBeforeItsBlankLine(t *testing.T) {
 	var got []string
 	stream := "data: {\"jsonrpc\":\"2.0\",\"method\":\"whole\"}\n\n" +
 		"data: {\"jsonrpc\":\"2.0\",\"method\":\"unfinished\"}\n"
-	c.readSSE(t.Context(), io.NopCloser(strings.NewReader(stream)), func(_, data string) {
-		got = append(got, data)
+	c.readSSE(t.Context(), io.NopCloser(strings.NewReader(stream)), func(_ string, data []byte) {
+		got = append(got, string(data))
 	})
 	assert.Equal(t, []string{`{"jsonrpc":"2.0","method":"whole"}`}, got)
+}
+
+// An event's data lines are joined in time and memory linear in the event's
+// size: an event of many short lines allocates a small multiple of its size,
+// where joining each line onto a copy of the data before it allocated the
+// square of it.
+func TestStreamableHTTP_DataLinesJoinInLinearTime(t *testing.T) {
+	const lines = 64 << 10
+	stream := strings.Repeat("data: x\n", lines) + "\n"
+	c := &StreamableHTTP{}
+	got := 0
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	c.readSSE(t.Context(), io.NopCloser(strings.NewReader(stream)), func(_ string, data []byte) {
+		got = len(data)
+	})
+	runtime.ReadMemStats(&after)
+	require.Equal(t, 2*lines-1, got, "the event's data, its lines joined by newlines")
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 16*uint64(len(stream)) {
+		t.Errorf("reading an event of %d bytes allocated %d bytes, want at most 16 times its size", len(stream), allocated)
+	}
 }
 
 // TestSendRequestSSEStreamStaysOpen verifies that SendRequest returns the response

@@ -187,7 +187,7 @@ func TestResumeSSEKeepsTheConnectionAfterARefusal(t *testing.T) {
 	t.Cleanup(func() { _ = tr.Close() })
 
 	for range 10 {
-		_, err := tr.resumeSSE(t.Context(), &sseCursor{lastEventID: "1", hasRetry: true}, func(string, string) {})
+		_, err := tr.resumeSSE(t.Context(), &sseCursor{lastEventID: "1", hasRetry: true}, func(string, []byte) {})
 		require.Error(t, err)
 	}
 	assert.Equal(t, int64(1), conns.Load(), "connections opened for 10 refused resumes")

@@ -220,24 +220,21 @@ func TestAppendSSEData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := ""
-			var dataBytes []byte
+			var data []byte
 			for _, line := range tt.lines {
-				data = appendSSEData(data, line)
-				dataBytes = appendSSEDataBytes(dataBytes, []byte(line))
+				data = appendSSEDataBytes(data, []byte(line))
 			}
-			require.Equal(t, tt.want, data)
-			require.Equal(t, tt.want, string(dataBytes), "appendSSEDataBytes")
+			require.Equal(t, tt.want, string(data))
 		})
 	}
 
 	// The reassembled multi-line JSON-RPC payload must still be valid JSON.
-	data := ""
+	var data []byte
 	for _, line := range []string{` {"jsonrpc":"2.0",`, ` "id":1,`, ` "result":{"ok":true}}`} {
-		data = appendSSEData(data, line)
+		data = appendSSEDataBytes(data, []byte(line))
 	}
 	var msg map[string]any
-	require.NoError(t, json.Unmarshal([]byte(data), &msg))
+	require.NoError(t, json.Unmarshal(data, &msg))
 }
 
 func TestSSE(t *testing.T) {

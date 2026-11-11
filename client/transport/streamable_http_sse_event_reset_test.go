@@ -16,7 +16,7 @@ func TestStreamableHTTP_ReadSSEEventTypeResetsAfterDatalessEvent(t *testing.T) {
 	var events []string
 	body := "event: ping\n\n" +
 		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n"
-	c.readSSE(t.Context(), io.NopCloser(strings.NewReader(body)), func(event, _ string) {
+	c.readSSE(t.Context(), io.NopCloser(strings.NewReader(body)), func(event string, _ []byte) {
 		events = append(events, event)
 	})
 	require.Equal(t, []string{"message"}, events)

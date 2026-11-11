@@ -130,25 +130,17 @@ func sseEventName(event []byte) string {
 	return string(event)
 }
 
-// appendSSEData joins the value of an SSE "data:" field onto any data already
-// accumulated for the current event. Per the Server-Sent Events specification,
-// a single event may carry multiple "data:" lines and they must be
-// concatenated with a newline. The previous implementation overwrote the
-// buffer on every line, silently truncating multi-line payloads to their final
-// line and corrupting JSON-RPC messages that span more than one data line.
+// appendSSEDataBytes joins the value of an SSE "data:" field onto any data
+// already accumulated for the current event, in existing's storage. Per the
+// Server-Sent Events specification, a single event may carry multiple
+// "data:" lines and they must be concatenated with a newline. The previous
+// implementation overwrote the buffer on every line, silently truncating
+// multi-line payloads to their final line and corrupting JSON-RPC messages
+// that span more than one data line.
 //
 // Only a single optional leading space after "data:" is removed, as the spec
 // requires; any other leading or trailing whitespace in the value is
 // significant and preserved.
-func appendSSEData(existing, line string) string {
-	value := strings.TrimPrefix(line, " ")
-	if existing == "" {
-		return value
-	}
-	return existing + "\n" + value
-}
-
-// appendSSEDataBytes is appendSSEData appending into existing's storage.
 func appendSSEDataBytes(existing, line []byte) []byte {
 	value := bytes.TrimPrefix(line, []byte(" "))
 	if len(existing) > 0 {

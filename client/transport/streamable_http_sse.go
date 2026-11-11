@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
@@ -46,15 +46,15 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 
 		var cursor sseCursor
 		delivered := false
-		handle := func(event, data string) {
-			// Every decode below reads these bytes, and none keeps them.
-			encoded := []byte(data)
+		handle := func(event string, data []byte) {
+			// data is the reader's buffer, valid until handle returns: every
+			// decode below reads it, and none keeps it.
 			var envelope struct {
 				JSONRPC jsonrpcVersion  `json:"jsonrpc"`
 				ID      json.RawMessage `json:"id"`
 				Method  jsonrpc.Method  `json:"method"`
 			}
-			if err := json.Unmarshal(encoded, &envelope); err != nil {
+			if err := json.Unmarshal(data, &envelope); err != nil {
 				c.logger.Info("failed to unmarshal message (non-fatal)", "err", err, "message_len", len(data))
 				return
 			}
@@ -72,7 +72,7 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 				c.sendResponseToServer(ctx, NewJSONRPCErrorResponse(answerID, mcp.INVALID_REQUEST, "Invalid request: method must be a string", nil))
 			case envelope.Method.Present && len(envelope.ID) == 0:
 				var notification mcp.JSONRPCNotification
-				if err := json.Unmarshal(encoded, &notification); err != nil {
+				if err := json.Unmarshal(data, &notification); err != nil {
 					c.logger.Error("failed to unmarshal notification", "err", err)
 					return
 				}
@@ -92,14 +92,14 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 				c.sendResponseToServer(ctx, invalidVersionResponse(id))
 			case envelope.Method.Present:
 				var request JSONRPCRequest
-				if err := json.Unmarshal(encoded, &request); err != nil {
+				if err := json.Unmarshal(data, &request); err != nil {
 					c.logger.Error("failed to unmarshal server request", "err", err)
 					return
 				}
 				c.handleIncomingRequest(ctx, request)
 			default:
 				var message JSONRPCResponse
-				if err := json.Unmarshal(encoded, &message); err != nil {
+				if err := json.Unmarshal(data, &message); err != nil {
 					c.logger.Info("failed to unmarshal response (non-fatal)", "err", err, "message_len", len(data))
 					return
 				}
@@ -157,7 +157,7 @@ var (
 // stream with a GET carrying Last-Event-ID, the 2025-11-25 way of resuming a
 // stream the server ended before the response, and reads it. It reports
 // whether the server ended this stream too.
-func (c *StreamableHTTP) resumeSSE(ctx context.Context, cursor *sseCursor, handler func(event, data string)) (bool, error) {
+func (c *StreamableHTTP) resumeSSE(ctx context.Context, cursor *sseCursor, handler func(event string, data []byte)) (bool, error) {
 	delay := defaultSSEReconnectDelay
 	if cursor.hasRetry {
 		delay = max(cursor.retry, minSSEReconnectDelay)
@@ -194,12 +194,13 @@ func (c *StreamableHTTP) resumeSSE(ctx context.Context, cursor *sseCursor, handl
 }
 
 // readSSE reads the SSE stream(reader) and calls the handler for each event and data pair.
-// It will end when the reader is closed (or the context is done).
+// It will end when the reader is closed (or the context is done). The data
+// lives in the reader's buffer and is valid only until the handler returns.
 //
 // A background goroutine closes the reader when ctx is cancelled, which unblocks
-// any in-progress ReadString call. This is necessary because ReadString is blocking
-// I/O that does not respect context cancellation on its own.
-func (c *StreamableHTTP) readSSE(ctx context.Context, reader io.ReadCloser, handler func(event, data string)) {
+// any read in progress. This is necessary because the read is blocking I/O that
+// does not respect context cancellation on its own.
+func (c *StreamableHTTP) readSSE(ctx context.Context, reader io.ReadCloser, handler func(event string, data []byte)) {
 	c.readSSEWithCursor(ctx, reader, nil, handler)
 }
 
@@ -217,9 +218,9 @@ type sseCursor struct {
 // stream, as opposed to it breaking off or the context ending. As in the SSE
 // spec, an event's id counts once the event is dispatched, even an event
 // with no data, which is how a server primes the client to reconnect.
-func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCloser, cursor *sseCursor, handler func(event, data string)) bool {
+func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCloser, cursor *sseCursor, handler func(event string, data []byte)) bool {
 	// Close the reader when context is cancelled to interrupt blocking reads.
-	// This ensures ReadString returns immediately with an error instead of
+	// This ensures a read returns immediately with an error instead of
 	// blocking indefinitely when the SSE stream is open but idle.
 	go func() {
 		defer func() {
@@ -232,7 +233,12 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 	}()
 
 	br := bufio.NewReader(reader)
-	var event, data, id string
+	// The line and the event's data are read into buffers kept from one
+	// event to the next, as the SSE transport's reader does; one a message
+	// grew past maxRetainedLine is let go. The event's name and id are made
+	// strings only when the stream names them.
+	var line, data []byte
+	var event, id string
 	var hasID bool
 	commitID := func() {
 		if cursor != nil && hasID {
@@ -242,13 +248,17 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 	}
 
 	for {
-		line, err := br.ReadString('\n')
+		if cap(line) > maxRetainedLine {
+			line = nil
+		}
+		var err error
+		line, err = readLine(br, line)
 		if err != nil {
 			// Context was cancelled — reader was closed by the goroutine above.
 			if ctx.Err() != nil {
 				return false
 			}
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				// An event the stream ended before its blank line is
 				// unfinished, and SSE discards it, id and all: a resume from
 				// the event before delivers it whole.
@@ -258,17 +268,18 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 			return false
 		}
 
-		// Remove only newline markers
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
+		if len(line) == 0 {
 			// Empty line means end of event
 			commitID()
-			if data != "" {
+			if len(data) > 0 {
 				if event == "" {
 					event = "message"
 				}
 				handler(event, data)
-				data = ""
+				data = data[:0]
+				if cap(data) > maxRetainedLine {
+					data = nil
+				}
 			}
 			// The event type resets on every dispatch, even one with no
 			// data, so it cannot leak into the next event.
@@ -276,19 +287,30 @@ func (c *StreamableHTTP) readSSEWithCursor(ctx context.Context, reader io.ReadCl
 			continue
 		}
 
-		if eventStr, ok := strings.CutPrefix(line, "event:"); ok {
-			event = strings.TrimSpace(eventStr)
-		} else if dataStr, ok := strings.CutPrefix(line, "data:"); ok {
-			data = appendSSEData(data, dataStr)
-		} else if idStr, ok := strings.CutPrefix(line, "id:"); ok {
-			// The SSE spec ignores an id that contains a NUL character.
-			if value := strings.TrimPrefix(idStr, " "); !strings.ContainsRune(value, 0) {
-				id, hasID = value, true
+		if after, ok := bytes.CutPrefix(line, []byte("event:")); ok {
+			// sseEventName makes no string for "message", the name an event
+			// is handled by when it names none.
+			event = sseEventName(bytes.TrimSpace(after))
+		} else if after, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			if len(data) == 0 {
+				// The event's first data line is moved to the front of the
+				// line's buffer, which becomes the data's, and the data's
+				// buffer reads the next line: the value is not copied into a
+				// second buffer.
+				n := copy(line, bytes.TrimPrefix(after, []byte(" ")))
+				data, line = line[:n], data[:0]
+			} else {
+				data = appendSSEDataBytes(data, after)
 			}
-		} else if retryStr, ok := strings.CutPrefix(line, "retry:"); ok && cursor != nil {
+		} else if after, ok := bytes.CutPrefix(line, []byte("id:")); ok {
+			// The SSE spec ignores an id that contains a NUL character.
+			if value := bytes.TrimPrefix(after, []byte(" ")); bytes.IndexByte(value, 0) < 0 {
+				id, hasID = string(value), true
+			}
+		} else if after, ok := bytes.CutPrefix(line, []byte("retry:")); ok && cursor != nil {
 			// Only ASCII digits are a valid retry value.
-			value := strings.TrimPrefix(retryStr, " ")
-			if ms, err := strconv.ParseUint(value, 10, 31); err == nil && value != "" && strings.Trim(value, "0123456789") == "" {
+			value := bytes.TrimPrefix(after, []byte(" "))
+			if ms, err := strconv.ParseUint(string(value), 10, 31); err == nil && len(value) > 0 && len(bytes.Trim(value, "0123456789")) == 0 {
 				cursor.retry = time.Duration(ms) * time.Millisecond
 				cursor.hasRetry = true
 			}

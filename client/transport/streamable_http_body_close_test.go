@@ -75,7 +75,7 @@ func TestStreamableHTTPCancelsBeforeClosingAnErrorBody(t *testing.T) {
 			return err
 		}},
 		{"a resumed stream, 404", http.StatusNotFound, true, func(ctx context.Context, tr *StreamableHTTP) error {
-			_, err := tr.resumeSSE(ctx, &sseCursor{lastEventID: "1", hasRetry: true}, func(string, string) {})
+			_, err := tr.resumeSSE(ctx, &sseCursor{lastEventID: "1", hasRetry: true}, func(string, []byte) {})
 			return err
 		}},
 		{"a request, 404", http.StatusNotFound, true, func(ctx context.Context, tr *StreamableHTTP) error {
