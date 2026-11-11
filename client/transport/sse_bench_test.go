@@ -170,3 +170,39 @@ func BenchmarkSSEStreamNotification(b *testing.B) {
 		})
 	}
 }
+
+// An event on the stream costs a bounded number of allocations, decoding the
+// notification and handing it over included: 13 for an empty text, 14 for
+// 16 KiB of it.
+func TestSSEStreamEventAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	for _, tc := range []struct {
+		size int
+		max  float64
+	}{{0, 13}, {16 << 10, 14}} {
+		t.Run(fmt.Sprint(tc.size), func(t *testing.T) {
+			body, stream := io.Pipe()
+			c, err := NewSSE("http://sse.test/sse")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make(chan struct{}, 1)
+			c.SetNotificationHandler(func(mcp.JSONRPCNotification) { got <- struct{}{} })
+			done := make(chan struct{})
+			go func() { c.readSSE(body, make(chan struct{}), &sync.Once{}, 0); close(done) }()
+			event := fmt.Appendf(nil, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\",\"data\":%q}}\n\n", strings.Repeat("x", tc.size))
+			allocs := testing.AllocsPerRun(500, func() {
+				_, _ = stream.Write(event)
+				<-got
+			})
+			c.closed.Store(true)
+			_ = stream.Close()
+			<-done
+			if allocs > tc.max {
+				t.Errorf("%v allocations per event, want at most %v", allocs, tc.max)
+			}
+		})
+	}
+}
