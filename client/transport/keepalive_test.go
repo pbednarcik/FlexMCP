@@ -261,3 +261,113 @@ func TestReleaseUnreadDoesNotReadTheBody(t *testing.T) {
 	assert.True(t, cancelled)
 	assert.Zero(t, read.Load())
 }
+
+// The body of a legacy POST's 200 or 202 is not its answer, which comes on
+// the stream. It is read and dropped up to maxDrainBytes, for at most
+// maxDrainTime, whatever length it states, so a short one, chunked or of
+// known length, leaves its HTTP/1.1 connection to the next request or
+// notification. A body that never ends, or never reaches the length it
+// states, does not hold the request once its answer has come, nor the
+// notification.
+func TestSSE_APOSTAnswerIsDrainedUpToABound(t *testing.T) {
+	neverEnds := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		for {
+			_, _ = io.WriteString(w, "x")
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+	chunkedAccepted := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, "Accepted")
+	}
+	tests := []struct {
+		name   string
+		body   func(w http.ResponseWriter, r *http.Request)
+		notify bool // the POSTs are notifications, not requests
+		posts  int
+		conns  int64 // the connections the client may open, the stream's included; 0: not counted
+	}{
+		{"a 200 whose body never ends", neverEnds, false, 1, 0},
+		{"a 200 whose stated length never arrives", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "8")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}, false, 1, 0},
+		{"a short 202 body of known length", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "8")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, "Accepted")
+		}, false, 10, 2},
+		{"a short chunked 202 body", chunkedAccepted, false, 10, 2},
+		{"an empty 200", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "0")
+			w.WriteHeader(http.StatusOK)
+		}, false, 10, 2},
+		{"a notification's 200 whose body never ends", neverEnds, true, 1, 0},
+		{"a notification's short chunked 202 body", chunkedAccepted, true, 10, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := make(chan string, tt.posts)
+			srv, conns := countConnections(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, "event: endpoint\ndata: /message\n\n")
+					w.(http.Flusher).Flush()
+					for {
+						select {
+						case event := <-events:
+							_, _ = io.WriteString(w, event)
+							w.(http.Flusher).Flush()
+						case <-r.Context().Done():
+							return
+						}
+					}
+				}
+				var message struct {
+					ID json.RawMessage `json:"id"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&message)
+				_, _ = io.Copy(io.Discard, r.Body)
+				if len(message.ID) > 0 {
+					events <- messageEvent(answerOfSize(64))
+				}
+				tt.body(w, r)
+			})
+			client := &http.Client{Transport: &http.Transport{}}
+			t.Cleanup(client.CloseIdleConnections)
+			c, err := NewSSE(srv.URL+"/sse", WithHTTPClient(client))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+			require.NoError(t, c.Start(t.Context()))
+
+			for range tt.posts {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				start := time.Now()
+				if tt.notify {
+					err := c.SendNotification(ctx, mcp.JSONRPCNotification{JSONRPC: "2.0", Method: "notifications/progress"})
+					cancel()
+					require.NoError(t, err)
+					require.Less(t, time.Since(start), time.Second, "the POST's body held the notification")
+					continue
+				}
+				response, err := c.SendRequest(ctx, request7)
+				cancel()
+				require.NoError(t, err)
+				assert.NotEmpty(t, answerText(t, response))
+				require.Less(t, time.Since(start), time.Second, "the POST's body held the request")
+			}
+			if tt.conns > 0 {
+				assert.LessOrEqual(t, conns.Load(), tt.conns, "connections opened for %d posts", tt.posts)
+			}
+		})
+	}
+}

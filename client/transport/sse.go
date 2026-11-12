@@ -559,14 +559,14 @@ func (c *SSE) SendRequest(
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	// Drain the body: its answer comes on the stream, so a 200 or 202 body is
-	// read to its end and dropped, and only an error status keeps it, for
-	// the error's text.
+	// The answer comes on the stream, so a 200 or 202 body is read and
+	// dropped up to a bound, within a time bound. Only an error status reads
+	// its body, up to a bound, for the error's text.
 	var body []byte
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted {
-		_, err = io.Copy(io.Discard, resp.Body)
-	} else {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		body, err = readErrorBody(resp.Body)
+	} else {
+		drainPostAnswer(cancelPost, resp)
 	}
 	releaseResponse(cancelPost, resp)
 
@@ -754,7 +754,23 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 		)
 	}
 
+	drainPostAnswer(cancelPost, resp)
 	return nil
+}
+
+// drainPostAnswer reads and drops the 200 or 202 body of a legacy POST whose
+// length is unknown, as a chunked "Accepted" is, up to maxDrainBytes and for
+// at most maxDrainTime, after which cancel ends the read. releaseResponse
+// then drains a body of known length the same way, so a short body of either
+// kind leaves its HTTP/1.1 connection to the next message, and one that never
+// ends holds the message no longer than maxDrainTime.
+func drainPostAnswer(cancel context.CancelFunc, resp *http.Response) {
+	if resp.ContentLength >= 0 {
+		return
+	}
+	timer := time.AfterFunc(maxDrainTime, cancel)
+	_, _ = io.CopyN(io.Discard, resp.Body, maxDrainBytes)
+	timer.Stop()
 }
 
 // setHeaders sets the headers every request to the server carries, in
