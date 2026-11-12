@@ -1,5 +1,5 @@
-// Package jsonrpc holds the JSON-RPC 2.0 message rules the server and the
-// client transports share.
+// Package jsonrpc holds the JSON-RPC 2.0 message rules the server, the client
+// and its transports share.
 package jsonrpc
 
 import (

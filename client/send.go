@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pbednarcik/flexmcp/client/transport"
+	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
 	"github.com/pbednarcik/flexmcp/mcp"
 )
 
@@ -67,13 +68,22 @@ func (c *Client) sendRequestIn(
 	response, err := c.transport.SendRequest(ctx, request)
 	if err != nil {
 		// A transport's own timeout ends the wait as the context's deadline
-		// would, and is cancelled the same way.
-		reason := ctx.Err()
-		if reason == nil && errors.Is(err, context.DeadlineExceeded) {
-			reason = context.DeadlineExceeded
-		}
-		if reason != nil {
-			c.cancelRequest(ctx, request, reason)
+		// would, and is cancelled the same way. So is a request whose stream
+		// broke off on the transport's bound: it is no longer waited for, and
+		// the work may still be running. A response refused over the bound is
+		// never cancelled, even when the context ended while it was released:
+		// it is the request's one response, so its work is finished.
+		if !jsonrpc.ResponseRefused(err) {
+			reason := ctx.Err()
+			if reason == nil && errors.Is(err, context.DeadlineExceeded) {
+				reason = context.DeadlineExceeded
+			}
+			if reason == nil && errors.Is(err, transport.ErrMessageTooLarge) {
+				reason = transport.ErrMessageTooLarge
+			}
+			if reason != nil {
+				c.cancelRequest(ctx, request, reason)
+			}
 		}
 		err = transport.NewError(err)
 		endSendSpan(span, err)
@@ -91,9 +101,10 @@ func (c *Client) sendRequestIn(
 }
 
 // cancelRequest tells the server to stop working on a request whose context
-// ended, or that timed out, before the response arrived, with a
-// notifications/cancelled that references it and gives reason. Over stdio that is the only way to cancel a request, and
-// protocol version 2026-07-28 requires it there.
+// ended, or that timed out, before the response arrived, or whose stream
+// broke off on the transport's bound, with a notifications/cancelled that
+// references it and gives reason. Over stdio that is the only way to cancel a
+// request, and protocol version 2026-07-28 requires it there.
 //
 // Over HTTP on protocol version 2026-07-28 nothing is sent: the transport
 // ending the request's stream is the cancellation. Before that version a

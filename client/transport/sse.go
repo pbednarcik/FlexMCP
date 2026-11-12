@@ -467,6 +467,9 @@ func (c *SSE) SendRequest(
 	if c.closed.Load() {
 		return nil, errSSEClosed
 	}
+	// A request sent after the stream ended fails with errStreamEnded alone,
+	// without the end's cause: it never reached the server, and a cause of
+	// ErrMessageTooLarge would have the client cancel it there.
 	if c.ended.Load() {
 		return nil, errStreamEnded
 	}

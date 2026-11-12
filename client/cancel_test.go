@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -388,4 +390,219 @@ func TestClient_CancelsARequestTheSSEResponseTimeoutEnds(t *testing.T) {
 	require.NoError(t, json.Unmarshal(cancelled.Params, &params))
 	assert.JSONEq(t, string(call.ID), string(params.RequestID))
 	assert.Equal(t, context.DeadlineExceeded.Error(), params.Reason)
+}
+
+// tooLargeBound is the bound the client of tooLargeAnswerServer reads under.
+const tooLargeBound = 1024
+
+// tooLargeAnswer is how tooLargeAnswerServer answers tools/call past
+// tooLargeBound.
+type tooLargeAnswer int
+
+const (
+	// eventOverTheBound is an event that large on the request's stream, the
+	// work still running.
+	eventOverTheBound tooLargeAnswer = iota
+	// jsonOverTheBound is a JSON answer that large, of no stated length.
+	jsonOverTheBound
+	// statedJSONOverTheBound is a JSON answer that large, its length stated.
+	statedJSONOverTheBound
+)
+
+// tooLargeAnswerServer is a Streamable HTTP server that negotiates version
+// and answers tools/call as answer says. It sends the ID of the call on
+// callID, and each notifications/cancelled it receives on cancelled.
+type tooLargeAnswerServer struct {
+	*httptest.Server
+	callID    chan json.RawMessage
+	cancelled chan postedMessage
+}
+
+func newTooLargeAnswerServer(t *testing.T, version string, answer tooLargeAnswer) *tooLargeAnswerServer {
+	t.Helper()
+	s := &tooLargeAnswerServer{
+		callID:    make(chan json.RawMessage, 1),
+		cancelled: make(chan postedMessage, 1),
+	}
+	payload := strings.Repeat("x", 2*tooLargeBound)
+	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var message postedMessage
+		_ = json.NewDecoder(r.Body).Decode(&message)
+		switch message.Method {
+		case string(mcp.MethodServerDiscover):
+			w.Header().Set("Content-Type", "application/json")
+			if version != mcp.ProtocolVersion20260728 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"error":{"code":-32601,"message":"method not found"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"supportedVersions":["` + version + `"],"capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`))
+		case string(mcp.MethodInitialize):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"protocolVersion":"` + version + `","capabilities":{},"serverInfo":{"name":"s","version":"1"}}}`))
+		case string(mcp.MethodToolsCall):
+			select {
+			case s.callID <- message.ID:
+			default:
+			}
+			switch answer {
+			case eventOverTheBound:
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(`data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"` + payload + `"}}` + "\n\n"))
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			case jsonOverTheBound, statedJSONOverTheBound:
+				body := `{"jsonrpc":"2.0","id":` + string(message.ID) + `,"result":{"content":[{"type":"text","text":"` + payload + `"}]}}`
+				w.Header().Set("Content-Type", "application/json")
+				if answer == statedJSONOverTheBound {
+					w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				} else {
+					// Headers flushed before the body state no length.
+					w.(http.Flusher).Flush()
+				}
+				_, _ = w.Write([]byte(body))
+			}
+		case string(mcp.MethodNotificationCancelled):
+			select {
+			case s.cancelled <- message:
+			default:
+			}
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// A request whose event stream broke off on the bound is one the client no
+// longer waits for, and its work may still be running. Before protocol
+// version 2026-07-28 the transport ending the stream is not a cancellation,
+// so the server is sent notifications/cancelled for it; on that version the
+// end of the stream is the cancellation, and nothing is sent. A JSON answer
+// over the bound is the request's one response, so its work is finished, and
+// nothing is sent for it in either era.
+func TestClient_CancelsARequestWhoseAnswerIsTooLarge(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		version string
+		answer  tooLargeAnswer
+		cancels bool
+	}{
+		{"legacy era event over the bound", mcp.LATEST_LEGACY_PROTOCOL_VERSION, eventOverTheBound, true},
+		{"legacy era JSON answer over the bound", mcp.LATEST_LEGACY_PROTOCOL_VERSION, jsonOverTheBound, false},
+		{"legacy era JSON answer of a stated length over the bound", mcp.LATEST_LEGACY_PROTOCOL_VERSION, statedJSONOverTheBound, false},
+		{"modern era event over the bound", mcp.ProtocolVersion20260728, eventOverTheBound, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			srv := newTooLargeAnswerServer(t, row.version, row.answer)
+			trans, err := transport.NewStreamableHTTP(srv.URL, transport.WithHTTPMaxMessageBytes(tooLargeBound))
+			require.NoError(t, err)
+			c := NewClient(trans)
+			t.Cleanup(func() { _ = c.Close() })
+			require.NoError(t, c.Start(t.Context()))
+			result, err := c.Initialize(t.Context(), mcp.InitializeRequest{})
+			require.NoError(t, err)
+			require.Equal(t, row.version, result.ProtocolVersion)
+
+			_, err = c.CallTool(t.Context(), mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "large"}})
+			require.ErrorIs(t, err, transport.ErrMessageTooLarge)
+			callID := <-srv.callID
+
+			if !row.cancels {
+				select {
+				case m := <-srv.cancelled:
+					t.Fatalf("notifications/cancelled sent for a request that needs none: %s", m.Params)
+				case <-time.After(200 * time.Millisecond):
+				}
+				return
+			}
+			var cancelled postedMessage
+			select {
+			case cancelled = <-srv.cancelled:
+			case <-time.After(2 * time.Second):
+				t.Fatal("no notifications/cancelled reached the server")
+			}
+			var params struct {
+				RequestID json.RawMessage `json:"requestId"`
+				Reason    string          `json:"reason"`
+			}
+			require.NoError(t, json.Unmarshal(cancelled.Params, &params))
+			assert.JSONEq(t, string(callID), string(params.RequestID))
+			assert.Equal(t, transport.ErrMessageTooLarge.Error(), params.Reason)
+		})
+	}
+}
+
+// cancelOnClose is a RoundTripper whose first response after arm is a body
+// that cancels the context arm was given when it is closed.
+type cancelOnClose struct {
+	base   http.RoundTripper
+	cancel atomic.Pointer[context.CancelFunc]
+}
+
+func (t *cancelOnClose) arm(cancel context.CancelFunc) { t.cancel.Store(&cancel) }
+
+func (t *cancelOnClose) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(r)
+	if err != nil {
+		return nil, err
+	}
+	if cancel := t.cancel.Swap(nil); cancel != nil {
+		resp.Body = cancellingBody{ReadCloser: resp.Body, cancel: *cancel}
+	}
+	return resp, nil
+}
+
+// cancellingBody cancels its context when it is closed.
+type cancellingBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b cancellingBody) Close() error {
+	b.cancel()
+	return b.ReadCloser.Close()
+}
+
+// A JSON answer refused over the bound is the request's one response, so no
+// notifications/cancelled goes out for it, even when the caller's context
+// ends while the refused response is being released.
+func TestClient_NoCancelForARefusedAnswerWhoseContextEndsOnRelease(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		answer tooLargeAnswer
+	}{
+		{"JSON answer over the bound", jsonOverTheBound},
+		{"JSON answer of a stated length over the bound", statedJSONOverTheBound},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			srv := newTooLargeAnswerServer(t, mcp.LATEST_LEGACY_PROTOCOL_VERSION, row.answer)
+			rt := &cancelOnClose{base: srv.Client().Transport}
+			trans, err := transport.NewStreamableHTTP(srv.URL,
+				transport.WithHTTPMaxMessageBytes(tooLargeBound),
+				transport.WithHTTPBasicClient(&http.Client{Transport: rt}))
+			require.NoError(t, err)
+			c := NewClient(trans)
+			t.Cleanup(func() { _ = c.Close() })
+			require.NoError(t, c.Start(t.Context()))
+			_, err = c.Initialize(t.Context(), mcp.InitializeRequest{})
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			rt.arm(cancel)
+			_, err = c.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "large"}})
+			require.ErrorIs(t, err, transport.ErrMessageTooLarge)
+			require.ErrorIs(t, ctx.Err(), context.Canceled, "the context did not end while the response was released")
+			<-srv.callID
+
+			select {
+			case m := <-srv.cancelled:
+				t.Fatalf("notifications/cancelled sent for a request whose response arrived: %s", m.Params)
+			case <-time.After(200 * time.Millisecond):
+			}
+		})
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pbednarcik/flexmcp/internal/jsonrpc"
 	"github.com/pbednarcik/flexmcp/mcp"
 )
 
@@ -549,13 +550,19 @@ func (c *StreamableHTTP) SendRequest(
 		// without being decoded, and only releaseResponse's bounded drain
 		// may read it; any other is read up to the bound, as the length
 		// stated is not trusted to end it: a RoundTripper may state less
-		// than it delivers.
+		// than it delivers. A response refused over the bound is still the
+		// request's one response, so its error is marked as one: the work is
+		// finished, and the request is not cancelled.
 		if c.maxMessageBytes > 0 && resp.ContentLength > c.maxMessageBytes {
-			return unanswered(fmt.Errorf("failed to decode response: %w", ErrMessageTooLarge))
+			return unanswered(jsonrpc.MarkResponseRefused(fmt.Errorf("failed to decode response: %w", ErrMessageTooLarge)))
 		}
 		var response JSONRPCResponse
 		if err := decodeBounded(resp.Body, c.maxMessageBytes, &response); err != nil {
-			return unanswered(fmt.Errorf("failed to decode response: %w", err))
+			err = fmt.Errorf("failed to decode response: %w", err)
+			if errors.Is(err, ErrMessageTooLarge) {
+				err = jsonrpc.MarkResponseRefused(err)
+			}
+			return unanswered(err)
 		}
 		if err := answers(request, &response); err != nil {
 			return unanswered(err)
