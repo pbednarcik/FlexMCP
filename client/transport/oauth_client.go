@@ -81,7 +81,7 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
+		body, _ := readErrorBody(resp.Body)
 		return extractOAuthError(body, resp.StatusCode, "registration request failed")
 	}
 
@@ -264,7 +264,7 @@ func (h *OAuthHandler) doTokenRequest(req *http.Request, what string) (*Token, i
 	// Accept any 2xx status; some authorization servers (e.g. Supabase) return
 	// 201 Created for successful token responses.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
+		body, _ := readErrorBody(resp.Body)
 		return nil, resp.StatusCode, extractOAuthError(body, resp.StatusCode, what+" failed")
 	}
 

@@ -407,3 +407,140 @@ func (p postAnswered) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	return resp, err
 }
+
+// errorBodySize is the error body errorBodyServer sends, far over
+// maxErrorBodyBytes.
+const errorBodySize = 1 << 20
+
+// errorBodyServer answers the requests of every client transport and of an
+// OAuth handler with a 500 and an error body of errorBodySize bytes. Only the
+// legacy SSE stream and the metadata the handler discovers its endpoints
+// from are answered as a server would.
+func errorBodyServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sse":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /message\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		case "/.well-known/oauth-protected-resource":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"resource": server.URL, "authorization_servers": []string{server.URL}})
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           server.URL,
+				"authorization_endpoint":           server.URL + "/authorize",
+				"token_endpoint":                   server.URL + "/token",
+				"registration_endpoint":            server.URL + "/register",
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		case "/mcp", "/message", "/register", "/token":
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, strings.Repeat("x", errorBodySize))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// errorBodyCounter is base, counting the bytes the client reads of every
+// error body errorBodyServer sends.
+type errorBodyCounter struct {
+	base http.RoundTripper
+	read *atomic.Int64
+}
+
+func (c errorBodyCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.base.RoundTrip(r)
+	if err == nil && resp.StatusCode == http.StatusInternalServerError {
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{&countingReader{r: resp.Body, n: c.read}, resp.Body}
+	}
+	return resp, err
+}
+
+// The body of an error response is read up to maxErrorBodyBytes, for the
+// error's text, wherever the client transports and the OAuth handler read
+// one, so a hostile server cannot make the client read without end.
+func TestErrorBodiesAreReadUpToABound(t *testing.T) {
+	server := errorBodyServer(t)
+	var read atomic.Int64
+	client := &http.Client{Transport: errorBodyCounter{base: server.Client().Transport, read: &read}}
+	streamable := func(t *testing.T) *StreamableHTTP {
+		c, err := NewStreamableHTTP(server.URL+"/mcp", WithHTTPBasicClient(client))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+	legacy := func(t *testing.T) *SSE {
+		c, err := NewSSE(server.URL+"/sse", WithHTTPClient(client))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		require.NoError(t, c.Start(t.Context()))
+		return c
+	}
+	oauth := func() *OAuthHandler {
+		h := NewOAuthHandler(OAuthConfig{ClientID: "client", RedirectURI: "http://localhost:8085/callback", ClientIssuer: server.URL, TokenStore: NewMemoryTokenStore(), HTTPClient: client})
+		h.SetBaseURL(server.URL)
+		return h
+	}
+	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/initialized"}
+	cases := []struct {
+		name string
+		call func(t *testing.T) error
+		// logged: the site logs the body's length, and returns no error.
+		logged bool
+	}{
+		{"Streamable HTTP request", func(t *testing.T) error {
+			_, err := streamable(t).SendRequest(t.Context(), request7)
+			return err
+		}, false},
+		{"Streamable HTTP notification", func(t *testing.T) error {
+			return streamable(t).SendNotification(t.Context(), notification)
+		}, false},
+		{"Streamable HTTP listen stream", func(t *testing.T) error {
+			_, err := streamable(t).createGETConnectionToServer(t.Context())
+			return err
+		}, false},
+		{"Streamable HTTP answer to a server request", func(t *testing.T) error {
+			streamable(t).sendResponseToServer(t.Context(), NewJSONRPCErrorResponse(mcp.NewRequestId(int64(7)), mcp.INTERNAL_ERROR, "failed", nil))
+			return nil
+		}, true},
+		{"legacy SSE request", func(t *testing.T) error {
+			_, err := legacy(t).SendRequest(t.Context(), request7)
+			return err
+		}, false},
+		{"legacy SSE notification", func(t *testing.T) error {
+			return legacy(t).SendNotification(t.Context(), notification)
+		}, false},
+		{"OAuth registration", func(t *testing.T) error {
+			return oauth().RegisterClient(t.Context(), "test")
+		}, false},
+		{"OAuth token", func(t *testing.T) error {
+			_, err := oauth().RefreshToken(t.Context(), "refresh")
+			return err
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			read.Store(0)
+			err := tc.call(t)
+			assert.LessOrEqual(t, read.Load(), int64(maxErrorBodyBytes), "bytes read of a %d-byte error body", errorBodySize)
+			if tc.logged {
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "500")
+			assert.LessOrEqual(t, len(err.Error()), maxErrorBodyBytes+512, "the error's text")
+		})
+	}
+}

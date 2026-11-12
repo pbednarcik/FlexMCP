@@ -563,7 +563,7 @@ func (c *SSE) SendRequest(
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted {
 		_, err = io.Copy(io.Discard, resp.Body)
 	} else {
-		body, err = io.ReadAll(resp.Body)
+		body, err = readErrorBody(resp.Body)
 	}
 	releaseResponse(cancelPost, resp)
 
@@ -742,7 +742,7 @@ func (c *SSE) post(ctx context.Context, body []byte, what string) error {
 		}
 
 		// Handle other error responses
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readErrorBody(resp.Body)
 		return fmt.Errorf(
 			"%s failed with status %d: %s",
 			what,

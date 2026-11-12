@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"time"
@@ -116,7 +115,7 @@ func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) (opene
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readErrorBody(resp.Body)
 		return false, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, body)
 	}
 
@@ -250,7 +249,7 @@ func (c *StreamableHTTP) sendResponseToServer(ctx context.Context, response *JSO
 	defer releaseResponse(cancel, resp)
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readErrorBody(resp.Body)
 		c.logger.Error("server rejected response", "status", resp.StatusCode, "body_len", len(body))
 	}
 }

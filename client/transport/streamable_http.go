@@ -504,7 +504,7 @@ func (c *StreamableHTTP) SendRequest(
 		// it answers this request. Any other JSON body, a gateway's or a
 		// framework's error object, is no answer: the status is reported.
 		var errResponse JSONRPCResponse
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readErrorBody(resp.Body)
 		if isJSONRPCErrorBody(body) {
 			if err := json.Unmarshal(body, &errResponse); err == nil && errResponse.Error != nil && answers(request, &errResponse) == nil {
 				return &errResponse, nil
@@ -758,7 +758,7 @@ func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.
 	case resp.StatusCode == http.StatusUnauthorized, insufficientScope(resp, c.oauthHandler):
 		return authorizationError(resp, c.oauthHandler, c.oauthRecipient)
 	default:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readErrorBody(resp.Body)
 		return fmt.Errorf(
 			"notification failed with status %d: %s",
 			resp.StatusCode,

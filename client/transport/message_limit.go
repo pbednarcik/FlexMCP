@@ -18,6 +18,16 @@ const DefaultMaxMessageBytes int64 = 32 << 20
 // bound. See WithMaxMessageBytes and WithHTTPMaxMessageBytes.
 var ErrMessageTooLarge = errors.New("message from the server exceeds the size bound")
 
+// maxErrorBodyBytes is the most of an error response's body the client
+// reads, for the error's text.
+const maxErrorBodyBytes = 64 << 10
+
+// readErrorBody reads the body r of an error response as io.ReadAll does, up
+// to maxErrorBodyBytes: the rest is left unread.
+func readErrorBody(r io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, maxErrorBodyBytes))
+}
+
 // boundedReader reads at most n bytes of r. Once they are spent, one byte
 // more tells a source that fills the bound from a longer one, which fails
 // with ErrMessageTooLarge.
