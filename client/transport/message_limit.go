@@ -15,7 +15,9 @@ import (
 const DefaultMaxMessageBytes int64 = 32 << 20
 
 // ErrMessageTooLarge is the error of a message from the server over the
-// bound. See WithMaxMessageBytes and WithHTTPMaxMessageBytes.
+// bound. See WithMaxMessageBytes and WithHTTPMaxMessageBytes. An OAuth
+// metadata, registration or token response over its own bound, a fixed
+// 1 MiB, fails with it too.
 var ErrMessageTooLarge = errors.New("message from the server exceeds the size bound")
 
 // maxErrorBodyBytes is the most of an error response's body the client
@@ -53,8 +55,9 @@ func (b *boundedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// boundedReaders keeps the readers decodeBounded wraps an answer in, so that
-// reading one allocates none.
+// boundedReaders keeps the readers an answer is read through, by
+// decodeBounded or a token response's read, so that reading one allocates
+// none.
 var boundedReaders = sync.Pool{New: func() any { return new(boundedReader) }}
 
 // takeBoundedReader is r bounded at limit bytes, from the pool;

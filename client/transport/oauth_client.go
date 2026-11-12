@@ -91,7 +91,7 @@ func (h *OAuthHandler) RegisterClient(ctx context.Context, clientName string) er
 		TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBodyBytes)).Decode(&regResponse); err != nil {
+	if err := decodeBounded(resp.Body, maxOAuthBodyBytes, &regResponse); err != nil {
 		return fmt.Errorf("failed to decode registration response: %w", err)
 	}
 	if regResponse.ClientID == "" {
@@ -268,7 +268,9 @@ func (h *OAuthHandler) doTokenRequest(req *http.Request, what string) (*Token, i
 		return nil, resp.StatusCode, extractOAuthError(body, resp.StatusCode, what+" failed")
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBodyBytes))
+	bounded := takeBoundedReader(resp.Body, maxOAuthBodyBytes)
+	body, err := io.ReadAll(bounded)
+	giveBoundedReader(bounded)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("failed to read token response body: %w", err)
 	}

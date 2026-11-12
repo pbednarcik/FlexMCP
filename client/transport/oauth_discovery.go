@@ -3,10 +3,8 @@ package transport
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -344,7 +342,7 @@ func (h *OAuthHandler) fetchServerMetadata(ctx context.Context) (metadataDiscove
 
 	// Parse the protected resource metadata
 	var protectedResource OAuthProtectedResource
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBodyBytes)).Decode(&protectedResource); err != nil {
+	if err := decodeBounded(resp.Body, maxOAuthBodyBytes, &protectedResource); err != nil {
 		return metadataDiscoveryResult{}, fmt.Errorf("failed to decode protected resource response: %w", err)
 	}
 
@@ -595,8 +593,7 @@ func (h *OAuthHandler) fetchMetadataFromURL(ctx context.Context, metadataURL str
 	}
 
 	var metadata AuthServerMetadata
-	dec := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBodyBytes))
-	if err := dec.Decode(&metadata); err != nil {
+	if err := decodeBounded(resp.Body, maxOAuthBodyBytes, &metadata); err != nil {
 		return nil, fmt.Errorf("failed to decode metadata response: %w", err)
 	}
 

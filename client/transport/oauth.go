@@ -7,10 +7,11 @@ import (
 	"time"
 )
 
-// maxMetadataBodyBytes caps the size of an OAuth metadata document, or any
-// other response from a server discovery chose, that we are willing to
-// read: past it a document is refused and an error body cut.
-const maxMetadataBodyBytes = 1 << 20 // 1 MiB
+// maxOAuthBodyBytes is the most of an OAuth response the client reads, from
+// a server discovery chose: a metadata document, a registration or a token
+// response. A longer one fails with ErrMessageTooLarge. An error body is cut
+// at maxErrorBodyBytes instead.
+const maxOAuthBodyBytes = 1 << 20 // 1 MiB
 
 // pkceMethod is the only code challenge method the client uses.
 const pkceMethod = "S256"
