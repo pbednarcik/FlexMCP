@@ -370,12 +370,14 @@ type TaskResultParams struct {
 	TaskId string `json:"taskId"`
 }
 
-// TaskResultResult contains the actual operation result.
-// For task-augmented tool calls, this embeds the CallToolResult fields.
+// TaskResultResult contains the actual operation result. It carries a tool
+// call's result, the CallToolResult fields of a task-augmented tool call, and
+// is written as tools/call writes one: content is always present.
 type TaskResultResult struct {
 	Result
-	// Tool call result fields (for task-augmented tool calls)
-	Content           []Content `json:"content,omitempty"`
+	// Tool call result fields (for task-augmented tool calls).
+	// Content is written as [] when empty, as tools/call writes it.
+	Content           []Content `json:"content"`
 	StructuredContent any       `json:"structuredContent,omitempty"`
 	// RawStructuredContent is the structured content as JSON. When set,
 	// MarshalJSON writes it in place of StructuredContent, so numbers that a
@@ -385,14 +387,15 @@ type TaskResultResult struct {
 }
 
 // MarshalJSON implements custom JSON marshaling for TaskResultResult.
-// structuredContent is written from RawStructuredContent when it is set.
+// structuredContent is written from RawStructuredContent when it is set, and
+// a nil Content as [].
 func (r TaskResultResult) MarshalJSON() ([]byte, error) {
 	return json.Marshal(r.wire())
 }
 
 // MarshalJSONTo writes the result into enc by the encoder's own rules, as a
 // TaskResultResult without methods would be written, with structuredContent
-// from RawStructuredContent when it is set.
+// from RawStructuredContent when it is set and a nil Content as [].
 func (r TaskResultResult) MarshalJSONTo(enc *jsontext.Encoder) error {
 	return jsonv2.MarshalEncode(enc, r.wire())
 }
@@ -409,6 +412,11 @@ type taskResultWire struct {
 
 func (r TaskResultResult) wire() *taskResultWire {
 	out := &taskResultWire{taskResultFields: taskResultFields(r), StructuredContent: r.StructuredContent}
+	// content is required, so a nil slice is written as [] by encoding/json
+	// too, not as null.
+	if out.Content == nil {
+		out.Content = []Content{}
+	}
 	if len(r.RawStructuredContent) > 0 {
 		out.StructuredContent = r.RawStructuredContent
 	}
