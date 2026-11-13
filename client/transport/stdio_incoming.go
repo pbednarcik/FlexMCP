@@ -31,6 +31,10 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 		Error   json.RawMessage `json:"error,omitempty"`
 	}
 	baseMessage := new(envelope)
+	// final is set once the server's output has ended right after a line
+	// without a newline: that line is served, and the end of output then
+	// ends the transport here, before buf could be read into again.
+	final := false
 	for {
 		// Signal readiness on the first iteration, inside the loop, so that
 		// Start() only unblocks after the reader is actively processing.
@@ -42,10 +46,20 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 		case <-c.done:
 			return
 		default:
+			if final {
+				c.closeDone()
+				return
+			}
 			encoded, err := readLine(c.stdout, buf)
 			buf = encoded[:0]
 			if cap(buf) > maxRetainedLine {
 				buf = nil
+			}
+			// A last line without a newline comes with io.EOF; it is served
+			// as the server serves its input's. A line that comes with any
+			// other error is not.
+			if errors.Is(err, io.EOF) && len(encoded) > 0 {
+				final, err = true, nil
 			}
 			if err != nil {
 				if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && !errors.Is(err, fs.ErrClosed) {
