@@ -38,11 +38,12 @@ func newRedirectPolicies(client *http.Client) (discovery, credential *http.Clien
 }
 
 // originBoundClient returns a copy of client, sharing its transport, for a
-// transport whose requests carry an access token: a redirect is followed, as
-// client's own policy says, only while it stays on the request's origin, so
-// the token never reaches another server or a downgraded connection (MCP
-// authorization, Token Audience Binding). The policy runs first, so a policy
-// that rewrites the next request is checked on the URL actually followed.
+// transport's requests, which carry its headers and, with OAuth, an access
+// token: a redirect is followed, as client's own policy says, only while it
+// stays on the request's origin, so neither reaches another server or a
+// downgraded connection (MCP authorization, Token Audience Binding). The
+// policy runs first, so a policy that rewrites the next request is checked
+// on the URL actually followed.
 func originBoundClient(client *http.Client) *http.Client {
 	bound := *client
 	follow := client.CheckRedirect

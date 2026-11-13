@@ -55,11 +55,13 @@ var (
 	// served over HTTPS only (MCP authorization, Communication Security).
 	ErrInsecureAuthorizationServer = errors.New("authorization server endpoints must use https")
 
-	// ErrRedirectLeavesOrigin is returned when a request carrying an access
-	// token is redirected off its origin, its scheme, host and port: the
-	// token goes only to the server it was issued for (MCP authorization,
-	// Token Audience Binding), so the redirect is not followed.
-	ErrRedirectLeavesOrigin = errors.New("redirect would send the access token to another origin")
+	// ErrRedirectLeavesOrigin is returned when a Streamable HTTP or SSE
+	// request is redirected off its origin, its scheme, host and port, on the
+	// transport's default HTTP client or, with OAuth, on any client: the
+	// request's headers, an access token among them, go only to the server
+	// they were sent to (MCP authorization, Token Audience Binding), so the
+	// redirect is not followed.
+	ErrRedirectLeavesOrigin = errors.New("redirect would leave the request's origin")
 
 	// ErrInvalidTokenResponse is returned when a token response carries no
 	// access token, or one of a type other than Bearer (RFC 6749 §5.1, §7.1;

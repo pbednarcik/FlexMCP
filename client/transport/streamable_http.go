@@ -41,9 +41,15 @@ func WithContinuousListening() StreamableHTTPCOption {
 }
 
 // WithHTTPBasicClient sets a custom HTTP client on the StreamableHTTP transport.
+//
+// The default client follows a redirect only while the request's scheme, host
+// and port stay the same, so the transport's headers go only to the server
+// they were meant for. A client given here keeps its own redirect policy,
+// unless OAuth is configured (WithHTTPOAuth).
 func WithHTTPBasicClient(client *http.Client) StreamableHTTPCOption {
 	return func(sc *StreamableHTTP) {
 		sc.httpClient = client
+		sc.callerClient = true
 	}
 }
 
@@ -139,9 +145,12 @@ func WithHTTPMaxMessageBytes(n int64) StreamableHTTPCOption {
 // A server may keep a resumed request open indefinitely, so callers should
 // give requests a deadline.
 type StreamableHTTP struct {
-	serverURL           *url.URL
-	target              string // serverURL as a string, the URL every request goes to
-	httpClient          *http.Client
+	serverURL  *url.URL
+	target     string // serverURL as a string, the URL every request goes to
+	httpClient *http.Client
+	// callerClient is set when httpClient came from WithHTTPBasicClient: its
+	// own redirect policy is kept unless OAuth is configured.
+	callerClient        bool
 	headers             map[string]string
 	headerFunc          HTTPHeaderFunc
 	host                string
@@ -232,6 +241,10 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 		discoveryURL.Fragment = ""
 		smc.oauthRecipient = discoveryURL.String()
 		smc.oauthHandler.SetBaseURL(smc.oauthRecipient)
+	}
+	// The one binding site, after the options: a request's headers, and with
+	// OAuth its token, stay on its origin.
+	if smc.oauthHandler != nil || !smc.callerClient {
 		smc.httpClient = originBoundClient(smc.httpClient)
 	}
 

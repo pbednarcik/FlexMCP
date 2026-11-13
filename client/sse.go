@@ -18,7 +18,8 @@ func WithHeaderFunc(headerFunc transport.HTTPHeaderFunc) transport.ClientOption 
 	return transport.WithHeaderFunc(headerFunc)
 }
 
-// WithHTTPClient sets a custom HTTP client for the SSE transport.
+// WithHTTPClient sets a custom HTTP client for the SSE transport; see
+// [transport.WithHTTPClient] for the redirects it follows.
 func WithHTTPClient(httpClient *http.Client) transport.ClientOption {
 	return transport.WithHTTPClient(httpClient)
 }

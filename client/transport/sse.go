@@ -26,8 +26,11 @@ type SSE struct {
 	baseURL  *url.URL
 	endpoint *url.URL
 	// endpointURL is endpoint's String, made once when it is set.
-	endpointURL    string
-	httpClient     *http.Client
+	endpointURL string
+	httpClient  *http.Client
+	// callerClient is set when httpClient came from WithHTTPClient: its own
+	// redirect policy is kept unless OAuth is configured.
+	callerClient   bool
 	responses      map[responseKey]chan *JSONRPCResponse
 	mu             sync.RWMutex
 	onNotification func(mcp.JSONRPCNotification)
@@ -132,9 +135,15 @@ func WithHeaderFunc(headerFunc HTTPHeaderFunc) ClientOption {
 }
 
 // WithHTTPClient sets a custom HTTP client for the SSE transport.
+//
+// The default client follows a redirect only while the request's scheme, host
+// and port stay the same, so the transport's headers go only to the server
+// they were meant for. A client given here keeps its own redirect policy,
+// unless OAuth is configured (WithOAuth).
 func WithHTTPClient(httpClient *http.Client) ClientOption {
 	return func(sc *SSE) {
 		sc.httpClient = httpClient
+		sc.callerClient = true
 	}
 }
 
@@ -209,6 +218,10 @@ func NewSSE(baseURL string, options ...ClientOption) (*SSE, error) {
 		discoveryURL.Fragment = ""
 		smc.oauthRecipient = discoveryURL.String()
 		smc.oauthHandler.SetBaseURL(smc.oauthRecipient)
+	}
+	// The one binding site, after the options: a request's headers, and with
+	// OAuth its token, stay on its origin.
+	if smc.oauthHandler != nil || !smc.callerClient {
 		smc.httpClient = originBoundClient(smc.httpClient)
 	}
 

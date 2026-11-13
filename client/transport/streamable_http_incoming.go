@@ -44,6 +44,12 @@ func (c *StreamableHTTP) listenForever(ctx context.Context) {
 			c.logger.Error("server does not support listening")
 			return
 		}
+		if errors.Is(err, ErrRedirectLeavesOrigin) {
+			// The server sends the stream off its origin, and would on every
+			// retry, each refused the same way.
+			c.logger.Error("server redirects the stream off its origin, stopping listener", "err", err)
+			return
+		}
 		if errors.Is(err, ErrSessionTerminated) {
 			// The server answered 404, or the session ended before the GET went
 			// out. If the stream worked on the session, the server has forgotten
