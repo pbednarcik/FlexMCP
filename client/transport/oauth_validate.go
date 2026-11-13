@@ -16,9 +16,9 @@ func checkAdvertisedPRMURL(candidate, baseURL string) error {
 	if err != nil {
 		return fmt.Errorf("invalid base URL %q: %w", baseURL, err)
 	}
-	// url.Parse accepts relative references (empty Scheme and Host)
-	// without error. Reject those explicitly so two empty values do not
-	// EqualFold-match each other and bypass origin validation.
+	// url.Parse accepts relative references (empty Scheme and Host) without
+	// error. Reject those explicitly so two empty values do not match each
+	// other and bypass origin validation.
 	if base.Scheme == "" || base.Host == "" {
 		return fmt.Errorf("base URL %q is not absolute (missing scheme or host)", baseURL)
 	}
@@ -29,10 +29,10 @@ func checkAdvertisedPRMURL(candidate, baseURL string) error {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("advertised PRM URL %q is not absolute (missing scheme or host)", candidate)
 	}
-	if !strings.EqualFold(parsed.Scheme, base.Scheme) {
+	if !equalFoldASCII(parsed.Scheme, base.Scheme) {
 		return fmt.Errorf("advertised PRM URL scheme %q does not match base %q", parsed.Scheme, base.Scheme)
 	}
-	if !strings.EqualFold(parsed.Host, base.Host) {
+	if !equalHostASCII(parsed.Host, base.Host) {
 		return fmt.Errorf("advertised PRM URL host %q does not match base %q", parsed.Host, base.Host)
 	}
 	return nil
@@ -40,13 +40,14 @@ func checkAdvertisedPRMURL(candidate, baseURL string) error {
 
 // resourceComponentsEqual reports whether two parsed resource identifiers
 // agree on every component an RFC 9728 §3.3 binding check compares outside
-// the path: scheme and host case-insensitively per RFC 3986 §3.1 / §3.2.2,
-// and query, fragment, and userinfo, which are significant.
+// the path: scheme and host in ASCII case only per RFC 3986 §3.1 / §3.2.2,
+// an IPv6 zone and the port exactly, and query, fragment, and userinfo,
+// which are significant.
 func resourceComponentsEqual(a, b *url.URL) bool {
-	if !strings.EqualFold(a.Scheme, b.Scheme) {
+	if !equalFoldASCII(a.Scheme, b.Scheme) {
 		return false
 	}
-	if !strings.EqualFold(a.Host, b.Host) {
+	if !equalHostASCII(a.Host, b.Host) {
 		return false
 	}
 	if a.RawQuery != b.RawQuery {

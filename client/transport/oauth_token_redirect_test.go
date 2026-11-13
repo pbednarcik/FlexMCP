@@ -155,6 +155,7 @@ func TestOAuthTransports_TokenRedirectsStayOnTheOrigin(t *testing.T) {
 
 // An origin is scheme, host and port, a missing port being the scheme's
 // default; a downgrade to http on the same host and port is another origin.
+// Hosts compare by ASCII case only, so a Unicode case fold makes no match.
 func TestSameOrigin(t *testing.T) {
 	tests := []struct {
 		a, b string
@@ -168,6 +169,14 @@ func TestSameOrigin(t *testing.T) {
 		{"https://mcp.example/mcp", "https://mcp.example:8443/mcp", false},
 		{"https://mcp.example/mcp", "https://evil.example/mcp", false},
 		{"https://mcp.example/mcp", "https://sub.mcp.example/mcp", false},
+		{"https://MCP.example/mcp", "https://mcp.example/mcp", true},
+		{"https://mcp.exampl/mcp", "https://mcp.example/mcp", false},
+		{"https://xσ.example/mcp", "https://xς.example/mcp", false},
+		{"https://\u212A.example/mcp", "https://k.example/mcp", false},
+		{"https://localhoſt/mcp", "https://localhost/mcp", false},
+		{"http://[fe80::1%25eth0]/mcp", "http://[fe80::1%25ETH0]/mcp", false},
+		{"https://[fe80::1%25eth0]:8443/mcp", "https://[fe80::1%25ETH0]:8443/next", false},
+		{"http://[FE80::A%25eth0]:8080/mcp", "http://[fe80::a%25eth0]:8080/next", true},
 	}
 	for _, tt := range tests {
 		a, err := url.Parse(tt.a)

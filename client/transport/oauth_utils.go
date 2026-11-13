@@ -71,7 +71,7 @@ func ValidateRedirectURI(redirectURI string) error {
 	case "https":
 		return nil
 	case "http":
-		if strings.EqualFold(hostname, "localhost") {
+		if equalFoldASCII(hostname, "localhost") {
 			return nil
 		}
 		if ip := net.ParseIP(hostname); ip != nil && ip.IsLoopback() {
