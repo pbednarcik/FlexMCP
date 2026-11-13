@@ -309,46 +309,104 @@ func (c *StreamableHTTP) Start(ctx context.Context) error {
 }
 
 // Close closes the all the HTTP connections to the server.
+//
+// Close and publishSessionID decide under sessionMu which of them ends a
+// session. closed is set before Close takes the lock, so a session published
+// before Close's critical section is ended here, and one that arrives after
+// it is ended by its publisher.
 func (c *StreamableHTTP) Close() error {
 	c.closeOnce.Do(func() {
 		// Cancel all in-flight requests
 		c.closeTransport()
 
-		// Protocol version 2026-07-28 removed protocol-level sessions, so
-		// there is nothing to terminate and DELETE is not part of the
-		// transport any more.
-		sessionId := c.sessionID.Load().(string)
-		if sessionId != "" && !c.isModern() {
-			c.sessionID.Store("")
-			// notify server session closed
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.target, nil)
-			if err != nil {
-				c.logger.Error("failed to create close request", "err", err)
-				return
-			}
-			req.Header.Set(HeaderKeySessionID, sessionId)
-			// Set protocol version header if negotiated
-			if v := c.protocolVersion.Load(); v != nil {
-				if version, ok := v.(string); ok && version != "" {
-					req.Header.Set(HeaderKeyProtocolVersion, version)
-				}
-			}
-
-			// Set custom Host header if provided
-			if c.host != "" {
-				req.Host = c.host
-			}
-			res, err := c.httpClient.Do(req)
-			if err != nil {
-				c.logger.Error("failed to send close request", "err", err)
-				return
-			}
-			releaseResponse(cancel, res)
-		}
+		// The session ID is forgotten whatever the protocol version, which
+		// may have changed since the ID was published.
+		c.sessionMu.Lock()
+		sessionID := c.sessionID.Load().(string)
+		c.sessionID.Store("")
+		c.sessionMu.Unlock()
+		// The DELETE goes out after the lock is released, never under it;
+		// on protocol version 2026-07-28, which removed protocol-level
+		// sessions, none goes out.
+		c.deleteSession(sessionID)
 	})
 	return nil
+}
+
+// deleteSession ends sessionID on the server with a DELETE, best effort: a
+// failure is logged. It does nothing for an empty ID, or on protocol version
+// 2026-07-28, which removed protocol-level sessions and DELETE with them.
+func (c *StreamableHTTP) deleteSession(sessionID string) {
+	if sessionID == "" || c.isModern() {
+		return
+	}
+	// notify server session closed
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.target, nil)
+	if err != nil {
+		c.logger.Error("failed to create close request", "err", err)
+		return
+	}
+	req.Header.Set(HeaderKeySessionID, sessionID)
+	// Set protocol version header if negotiated
+	if v := c.protocolVersion.Load(); v != nil {
+		if version, ok := v.(string); ok && version != "" {
+			req.Header.Set(HeaderKeyProtocolVersion, version)
+		}
+	}
+
+	// Set custom Host header if provided
+	if c.host != "" {
+		req.Host = c.host
+	}
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		c.logger.Error("failed to send close request", "err", err)
+		return
+	}
+	releaseResponse(cancel, res)
+}
+
+// publishSessionID publishes the session ID an initialize response brought,
+// and reports whether it did. Once Close has begun it ends the session on
+// the server instead, after releasing the lock. The check and the store sit
+// under sessionMu, which Close holds while it takes the session it ends, so
+// a session is ended once whichever comes first.
+func (c *StreamableHTTP) publishSessionID(sessionID string) bool {
+	c.sessionMu.Lock()
+	select {
+	case <-c.closed:
+		c.sessionMu.Unlock()
+		c.deleteSession(sessionID)
+		return false
+	default:
+	}
+	c.sessionID.Store(sessionID)
+	c.sessionMu.Unlock()
+	return true
+}
+
+// giveBackSessionID gives back the session ID an initialize published, when
+// the initialize gets no answer of its own. Once Close has begun, Close may
+// not have taken the session yet and would find it gone, so the session is
+// ended here instead, after releasing the lock. The check and the swap sit
+// under sessionMu, as in publishSessionID, so a session Close has taken
+// already is not ended twice.
+func (c *StreamableHTTP) giveBackSessionID(sessionID string) {
+	c.sessionMu.Lock()
+	end := false
+	if c.sessionID.CompareAndSwap(sessionID, "") {
+		select {
+		case <-c.closed:
+			end = true
+		default:
+		}
+	}
+	c.sessionMu.Unlock()
+	if end {
+		c.deleteSession(sessionID)
+	}
 }
 
 // SetProtocolVersion sets the negotiated protocol version for this connection.
@@ -554,21 +612,23 @@ func (c *StreamableHTTP) SendRequest(
 	// The session ID of an initialize response is in its headers, so it is
 	// taken before the body, which a server may stream and hold: a GET
 	// stream reconnecting meanwhile follows it. A refused initialize gives
-	// it back (markConnected).
+	// it back (markConnected). One that arrives after Close is not
+	// published but ended, and the response is still the answer.
 	sessionID := ""
 	if request.Method == string(mcp.MethodInitialize) {
-		if sessionID = resp.Header.Get(HeaderKeySessionID); sessionID != "" {
-			c.sessionID.Store(sessionID)
+		if sessionID = resp.Header.Get(HeaderKeySessionID); sessionID != "" && !c.publishSessionID(sessionID) {
+			sessionID = ""
 		}
 	}
 	// The session ID this response leaves in place, for markSessionStarted:
 	// read now, since the session may end while the body is still coming.
 	session, _ := c.sessionID.Load().(string)
 	// An initialize that gets no answer of its own gives back the session ID
-	// its headers carried, as a refused one does.
+	// its headers carried, as a refused one does, or ends it once Close has
+	// begun (giveBackSessionID).
 	unanswered := func(err error) (*JSONRPCResponse, error) {
 		if sessionID != "" {
-			c.sessionID.CompareAndSwap(sessionID, "")
+			c.giveBackSessionID(sessionID)
 		}
 		return nil, err
 	}
