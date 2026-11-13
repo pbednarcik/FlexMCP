@@ -67,10 +67,13 @@ func WithHTTPHeaderFunc(headerFunc HTTPHeaderFunc) StreamableHTTPCOption {
 	}
 }
 
-// WithHTTPTimeout sets the timeout for a HTTP request and stream.
+// WithHTTPTimeout sets the timeout of the transport's HTTP client for a
+// request and its stream. With WithHTTPBasicClient it goes on the
+// transport's copy of that client, which is left as it is, whichever option
+// comes first. Zero is no timeout.
 func WithHTTPTimeout(timeout time.Duration) StreamableHTTPCOption {
 	return func(sc *StreamableHTTP) {
-		sc.httpClient.Timeout = timeout
+		sc.timeout, sc.timeoutSet = timeout, true
 	}
 }
 
@@ -150,7 +153,11 @@ type StreamableHTTP struct {
 	httpClient *http.Client
 	// callerClient is set when httpClient came from WithHTTPBasicClient: its
 	// own redirect policy is kept unless OAuth is configured.
-	callerClient        bool
+	callerClient bool
+	// timeout is WithHTTPTimeout's, set when timeoutSet on the transport's
+	// own client after the options, whichever option came first.
+	timeout             time.Duration
+	timeoutSet          bool
 	headers             map[string]string
 	headerFunc          HTTPHeaderFunc
 	host                string
@@ -244,8 +251,19 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 	}
 	// The one binding site, after the options: a request's headers, and with
 	// OAuth its token, stay on its origin.
-	if smc.oauthHandler != nil || !smc.callerClient {
+	bound := smc.oauthHandler != nil || !smc.callerClient
+	if bound {
 		smc.httpClient = originBoundClient(smc.httpClient)
+	}
+	// The timeout goes on the transport's own client: the bound copy, or else
+	// a copy of the caller's, which may be shared and is not written into.
+	// The copy shares the caller's transport, jar and redirect policy.
+	if smc.timeoutSet {
+		if !bound {
+			callers := *smc.httpClient
+			smc.httpClient = &callers
+		}
+		smc.httpClient.Timeout = smc.timeout
 	}
 
 	return smc, nil
