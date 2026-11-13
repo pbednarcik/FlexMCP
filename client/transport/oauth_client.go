@@ -282,15 +282,65 @@ func (h *OAuthHandler) doTokenRequest(req *http.Request, what string) (*Token, i
 		return nil, resp.StatusCode, fmt.Errorf("%s failed: %w", what, oauthErr)
 	}
 
-	var token Token
-	if err := json.Unmarshal(body, &token); err != nil {
+	// The response is decoded on its own, not into Token, whose expires_at
+	// is the stored form.
+	var wire tokenResponse
+	if err := json.Unmarshal(body, &wire); err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("failed to decode token response: %w", err)
 	}
-	if err := checkTokenResponse(&token); err != nil {
+	token := &Token{
+		AccessToken:  wire.AccessToken,
+		TokenType:    wire.TokenType,
+		RefreshToken: wire.RefreshToken,
+		ExpiresIn:    wire.ExpiresIn,
+		Scope:        wire.Scope,
+	}
+	if err := checkTokenResponse(token); err != nil {
 		return nil, resp.StatusCode, err
 	}
 	if token.ExpiresIn > 0 {
 		token.ExpiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+	} else {
+		token.ExpiresAt = parseExpiresAt(wire.ExpiresAt)
 	}
-	return &token, resp.StatusCode, nil
+	return token, resp.StatusCode, nil
+}
+
+// tokenResponse is a token endpoint response as it arrives (RFC 6749 §5.1),
+// plus the expires_at some servers add of their own. It is kept apart from
+// Token, whose expires_at is the stored form, so that a server's own
+// expires_at, which may be a number, cannot fail the exchange.
+type tokenResponse struct {
+	AccessToken  string          `json:"access_token"`
+	TokenType    string          `json:"token_type"`
+	RefreshToken string          `json:"refresh_token,omitempty"`
+	ExpiresIn    int64           `json:"expires_in,omitempty"`
+	Scope        string          `json:"scope,omitempty"`
+	ExpiresAt    json.RawMessage `json:"expires_at,omitempty"`
+}
+
+// maxExpiresAt is the last second of year 9999 UTC, in Unix seconds: the
+// latest time a stored token's RFC 3339 expires_at can hold.
+const maxExpiresAt = 253402300799
+
+// parseExpiresAt reads a server's own expires_at: a JSON integer above zero,
+// up to the last second of year 9999, is that many seconds since the Unix
+// epoch, in UTC so that it can be stored whatever the local zone; a JSON
+// string is an RFC 3339 time that a stored token can carry. Anything else,
+// absent included, is the zero time, so an expires_at that cannot be read or
+// stored is ignored.
+func parseExpiresAt(raw json.RawMessage) time.Time {
+	var seconds int64
+	if err := json.Unmarshal(raw, &seconds); err == nil && seconds > 0 && seconds <= maxExpiresAt {
+		return time.Unix(seconds, 0).UTC()
+	}
+	var at time.Time
+	if err := json.Unmarshal(raw, &at); err == nil {
+		// Parsing admits a zone offset of 24 hours, which marshalling
+		// refuses.
+		if _, err := at.MarshalJSON(); err == nil {
+			return at
+		}
+	}
+	return time.Time{}
 }
