@@ -2,7 +2,7 @@ module github.com/pbednarcik/flexmcp/bench/compare/mcpgo
 
 go 1.27.2
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/mark3labs/mcp-go v1.3.0

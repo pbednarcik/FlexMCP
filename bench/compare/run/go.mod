@@ -2,7 +2,7 @@ module github.com/pbednarcik/flexmcp/bench/compare/run
 
 go 1.27.2
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 tool golang.org/x/perf/cmd/benchstat
 
