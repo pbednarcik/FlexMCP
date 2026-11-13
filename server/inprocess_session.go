@@ -24,6 +24,10 @@ type InProcessSession struct {
 
 var _ SessionWithLogging = (*InProcessSession)(nil)
 
+// An in-process session holds its client's streams for the client's life,
+// so it takes the stream path, not SessionWithSubscriptionFilter's.
+var _ SessionWithSubscriptionStreams = (*InProcessSession)(nil)
+
 // NewInProcessSession creates a session for an in-process client.
 func NewInProcessSession(sessionID string) *InProcessSession {
 	return &InProcessSession{

@@ -229,6 +229,10 @@ type stdioSession struct {
 
 var _ SessionWithLogging = (*stdioSession)(nil)
 
+// A stdio session holds its client's streams for the client's life, so it
+// takes the stream path, not SessionWithSubscriptionFilter's.
+var _ SessionWithSubscriptionStreams = (*stdioSession)(nil)
+
 func (s *stdioSession) SessionID() string {
 	return "stdio"
 }

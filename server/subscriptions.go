@@ -40,6 +40,16 @@ func SubscriptionIDFromContext(ctx context.Context) any {
 // Implementations must be safe for concurrent use: the filter is written by
 // the goroutine serving the subscriptions/listen request and read by the
 // notification fan-out running on independent goroutines.
+//
+// It suits a session scoped to one subscriptions/listen stream whose own
+// transport tags what it carries with the stream's id, as Streamable HTTP's
+// does: the server learns neither that id nor the session's protocol
+// version through it, so it delivers whatever the active filter admits
+// untagged, and everything once no filter is active. A session that serves
+// every request of one client for the life of the client, and so may hold
+// several streams, must implement SessionWithSubscriptionStreams instead, as
+// stdio and in-process sessions do: through it the server tags each copy and
+// delivers nothing on the stateless revision without a stream that asked.
 type SessionWithSubscriptionFilter interface {
 	ClientSession
 	// SetSubscriptionFilter records the notification types the client opted

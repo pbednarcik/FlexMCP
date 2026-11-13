@@ -227,38 +227,63 @@ func (s *MCPServer) sendNotificationToAllClients(notification mcp.JSONRPCNotific
 }
 
 func (s *MCPServer) broadcastToSession(session ClientSession, notification mcp.JSONRPCNotification) {
+	_ = s.notifyOutsideRequest(session, notification, false)
+}
+
+// notifyOutsideRequest delivers a notification that answers no request to
+// session: a broadcast, or with targeted a send to that one session. When
+// targeted, it returns ErrNotificationChannelBlocked if any copy could not
+// be queued; a broadcast reports that through the error hook alone.
+func (s *MCPServer) notifyOutsideRequest(session ClientSession, notification mcp.JSONRPCNotification, targeted bool) error {
+	var err error
 	// From protocol version 2026-07-28 every server-to-client notification is
 	// opt-in (SEP-2575). A session that holds subscriptions/listen streams on
-	// one long-lived channel receives a broadcast once per stream that asked
-	// for it, tagged with the stream's id, and not at all without one;
-	// a handshake-era client on such a session is served below, unfiltered.
+	// one long-lived channel receives it once per stream that asked for it,
+	// tagged with the stream's id, and not at all without one; a
+	// handshake-era client on such a session is served below, unfiltered.
 	if streams, shared, ok := ownStreams(session); ok {
 		open, modern := streams.streamsToBroadcast()
 		if modern {
 			for _, stream := range open {
 				if filterAllows(stream.filter, notification.Method) {
-					s.deliverBroadcast(session, stream.tagged(notification, shared))
+					if e := s.deliverOutsideRequest(session, stream.tagged(notification, shared), targeted); e != nil {
+						err = e
+					}
 				}
 			}
-			return
+			return err
 		}
 	} else if streams, ok := session.(SessionWithSubscriptionStreams); ok {
 		open, modern := streams.SubscriptionStreams()
 		if modern {
 			for _, stream := range open {
 				if filterAllows(stream.Filter, notification.Method) {
-					s.deliverBroadcast(session, tagSubscription(notification, stream.ID))
+					if e := s.deliverOutsideRequest(session, tagSubscription(notification, stream.ID), targeted); e != nil {
+						err = e
+					}
 				}
 			}
-			return
+			return err
 		}
 	}
 	// A request's own session that opened a stream receives only the types
 	// it asked for. Sessions that never opened one are unaffected.
 	if !subscriptionAllowsNotification(session, notification.Method) {
-		return
+		return nil
+	}
+	return s.deliverOutsideRequest(session, notification, targeted)
+}
+
+// deliverOutsideRequest queues one copy of a notification outside a request.
+// A targeted send reports a full channel to its caller as well as through the
+// error hook; a broadcast through the hook alone. The bool, rather than a
+// func value, keeps the broadcast path free of an indirect call.
+func (s *MCPServer) deliverOutsideRequest(session ClientSession, notification mcp.JSONRPCNotification, targeted bool) error {
+	if targeted {
+		return s.sendNotificationToSpecificClient(session, notification)
 	}
 	s.deliverBroadcast(session, notification)
+	return nil
 }
 
 // deliverBroadcast queues a broadcast notification on a session, reporting a
@@ -325,6 +350,19 @@ func (s *MCPServer) sendNotificationToSpecificClient(session ClientSession, noti
 	}
 }
 
+// SendLogMessageToSpecificClient sends a log message to the session with the
+// given id when its level reaches the session's threshold: the level the
+// session set with logging/setLevel, else error.
+//
+// From protocol version 2026-07-28 a notification sent outside a request
+// reaches a session only on the subscriptions/listen streams that asked for
+// its type, each copy tagged with its stream's id, as a broadcast does; a
+// session of that era with no such stream receives nothing, and nil is
+// returned. No stream asks for log messages, so such a session receives none.
+//
+// It returns ErrSessionNotFound or ErrSessionNotInitialized for a session
+// it cannot send to, and ErrNotificationChannelBlocked when a copy could not
+// be queued.
 func (s *MCPServer) SendLogMessageToSpecificClient(sessionID string, notification mcp.LoggingMessageNotification) error {
 	sessionValue, ok := s.sessions.Load(sessionID)
 	if !ok {
@@ -337,7 +375,7 @@ func (s *MCPServer) SendLogMessageToSpecificClient(sessionID string, notificatio
 	if !notification.Params.Level.ShouldSendTo(legacyThreshold(session)) {
 		return nil
 	}
-	return s.sendNotificationToSpecificClient(session, s.buildLogNotification(notification))
+	return s.notifyOutsideRequest(session, s.buildLogNotification(notification), true)
 }
 
 // UnregisterSession removes from storage session that is shut down.
@@ -426,7 +464,18 @@ func (s *MCPServer) SendNotificationToClient(
 	return s.sendNotificationCore(ctx, session, notification)
 }
 
-// SendNotificationToSpecificClient sends a notification to a specific client by session ID
+// SendNotificationToSpecificClient sends a notification to the session with
+// the given id.
+//
+// From protocol version 2026-07-28 a notification sent outside a request
+// reaches a session only on the subscriptions/listen streams that asked for
+// its type, each copy tagged with its stream's id, as a broadcast does; a
+// session of that era with no such stream receives nothing, and nil is
+// returned.
+//
+// It returns ErrSessionNotFound or ErrSessionNotInitialized for a session
+// it cannot send to, and ErrNotificationChannelBlocked when a copy could not
+// be queued.
 func (s *MCPServer) SendNotificationToSpecificClient(
 	sessionID string,
 	method string,
@@ -447,5 +496,5 @@ func (s *MCPServer) SendNotificationToSpecificClient(
 			AdditionalFields: params,
 		},
 	}
-	return s.sendNotificationToSpecificClient(session, notification)
+	return s.notifyOutsideRequest(session, notification, true)
 }
