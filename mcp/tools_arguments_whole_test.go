@@ -641,6 +641,99 @@ func TestRequireWholeIntInProcessIsNeverMarked(t *testing.T) {
 	})
 }
 
+// RequireWholeIntSlice judges each element as RequireWholeInt judges one value:
+// from the client's literal where it can, refusing what it cannot read exactly,
+// with the element's index in the error's Key.
+func TestRequireWholeIntSlice(t *testing.T) {
+	wide := func(s []int) []int64 {
+		if s == nil {
+			return nil
+		}
+		out := make([]int64, len(s))
+		for i, n := range s {
+			out[i] = int64(n)
+		}
+		return out
+	}
+	tests := []struct {
+		name  string
+		raw   string
+		edit  func(map[string]any)
+		want  []int64
+		err   error
+		key   string
+		value string
+		// wide64 marks a row whose values only a 64-bit int holds.
+		wide64 bool
+	}{
+		{"each literal is read exactly", `{"ids":[9007199254740993,-9007199254740993,1,2]}`, nil, []int64{9007199254740993, -9007199254740993, 1, 2}, nil, "", "", true},
+		{"an empty array is an empty slice", `{"ids":[]}`, nil, []int64{}, nil, "", "", false},
+		{"a fraction names its element", `{"ids":[1,1.5]}`, nil, nil, ErrArgumentFraction, "ids[1]", "1.5", false},
+		{"a fraction that rounds to a whole number names its literal", `{"ids":[1.0000000000000001]}`, nil, nil, ErrArgumentFraction, "ids[0]", "1.0000000000000001", false},
+		{"a string is not a number", `{"ids":[1,"5"]}`, nil, nil, ErrArgumentNotANumber, "ids[1]", "5", false},
+		{"a null element is not a number", `{"ids":[null]}`, nil, nil, ErrArgumentNotANumber, "ids[0]", "", false},
+		{"past the range", `{"ids":[9223372036854775808]}`, nil, nil, ErrArgumentOutOfRange, "ids[0]", "9223372036854775808", true},
+		{"a missing key", `{"other":[1]}`, nil, nil, ErrArgumentMissing, "ids", "", false},
+		{"a null", `{"ids":null}`, nil, nil, ErrArgumentMissing, "ids", "", false},
+		{"a value that is not an array", `{"ids":5}`, nil, nil, ErrArgumentNotANumber, "ids", "5", false},
+		{"a []int a hook set is returned", `{"ids":[1]}`, func(m map[string]any) { m["ids"] = []int{4, 5} }, []int64{4, 5}, nil, "", "", false},
+		{"a hook that grew the array: the map wins", `{"ids":[9007199254740993]}`, func(m map[string]any) { m["ids"] = []any{float64(1 << 53), float64(7)} }, []int64{9007199254740992, 7}, nil, "", "", true},
+		{"a clamp of a large literal wins", `{"ids":[9007199254740993]}`, func(m map[string]any) { m["ids"] = []any{float64(5)} }, []int64{5}, nil, "", "", false},
+		{"the last duplicate wins", `{"ids":[1],"ids":[9007199254740993]}`, nil, []int64{9007199254740993}, nil, "", "", true},
+		{"a json.Number element is exact", `{"ids":[1]}`, func(m map[string]any) { m["ids"] = []any{json.Number("9007199254740993")} }, []int64{9007199254740993}, nil, "", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.wide64 && strconv.IntSize != 64 {
+				t.Skip("the row's values are 64-bit")
+			}
+			p := wholeParams(t, tc.raw, tc.edit)
+			got, err := CallToolRequest{Params: p}.RequireWholeIntSlice("ids")
+			if tc.err == nil {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, tc.want, wide(got))
+				return
+			}
+			assert.Nil(t, got)
+			assert.ErrorIs(t, err, tc.err)
+			var argErr *ArgumentError
+			require.ErrorAs(t, err, &argErr)
+			assert.Equal(t, tc.key, argErr.Key)
+			assert.Equal(t, tc.value, argErr.Value)
+			for i := range p.RawArguments {
+				p.RawArguments[i] = ' '
+			}
+			assert.Equal(t, tc.value, argErr.Value, "the value shares the request's bytes")
+		})
+	}
+
+	t.Run("a marked request: 2^53 in size is inexact", func(t *testing.T) {
+		if strconv.IntSize != 64 {
+			t.Skip("the values are 64-bit")
+		}
+		marked := func(raw string, items ...any) CallToolRequest {
+			p := wholeParams(t, raw, func(m map[string]any) { m["ids"] = items })
+			p.roundTrip = true
+			return CallToolRequest{Params: p}
+		}
+		got, err := marked(`{}`, float64(9007199254740991), -float64(9007199254740991)).RequireWholeIntSlice("ids")
+		require.NoError(t, err)
+		assert.Equal(t, []int64{9007199254740991, -9007199254740991}, wide(got))
+
+		for _, r := range []CallToolRequest{
+			marked(`{}`, float64(1), float64(1<<53)),
+			marked(`{"ids":[1,9007199254740993]}`, float64(1), float64(1<<53)),
+		} {
+			_, err := r.RequireWholeIntSlice("ids")
+			assert.ErrorIs(t, err, ErrArgumentInexact)
+			var argErr *ArgumentError
+			require.ErrorAs(t, err, &argErr)
+			assert.Equal(t, "ids[1]", argErr.Key)
+		}
+	})
+}
+
 // BenchmarkRequireWholeIntRaw measures RequireWholeInt of a whole number past
 // 2^53 that the client sent as an integer literal, which the getter reads
 // exactly from the raw arguments. The scan walks the 256 KiB beside it: string

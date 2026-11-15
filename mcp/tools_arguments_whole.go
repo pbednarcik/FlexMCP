@@ -12,14 +12,15 @@ import (
 	"unsafe"
 )
 
-// The reasons RequireWholeInt and RequireWholeIntText give for refusing an
-// argument. They are carried by an *ArgumentError; test them with errors.Is.
+// The reasons RequireWholeInt, RequireWholeIntText and RequireWholeIntSlice give
+// for refusing an argument. They are carried by an *ArgumentError; test them
+// with errors.Is.
 var (
 	// ErrArgumentMissing reports that the key is absent or null.
 	ErrArgumentMissing = errors.New("argument is missing")
 	// ErrArgumentNotANumber reports a value that is not a number: a type
 	// other than a number, NaN, or a json.Number that is not a JSON number
-	// literal.
+	// literal, or, for RequireWholeIntSlice, a value that is not an array.
 	ErrArgumentNotANumber = errors.New("argument is not a number")
 	// ErrArgumentFraction reports a number with a fractional part.
 	ErrArgumentFraction = errors.New("argument has a fractional part")
@@ -37,11 +38,12 @@ var (
 // keeps.
 const argumentValueCut = 64
 
-// ArgumentError is the error RequireWholeInt and RequireWholeIntText return.
-// Reason is one of the ErrArgument sentinels, and Unwrap returns it, so
-// callers test the reason with errors.Is.
+// ArgumentError is the error RequireWholeInt, RequireWholeIntText and
+// RequireWholeIntSlice return. Reason is one of the ErrArgument sentinels, and
+// Unwrap returns it, so callers test the reason with errors.Is.
 type ArgumentError struct {
-	// Key is the argument name.
+	// Key is the argument name, and for an element of a list, the name and
+	// its index in brackets, as in ids[2].
 	Key string
 	// Value is the offending value for a scalar, the client's literal when it
 	// was judged by that, cut at 64 bytes, and empty for anything else.
@@ -78,6 +80,94 @@ func (r CallToolRequest) RequireWholeInt(key string) (int, error) {
 // "" are ErrArgumentBadText.
 func (r CallToolRequest) RequireWholeIntText(key string) (int, error) {
 	return r.requireWholeInt(key, true)
+}
+
+// RequireWholeIntSlice returns the int slice argument for key, and refuses
+// what GetIntSlice and RequireIntSlice silently truncate or convert: an
+// element with a fraction, outside the range of int, a NaN, a string or a
+// null. It reads the same map as GetIntSlice. A missing key or a null is
+// ErrArgumentMissing, and a value that is not an array is
+// ErrArgumentNotANumber. A whole element past 2^53 is read exactly from the
+// client's literal when the request carries one. Under a before-call or
+// before-any hook with input validation on, a float64 element of 2^53 or more
+// in size answers ErrArgumentInexact instead. A []int a hook put in the map is
+// returned as it is. The error is an *ArgumentError whose Reason is one of the
+// ErrArgument sentinels; for an element its Key is the name and the index,
+// as in ids[2].
+func (r CallToolRequest) RequireWholeIntSlice(key string) ([]int, error) {
+	val, ok := r.GetArguments()[key]
+	if !ok || val == nil {
+		return nil, &ArgumentError{Key: key, Reason: ErrArgumentMissing}
+	}
+	switch v := val.(type) {
+	case []int:
+		return v, nil
+	case []any:
+		marked := roundTripped(r.Params)
+		result := make([]int, len(v))
+		var literals []string
+		scanned := false
+		for i, item := range v {
+			var (
+				n       int64
+				literal string
+				err     error
+			)
+			x, isFloat := item.(float64)
+			switch {
+			case !isFloat:
+				n, err = wholeInt(item, strconv.IntSize, false)
+			case marked:
+				n, err = wholeMarkedFloat(x, strconv.IntSize)
+			default:
+				used := false
+				if refinable(x) {
+					if !scanned {
+						literals, scanned = elementLiterals(r.Params.RawArguments, key, len(v)), true
+					}
+					if literals != nil {
+						if n, used, err = wholeByLiteral(x, literals[i], strconv.IntSize); used {
+							literal = literals[i]
+						}
+					}
+				}
+				if !used {
+					n, err = wholeFloat(x, strconv.IntSize)
+				}
+			}
+			if err != nil {
+				value := scalarText(item)
+				if literal != "" {
+					value = cutText(literal)
+				}
+				return nil, &ArgumentError{Key: key + "[" + strconv.Itoa(i) + "]", Value: value, Reason: err}
+			}
+			result[i] = int(n)
+		}
+		return result, nil
+	}
+	return nil, &ArgumentError{Key: key, Value: scalarText(val), Reason: ErrArgumentNotANumber}
+}
+
+// elementLiterals returns the texts of the elements of the array that is the
+// last top-level value of key in raw, as the client sent them, or nil when
+// there is no such array or it does not have exactly want elements: a hook or
+// middleware that changed the array's length changed the map, and the map
+// wins. The texts are copies, so none shares raw's memory.
+func elementLiterals(raw json.RawMessage, key string, want int) []string {
+	literal, found := lastTopLevelLiteral(raw, key)
+	if !found {
+		return nil
+	}
+	var elems []json.RawMessage
+	if json.Unmarshal([]byte(literal), &elems) != nil || len(elems) != want {
+		return nil
+	}
+	texts := make([]string, len(elems))
+	for i, e := range elems {
+		texts[i] = string(e)
+	}
+	return texts
 }
 
 func (r CallToolRequest) requireWholeInt(key string, text bool) (int, error) {
@@ -123,22 +213,43 @@ func (r CallToolRequest) wholeArgument(key string, val any, bits int, text bool)
 		return n, "", err
 	}
 	if roundTripped(r.Params) {
-		n, err := wholeFloat(x, bits)
-		if err == nil && math.Abs(x) >= maxExactFloat {
-			return 0, "", ErrArgumentInexact
-		}
+		n, err := wholeMarkedFloat(x, bits)
 		return n, "", err
 	}
-	if len(r.Params.RawArguments) > 0 && x == math.Trunc(x) && !math.IsInf(x, 0) {
+	if len(r.Params.RawArguments) > 0 && refinable(x) {
 		if literal, found := lastTopLevelLiteral(r.Params.RawArguments, key); found {
-			if f, err := strconv.ParseFloat(literal, 64); err == nil && f == x {
-				n, err := wholeLiteral(literal, bits)
+			if n, used, err := wholeByLiteral(x, literal, bits); used {
 				return n, literal, err
 			}
 		}
 	}
 	n, err := wholeFloat(x, bits)
 	return n, "", err
+}
+
+// wholeMarkedFloat judges x, a float64 of a marked request (see roundTripped):
+// it is range-checked, and one of 2^53 or more in size is ErrArgumentInexact.
+func wholeMarkedFloat(x float64, bits int) (int64, error) {
+	n, err := wholeFloat(x, bits)
+	if err == nil && math.Abs(x) >= maxExactFloat {
+		return 0, ErrArgumentInexact
+	}
+	return n, err
+}
+
+// refinable reports whether x is a whole, finite float64, which a client's
+// literal may refine.
+func refinable(x float64) bool { return x == math.Trunc(x) && !math.IsInf(x, 0) }
+
+// wholeByLiteral judges x by literal, the client's text for it, when literal
+// parses to x. When it parses to another value, a hook or middleware changed
+// the map, the map wins, and used is false.
+func wholeByLiteral(x float64, literal string, bits int) (n int64, used bool, err error) {
+	if f, perr := strconv.ParseFloat(literal, 64); perr != nil || f != x {
+		return 0, false, nil
+	}
+	n, err = wholeLiteral(literal, bits)
+	return n, true, err
 }
 
 // lastTopLevelLiteral returns the text of the value of the last top-level

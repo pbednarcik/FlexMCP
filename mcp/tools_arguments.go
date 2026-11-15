@@ -250,7 +250,9 @@ func (r CallToolRequest) RequireStringSlice(key string) ([]string, error) {
 	return nil, fmt.Errorf("required argument %q not found", key)
 }
 
-// GetIntSlice returns an int slice argument by key, or the default value if not found
+// GetIntSlice returns an int slice argument by key, or the default value if not found.
+// It truncates a fraction and does not range-check a float64; RequireWholeIntSlice
+// refuses both.
 func (r CallToolRequest) GetIntSlice(key string, defaultValue []int) []int {
 	args := r.GetArguments()
 	if val, ok := args[key]; ok {
@@ -277,7 +279,9 @@ func (r CallToolRequest) GetIntSlice(key string, defaultValue []int) []int {
 	return defaultValue
 }
 
-// RequireIntSlice returns an int slice argument by key, or an error if not found or not convertible to int slice
+// RequireIntSlice returns an int slice argument by key, or an error if not found or not convertible to int slice.
+// It truncates a fraction and does not range-check a float64; RequireWholeIntSlice
+// refuses both.
 func (r CallToolRequest) RequireIntSlice(key string) ([]int, error) {
 	args := r.GetArguments()
 	if val, ok := args[key]; ok {
