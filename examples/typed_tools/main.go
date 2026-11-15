@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/pbednarcik/flexmcp/mcp"
 	"github.com/pbednarcik/flexmcp/server"
@@ -24,7 +25,7 @@ type GreetingArgs struct {
 // main starts the MCP-based example server, registers a typed "greeting" tool, and serves it over standard I/O.
 //
 // The registered tool exposes a schema for typed inputs (name, age, is_vip, languages, metadata, and any_data)
-// and uses a typed handler to produce personalized greetings. If the server fails to start, an error is printed to stdout.
+// and uses a typed handler to produce personalized greetings. If the server fails to start, an error is printed to standard error.
 func main() {
 	// Create a new MCP server
 	s := server.NewMCPServer(
@@ -76,7 +77,7 @@ func main() {
 
 	// Start the stdio server
 	if err := server.ServeStdio(s); err != nil {
-		fmt.Printf("Server error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 	}
 }
 
