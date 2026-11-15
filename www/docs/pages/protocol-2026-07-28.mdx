@@ -283,9 +283,12 @@ need code are marked **(code)**.
   Discovery follows a redirect only while the URL it reaches, after the
   HTTP client's own redirect policy, stays on `https`; a token, refresh or
   registration request follows none.
-- **(code)** An access token goes only to its own server: with OAuth
-  configured, a Streamable HTTP or SSE request follows a redirect only while
-  its scheme, host and port stay the same (`ErrRedirectLeavesOrigin`).
+- **(code)** A request's headers, an access token among them, go only to its
+  own server: on the transport's default HTTP client, and with OAuth
+  configured on any client, a Streamable HTTP or SSE request follows a
+  redirect only while its scheme, host and port stay the same
+  (`ErrRedirectLeavesOrigin`). A client given with `WithHTTPBasicClient` or
+  `WithHTTPClient` keeps its own redirect policy unless OAuth is configured.
 - Discovery that gets no answer (a failed or cancelled request, a `5xx` or
   `429`) returns the error and tries again on the next call; the default
   endpoints stand in only for metadata that is not there. Without protected
