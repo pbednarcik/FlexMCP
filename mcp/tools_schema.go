@@ -222,7 +222,7 @@ func propertyOrder(raw json.RawMessage) []string {
 
 // toolArgumentsSchemaUnmarshalJSON decodes data into tis, keeping numbers
 // exact, as json.Number. A definitions keyword moves to Defs, its local
-// "#/definitions/..." refs rewritten to "#/$defs/...", only when Defs is
+// refs to "#/definitions" or into it rewritten to "#/$defs", only when Defs is
 // still nil once $defs is decoded and $schema names no draft before 2019-09;
 // otherwise it stays in AdditionalFields as written, refs untouched.
 func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) error {
@@ -305,8 +305,8 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 
 	// definitions moves to Defs when Defs is still nil and the dialect reads
 	// $defs: 2019-09 on, or none declared. Defs is marshalled as "$defs", so
-	// local "#/definitions/..." $ref pointers are rewritten to "#/$defs/...",
-	// or they would dangle. Otherwise definitions stays in additionalFields as
+	// local refs to "#/definitions" or into it are rewritten to "#/$defs", or
+	// they would dangle. Otherwise definitions stays in additionalFields as
 	// written: an older draft reads no $defs, and a schema with both
 	// containers needs both. The moved map is the local decode and the kept
 	// one additionalFields' own, so the two never share a value.
@@ -337,13 +337,16 @@ func decodeExact(raw []byte, v any) error {
 	return decoder.Decode(v)
 }
 
-// rewriteDraft07LocalRefs rewrites local draft-07 "#/definitions/..." $ref
-// pointers to their 2019-09+ "#/$defs/..." equivalent in place, in schema,
-// a schema or an array of schemas, and the schemas inside it. Non-local refs
-// are left untouched, and so is everything that is not a schema in dialect:
-// a keyword is followed only when subschemaKeyword names it. A subschema
-// that is a resource of its own (see embeddedResource) has local refs that
-// point into it, so the rewrite stops there.
+// rewriteDraft07LocalRefs rewrites local draft-07 pointers to definitions
+// to their 2019-09+ equivalent in place, in schema, a schema or an array of
+// schemas, and the schemas inside it: a $ref (or a 2020-12 $dynamicRef) of
+// exactly "#/definitions", or starting with "#/definitions/", follows it to
+// "#/$defs". Any other ref, such as "#/definitionsX/...", a non-local or a
+// percent-encoded one, is left untouched, and so is everything that is not
+// a schema in dialect: a keyword is followed only when subschemaKeyword
+// names it. A subschema that is a resource of its own (see
+// embeddedResource) has local refs that point into it, so the rewrite stops
+// there.
 func rewriteDraft07LocalRefs(schema any, dialect schemaDialect) {
 	rewriteDraft07LocalRefsAt(schema, dialect, false)
 }
@@ -351,14 +354,16 @@ func rewriteDraft07LocalRefs(schema any, dialect schemaDialect) {
 // rewriteDraft07LocalRefsAt is rewriteDraft07LocalRefs; root says schema is
 // the root resource, whose own $id does not stop the rewrite.
 func rewriteDraft07LocalRefsAt(schema any, dialect schemaDialect, root bool) {
-	const draft07Prefix = "#/definitions/"
 	switch v := schema.(type) {
 	case map[string]any:
 		if resource, _ := embeddedResource(v, dialect); resource && !root {
 			return
 		}
-		if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, draft07Prefix) {
-			v["$ref"] = "#/$defs/" + ref[len(draft07Prefix):]
+		rewriteDraft07LocalRef(v, "$ref")
+		// A $dynamicRef to a pointer resolves as a $ref does; before
+		// 2020-12 it is no keyword.
+		if dialect == dialect2020 {
+			rewriteDraft07LocalRef(v, "$dynamicRef")
 		}
 		for key, child := range v {
 			switch subschemaKeyword(key, dialect) {
@@ -372,6 +377,16 @@ func rewriteDraft07LocalRefsAt(schema any, dialect schemaDialect, root bool) {
 		for _, child := range v {
 			rewriteDraft07LocalRefs(child, dialect)
 		}
+	}
+}
+
+// rewriteDraft07LocalRef rewrites the ref schema[keyword] when it is
+// "#/definitions" or starts with "#/definitions/": "#/definitions" becomes
+// "#/$defs", and the rest of the pointer is kept.
+func rewriteDraft07LocalRef(schema map[string]any, keyword string) {
+	ref, _ := schema[keyword].(string)
+	if rest, ok := strings.CutPrefix(ref, "#/definitions"); ok && (rest == "" || rest[0] == '/') {
+		schema[keyword] = "#/$defs" + rest
 	}
 }
 

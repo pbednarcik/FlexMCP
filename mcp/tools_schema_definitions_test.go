@@ -28,8 +28,9 @@ func TestToolSchemaDefinitionsFollowTheDialect(t *testing.T) {
 		schema string
 		// defs and definitions say which containers are on the wire.
 		defs, definitions bool
-		// refs maps a property to its $ref on the wire.
-		refs map[string]string
+		// refs and dynamicRefs map a property to its $ref and its
+		// $dynamicRef on the wire.
+		refs, dynamicRefs map[string]string
 		// valid and invalid are instances the round-tripped schema accepts
 		// and refuses; with neither, it is not compiled.
 		valid, invalid string
@@ -37,6 +38,13 @@ func TestToolSchemaDefinitionsFollowTheDialect(t *testing.T) {
 		{name: "undeclared", schema: `{"type":"object",` + pointer, defs: true, refs: map[string]string{"sku": "#/$defs/sku"}, valid: `{"sku":"ab"}`, invalid: `{"sku":"a"}`},
 		{name: "2019-09", schema: `{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"object",` + pointer, defs: true, refs: map[string]string{"sku": "#/$defs/sku"}, valid: `{"sku":"ab"}`, invalid: `{"sku":"a"}`},
 		{name: "2020-12", schema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",` + pointer, defs: true, refs: map[string]string{"sku": "#/$defs/sku"}, valid: `{"sku":"ab"}`, invalid: `{"sku":"a"}`},
+		// definitions itself, read as a schema, refuses a string.
+		{name: "a ref to definitions itself", schema: `{"type":"object","definitions":{"not":{"type":"string"}},"properties":{"v":{"$ref":"#/definitions"}}}`, defs: true, refs: map[string]string{"v": "#/$defs"}, valid: `{"v":1}`, invalid: `{"v":"a"}`},
+		{name: "a longer name is not definitions", schema: `{"type":"object","definitions":{"x":{"type":"integer"}},"definitionsX":{"y":{"type":"string"}},"properties":{"v":{"$ref":"#/definitionsX/y"}}}`, defs: true, refs: map[string]string{"v": "#/definitionsX/y"}, valid: `{"v":"a"}`, invalid: `{"v":1}`},
+		// A $dynamicRef to a pointer resolves as a $ref does; before 2020-12
+		// it is no keyword, and is kept as written.
+		{name: "2020-12 $dynamicRef pointer", schema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","definitions":{"x":{"type":"string"}},"properties":{"v":{"$dynamicRef":"#/definitions/x"}}}`, defs: true, dynamicRefs: map[string]string{"v": "#/$defs/x"}, valid: `{"v":"a"}`, invalid: `{"v":1}`},
+		{name: "2019-09 $dynamicRef is no ref", schema: `{"$schema":"https://json-schema.org/draft/2019-09/schema","type":"object","definitions":{"x":{"type":"string"}},"properties":{"v":{"$dynamicRef":"#/definitions/x"}}}`, defs: true, dynamicRefs: map[string]string{"v": "#/definitions/x"}},
 		{name: "unknown $schema", schema: `{"$schema":"https://example.com/dialect","type":"object",` + pointer, defs: true, refs: map[string]string{"sku": "#/$defs/sku"}},
 		{name: "draft-07 pointer ref", schema: draft07 + pointer, definitions: true, refs: map[string]string{"sku": "#/definitions/sku"}, valid: `{"sku":"ab"}`, invalid: `{"sku":"a"}`},
 		{name: "draft-07 plain-name $id", schema: draft07 + plainName, definitions: true, refs: map[string]string{"sku": "#sku"}, valid: `{"sku":"ab"}`, invalid: `{"sku":"a"}`},
@@ -81,6 +89,10 @@ func TestToolSchemaDefinitionsFollowTheDialect(t *testing.T) {
 			for name, ref := range tt.refs {
 				property, _ := properties[name].(map[string]any)
 				assert.Equal(t, ref, property["$ref"], name)
+			}
+			for name, ref := range tt.dynamicRefs {
+				property, _ := properties[name].(map[string]any)
+				assert.Equal(t, ref, property["$dynamicRef"], name)
 			}
 
 			var again ToolArgumentsSchema
