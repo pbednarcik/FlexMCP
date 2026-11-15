@@ -876,7 +876,7 @@ The error is an `*mcp.ArgumentError` with the `Key`, the offending `Value` for a
 | Reason | Meaning |
 |---|---|
 | `ErrArgumentMissing` | the key is absent or `null` |
-| `ErrArgumentNotANumber` | a string (with text off), a boolean, an object, a NaN, a `json.Number` that is not a JSON number literal |
+| `ErrArgumentNotANumber` | a string (with text off), a boolean, an object, a NaN, a `json.Number` that is not a JSON number literal; for `RequireWholeIntSlice`, also a `null` element or a value that is not an array |
 | `ErrArgumentFraction` | the number has a fractional part |
 | `ErrArgumentOutOfRange` | the number is outside the range of `int` |
 | `ErrArgumentInexact` | a `float64` that stands for more than one whole number (below) |
@@ -885,6 +885,15 @@ The error is an `*mcp.ArgumentError` with the `Key`, the offending `Value` for a
 `1.0` and `1e2` are whole numbers and are accepted. `RequireWholeIntText` also accepts a string that `strconv.Atoi` accepts, so `"+5"` is 5 and `"007"` is 7, while `" 5"`, `"1e2"` and `""` are `ErrArgumentBadText`.
 
 When the request carries the client's own bytes, a whole number past 2^53 is read exactly from the client's literal, so `9007199254740993` returns itself and not its rounded `float64`. A server with input validation on and a before-call or before-any hook is the exception. Validation then checks a re-encoded copy of the hook's arguments, in which a `float64` of 2^53 or more in size stands for several literals the client could have sent: `9007199254740993` and `9007199254740992` are the same `float64`. The getter answers `ErrArgumentInexact` for such a value instead of guessing. A value past the range of `int` is still `ErrArgumentOutOfRange`, and an `int64` or `json.Number` a hook wrote is judged exactly.
+
+`RequireWholeIntSlice` reads an array of whole numbers by the same rules, one element at a time, and refuses the first element it cannot read exactly. For an element, the error's `Key` is the name and the index, as in `ids[2]`; a value that is not an array is `ErrArgumentNotANumber` with the name alone. `GetIntSlice` and `RequireIntSlice` stay lax: they truncate a fraction, convert a string, and read an element past 2^53 through its rounded `float64`.
+
+```go
+ids, err := req.RequireWholeIntSlice("ids") // [1, 1.5]: Key "ids[1]", ErrArgumentFraction
+if err != nil {
+    return mcp.NewToolResultError(err.Error()), nil
+}
+```
 
 ### Available Helper Methods
 
