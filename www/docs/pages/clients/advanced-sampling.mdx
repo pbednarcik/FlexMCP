@@ -2,6 +2,10 @@
 
 Learn how to implement MCP clients that can handle sampling requests from servers, enabling bidirectional communication where clients provide LLM capabilities to servers.
 
+:::note[Protocol versions]
+This guide uses server-initiated sampling: the server sends the client a `sampling/createMessage` request while a tool call is in progress. Protocol version 2026-07-28 removed server-initiated requests. By default the client negotiates that version whenever the server offers it, so the examples below pin `mcp.ProtocolVersion20251125` when they initialize: a client pinned to an earlier version, or configured for the earlier protocol only, never offers 2026-07-28. From 2026-07-28 a server asks for a completion with a multi round-trip request instead, and the client answers it with the same sampling handler (see [the client side of 2026-07-28](/protocol-2026-07-28#clients)).
+:::
+
 ## Overview
 
 Sampling allows MCP clients to respond to LLM completion requests from servers. When a server needs to generate content, answer questions, or perform reasoning tasks, it can send a sampling request to the client, which then processes it using an LLM and returns the result.
@@ -34,6 +38,7 @@ package main
 import (
     "context"
     "fmt"
+    "log"
     
     "github.com/pbednarcik/flexmcp/client"
     "github.com/pbednarcik/flexmcp/client/transport"
@@ -97,8 +102,18 @@ func main() {
         log.Fatalf("Failed to start client: %v", err)
     }
     defer mcpClient.Close()
-    if err := mcpClient.Connect(ctx); err != nil {
-        log.Fatalf("Failed to connect: %v", err)
+    
+    // Pin the last protocol version with server-initiated sampling
+    if _, err := mcpClient.Initialize(ctx, mcp.InitializeRequest{
+        Params: mcp.InitializeParams{
+            ProtocolVersion: mcp.ProtocolVersion20251125,
+            ClientInfo: mcp.Implementation{
+                Name:    "sampling-client",
+                Version: "1.0.0",
+            },
+        },
+    }); err != nil {
+        log.Fatalf("Failed to initialize: %v", err)
     }
     
     // The client will now automatically handle sampling requests
@@ -114,16 +129,16 @@ Here's a complete mock implementation for testing:
 package main
 
 import (
-import (
     "context"
     "fmt"
     "log"
-    "strings"
     "os"
 
     "github.com/pbednarcik/flexmcp/client"
+    "github.com/pbednarcik/flexmcp/client/transport"
     "github.com/pbednarcik/flexmcp/mcp"
 )
+
 type MockSamplingHandler struct{}
 
 func (h *MockSamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
@@ -181,20 +196,35 @@ func main() {
         log.Fatalf("Failed to start client: %v", err)
     }
     defer mcpClient.Close()
-    if err := mcpClient.Connect(ctx); err != nil {
-        log.Fatalf("Failed to connect: %v", err)
+    
+    // Pin the last protocol version with server-initiated sampling
+    if _, err := mcpClient.Initialize(ctx, mcp.InitializeRequest{
+        Params: mcp.InitializeParams{
+            ProtocolVersion: mcp.ProtocolVersion20251125,
+            ClientInfo: mcp.Implementation{
+                Name:    "sampling-client",
+                Version: "1.0.0",
+            },
+        },
+    }); err != nil {
+        log.Fatalf("Failed to initialize: %v", err)
     }
     
     // Test server tools that use sampling
-    result, err := mcpClient.CallTool(ctx, "ask_llm", map[string]any{
-        "question": "What is the capital of France?",
-        "system_prompt": "You are a helpful geography assistant.",
+    result, err := mcpClient.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolParams{
+            Name: "ask_llm",
+            Arguments: map[string]any{
+                "question":      "What is the capital of France?",
+                "system_prompt": "You are a helpful geography assistant.",
+            },
+        },
     })
     if err != nil {
         log.Fatalf("Tool call failed: %v", err)
     }
     
-    fmt.Printf("Tool result: %+v\\n", result)
+    fmt.Printf("Tool result: %+v\n", result)
 }
 ```
 
@@ -406,7 +436,7 @@ The client will include this in the initialization request:
   "id": 1,
   "method": "initialize",
   "params": {
-    "protocolVersion": "2024-11-05",
+    "protocolVersion": "2025-11-25",
     "capabilities": {
       "sampling": {}
     },
@@ -531,18 +561,15 @@ func (h *MySamplingHandler) CreateMessage(ctx context.Context, request mcp.Creat
 
 ## Testing Your Implementation
 
-Test your sampling handler with the sampling server example:
+FlexMCP's own server sends no sampling requests: protocol version 2026-07-28 replaced server-initiated requests with multi round-trip requests (see `examples/multi_round_trip`). Test your sampling handler against a server that does send them, such as one of an earlier protocol version offering an `ask_llm` tool. The client in `examples/sampling_client` runs against such a server:
 
 ```bash
-# Build the sampling server
-cd examples/sampling_server
-go build -o sampling_server
-
-# Build your client
-go build -o my_client
+# Build the sampling client
+cd examples/sampling_client
+go build -o sampling_client
 
 # Test the integration
-./my_client ./sampling_server
+./sampling_client /path/to/your/mcp/server
 ```
 
 ## Transport Support
@@ -571,13 +598,25 @@ mcpClient, err := client.NewInProcessClientWithSamplingHandler(
 
 In-process sampling uses direct method calls instead of JSON-RPC serialization.
 
+### StreamableHTTP Transport
+
+Before 2026-07-28, a StreamableHTTP server can send sampling requests while a tool call is in progress, and the client answers them with your handler (see `examples/sampling_http_client`):
+
+```go
+httpTransport, err := transport.NewStreamableHTTP("http://localhost:8080/mcp")
+if err != nil {
+    log.Fatalf("Failed to create transport: %v", err)
+}
+mcpClient := client.NewClient(httpTransport, client.WithSamplingHandler(&MySamplingHandler{}))
+```
+
 ### Unsupported Transports
 
-SSE and StreamableHTTP transports do not support sampling due to their one-way or stateless nature.
+The legacy SSE transport does not support sampling: its client has no handler for requests sent by the server.
 
 ## Next Steps
 
 - Learn about [server-side sampling implementation](/servers/advanced-sampling)
 - Explore [client operations](/clients/operations)
-- Check out the [sampling examples](https://github.com/mark3labs/mcp-go/tree/main/examples/sampling_client)
+- Check out the sampling example in `examples/sampling_client`
 - See [in-process transport documentation](/transports/inprocess) for embedded scenarios
