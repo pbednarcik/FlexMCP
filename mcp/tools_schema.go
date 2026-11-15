@@ -10,15 +10,21 @@ import (
 
 // ToolArgumentsSchema represents a JSON Schema for tool arguments.
 type ToolArgumentsSchema struct {
+	// Defs holds the $defs keyword. Decoding keeps numbers exact, as
+	// json.Number.
 	Defs map[string]any `json:"$defs,omitempty"`
 	Type string         `json:"type"`
 	// Types holds an array-valued JSON Schema type, including a one-element
 	// array. Type stays a string for compatibility and wins when it is not
 	// empty. Decoding a string type clears Types; decoding an array clears Type.
-	Types                []string       `json:"-"`
-	Properties           map[string]any `json:"properties"`
-	Required             []string       `json:"required,omitempty"`
-	AdditionalProperties any            `json:"additionalProperties,omitempty"`
+	Types []string `json:"-"`
+	// Properties holds the properties keyword. Decoding keeps numbers exact,
+	// as json.Number.
+	Properties map[string]any `json:"properties"`
+	Required   []string       `json:"required,omitempty"`
+	// AdditionalProperties holds the additionalProperties keyword. Decoding
+	// keeps numbers exact, as json.Number.
+	AdditionalProperties any `json:"additionalProperties,omitempty"`
 	// AdditionalFields holds the top-level JSON Schema keywords the other
 	// fields do not model, such as $schema, title or oneOf. The modeled names
 	// (type, properties, required, additionalProperties, $defs and its alias
@@ -215,15 +221,21 @@ func propertyOrder(raw json.RawMessage) []string {
 }
 
 // It handles both "$defs" (JSON Schema 2019-09+) and "definitions" (JSON Schema draft-07)
-// by reading either field and storing it in the Defs field.
+// by reading either field and storing it in the Defs field. Decoding keeps
+// numbers exact, as json.Number.
 func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) error {
 	// Use a temporary type to avoid infinite recursion
 	type Alias ToolArgumentsSchema
 	aux := &struct {
-		Definitions map[string]any `json:"definitions,omitempty"`
+		// Defs, Definitions and AdditionalProperties shadow their Alias
+		// fields so their numbers are decoded exactly.
+		Defs                 json.RawMessage `json:"$defs,omitempty"`
+		Definitions          json.RawMessage `json:"definitions,omitempty"`
+		AdditionalProperties json.RawMessage `json:"additionalProperties,omitempty"`
 		// Type shadows Alias.Type so an array-valued type decodes into Types.
 		Type json.RawMessage `json:"type"`
-		// Properties shadows Alias.Properties so the raw bytes keep the key order.
+		// Properties shadows Alias.Properties so the raw bytes keep the key
+		// order and its numbers are decoded exactly.
 		Properties json.RawMessage `json:"properties"`
 		*Alias
 	}{
@@ -250,19 +262,33 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 		}
 	}
 
+	// Numbers are kept as written: a const or enum past 2^53 is not rounded,
+	// and a number no float64 holds is not refused.
+	if aux.Defs != nil {
+		if err := decodeExact(aux.Defs, &tis.Defs); err != nil {
+			return err
+		}
+	}
+	var definitions map[string]any
+	if aux.Definitions != nil {
+		if err := decodeExact(aux.Definitions, &definitions); err != nil {
+			return err
+		}
+	}
 	if aux.Properties != nil {
-		if err := json.Unmarshal(aux.Properties, &tis.Properties); err != nil {
+		if err := decodeExact(aux.Properties, &tis.Properties); err != nil {
 			return err
 		}
 		tis.PropertyOrder = propertyOrder(aux.Properties)
 	}
+	if aux.AdditionalProperties != nil {
+		if err := decodeExact(aux.AdditionalProperties, &tis.AdditionalProperties); err != nil {
+			return err
+		}
+	}
 
-	// Numbers are kept as written: a const or enum past 2^53 is not rounded,
-	// and a number no float64 holds is not refused.
 	var additionalFields map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	if err := decoder.Decode(&additionalFields); err != nil {
+	if err := decodeExact(data, &additionalFields); err != nil {
 		return err
 	}
 	for key := range additionalFields {
@@ -278,8 +304,8 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 	// Marshaling re-emits Defs as "$defs", so local "#/definitions/..." $ref
 	// pointers must be rewritten to "#/$defs/..." or the round-tripped schema
 	// carries dangling references that strict validators reject.
-	if tis.Defs == nil && aux.Definitions != nil {
-		tis.Defs = aux.Definitions
+	if tis.Defs == nil && definitions != nil {
+		tis.Defs = definitions
 		dialect := schemaDialectOf(additionalFields["$schema"])
 		rewriteDraft07LocalRefsIn(tis.Defs, dialect)
 		rewriteDraft07LocalRefsIn(tis.Properties, dialect)
@@ -291,6 +317,14 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 
 	tis.AdditionalFields = additionalFields
 	return nil
+}
+
+// decodeExact decodes the JSON value raw into v, keeping numbers as
+// json.Number.
+func decodeExact(raw []byte, v any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	return decoder.Decode(v)
 }
 
 // rewriteDraft07LocalRefs rewrites local draft-07 "#/definitions/..." $ref
