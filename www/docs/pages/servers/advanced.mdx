@@ -951,10 +951,9 @@ Consider sampling when your server needs to:
 
 ### Basic Implementation
 
-```go
-// Enable sampling capability
-mcpServer.EnableSampling()
+The server sends the client no requests of its own. A tool that needs a completion returns a [multi round-trip request](/protocol-2026-07-28#multi-round-trip-requests) instead: the client runs its sampling handler and calls the tool again with the answer attached.
 
+```go
 // Add a tool that uses sampling
 mcpServer.AddTool(mcp.Tool{
     Name:        "ask_llm",
@@ -975,9 +974,21 @@ mcpServer.AddTool(mcp.Tool{
         return nil, err
     }
     
-    // Create sampling request
-    samplingRequest := mcp.CreateMessageRequest{
-        CreateMessageParams: mcp.CreateMessageParams{
+    // On the retry, the client's completion waits under the key asked for
+    if result := server.SamplingResponse(request.Params.InputResponses, "answer"); result != nil {
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{
+                mcp.TextContent{
+                    Type: "text",
+                    Text: fmt.Sprintf("LLM Response: %s", mcp.GetTextFromContent(result.Content)),
+                },
+            },
+        }, nil
+    }
+    
+    // First call: ask the client for a completion
+    return server.NewInputRequestBuilder("").
+        Sample("answer", mcp.CreateMessageParams{
             Messages: []mcp.SamplingMessage{
                 {
                     Role: mcp.RoleUser,
@@ -990,33 +1001,12 @@ mcpServer.AddTool(mcp.Tool{
             SystemPrompt: "You are a helpful assistant.",
             MaxTokens:    1000,
             Temperature:  0.7,
-        },
-    }
-    
-    // Request sampling from client
-    result, err := mcpServer.RequestSampling(ctx, samplingRequest)
-    if err != nil {
-        return &mcp.CallToolResult{
-            Content: []mcp.Content{
-                mcp.TextContent{
-                    Type: "text",
-                    Text: fmt.Sprintf("Error: %v", err),
-                },
-            },
-            IsError: true,
-        }, nil
-    }
-    
-    return &mcp.CallToolResult{
-        Content: []mcp.Content{
-            mcp.TextContent{
-                Type: "text",
-                Text: fmt.Sprintf("LLM Response: %s", result.Content),
-            },
-        },
-    }, nil
+        }).
+        ToolResult(), nil
 })
 ```
+
+The server answers the call with `mcp.MissingRequiredClientCapabilityError` when the client did not declare the sampling capability (a client with a sampling handler declares it), and with `server.ErrInputRequiresModernClient` when the client speaks an earlier protocol version, which cannot carry a multi round-trip request. See `examples/multi_round_trip` for a complete program.
 
 ## Additional Content Types
 

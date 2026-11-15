@@ -109,10 +109,12 @@ func main() {
 		}
 	}()
 
-	// Initialize the connection
+	// Initialize the connection, pinned to the last protocol version with
+	// server-initiated sampling: from 2026-07-28 a server asks through multi
+	// round-trip requests instead, so an unpinned client never receives one.
 	initResult, err := mcpClient.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
-			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ProtocolVersion: mcp.ProtocolVersion20251125,
 			ClientInfo: mcp.Implementation{
 				Name:    "sampling-example-client",
 				Version: "1.0.0",

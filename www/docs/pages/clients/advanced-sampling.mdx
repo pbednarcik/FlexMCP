@@ -473,10 +473,33 @@ The corresponding wire shape when both sub-capabilities are declared:
 }
 ```
 
-`client.WithSamplingHandler` advertises only the baseline (`"sampling": {}`). Advertising the optional `Context` / `Tools` sub-capabilities through the high-level client is not yet exposed — the `Initialize` flow overrides the `Sampling` field on the supplied request when a sampling handler is registered. Until a dedicated option is added, code that needs the sub-capabilities on the wire must declare them at a lower layer (for example by sending its own `initialize` request through the transport). The type is in place so that:
+`client.WithSamplingHandler` adds the baseline (`"sampling": {}`) only when no sampling capability was declared. Declare the sub-capabilities like any other client capability, either once for the client with `client.WithClientCapabilities` or on the `Initialize` request, and they reach the wire as given:
 
-- **Servers** can inspect what their connected client advertised via `session.GetClientCapabilities().Sampling` (see [Capability Gating](/servers/advanced-sampling#capability-gating-2025-11-25) on the server page).
-- **Custom client integrations** that build initialize requests directly can populate the sub-capabilities today.
+```go
+sampling := mcp.ClientCapabilities{
+    Sampling: &mcp.SamplingCapability{
+        Context: &struct{}{},
+        Tools:   &struct{}{},
+    },
+}
+
+// Once for the client...
+mcpClient := client.NewClient(stdioTransport,
+    client.WithSamplingHandler(&MySamplingHandler{}),
+    client.WithClientCapabilities(sampling),
+)
+
+// ...or on the request, which overrides the client's for the fields it sets
+_, err := mcpClient.Initialize(ctx, mcp.InitializeRequest{
+    Params: mcp.InitializeParams{
+        ProtocolVersion: mcp.ProtocolVersion20251125,
+        ClientInfo:      mcp.Implementation{Name: "sampling-client", Version: "1.0.0"},
+        Capabilities:    sampling,
+    },
+})
+```
+
+Servers can inspect what their connected client advertised via `session.GetClientCapabilities().Sampling` (see [Capability Gating](/servers/advanced-sampling#capability-gating-2025-11-25) on the server page).
 
 :::warning[Compile-time break]
 `ClientCapabilities.Sampling` and `ServerCapabilities.Sampling` are now `*mcp.SamplingCapability` (previously `*struct{}`). Code that constructed the capability with a `&struct{}{}` literal must be updated to `&mcp.SamplingCapability{}`. The JSON wire format for the baseline case is unchanged.
@@ -533,7 +556,7 @@ func (h *MySamplingHandler) CreateMessage(ctx context.Context, request mcp.Creat
     }
     
     // Call LLM with error handling
-    response, err := h.callLLM(ctx, request)
+    response, err := h.callLLM(ctx, request.Messages, request.SystemPrompt, request.MaxTokens, request.Temperature)
     if err != nil {
         // Log error for debugging
         log.Printf("LLM call failed: %v", err)
@@ -545,7 +568,15 @@ func (h *MySamplingHandler) CreateMessage(ctx context.Context, request mcp.Creat
         return nil, fmt.Errorf("LLM service unavailable: %w", err)
     }
     
-    return response, nil
+    return &mcp.CreateMessageResult{
+        Model: "your-model-name",
+        Role:  mcp.RoleAssistant,
+        Content: mcp.TextContent{
+            Type: "text",
+            Text: response,
+        },
+        StopReason: "endTurn",
+    }, nil
 }
 ```
 
@@ -587,16 +618,15 @@ mcpClient := client.NewClient(stdioTransport, client.WithSamplingHandler(&MySamp
 
 ### In-Process Transport
 
-For in-process clients, use the dedicated constructor:
+An in-process client takes the sampling handler as an option, like any other client:
 
 ```go
-mcpClient, err := client.NewInProcessClientWithSamplingHandler(
-    mcpServer, 
-    &MySamplingHandler{},
+mcpClient, err := client.NewInProcessClientWithOptions(mcpServer,
+    client.WithSamplingHandler(&MySamplingHandler{}),
 )
 ```
 
-In-process sampling uses direct method calls instead of JSON-RPC serialization.
+The in-process transport takes no requests from the server, so the handler is reached only through multi round-trip requests: leave the protocol version unpinned, and the client negotiates 2026-07-28 with the server. Pinned to an earlier version, a tool that asks for a completion fails the call.
 
 ### StreamableHTTP Transport
 
@@ -610,9 +640,9 @@ if err != nil {
 mcpClient := client.NewClient(httpTransport, client.WithSamplingHandler(&MySamplingHandler{}))
 ```
 
-### Unsupported Transports
+### SSE Transport
 
-The legacy SSE transport does not support sampling: its client has no handler for requests sent by the server.
+The legacy SSE client takes no requests from the server either, so it receives no server-initiated sampling. A server that negotiates 2026-07-28 with it reaches the handler through multi round-trip requests, as in-process.
 
 ## Next Steps
 

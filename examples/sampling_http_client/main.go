@@ -75,10 +75,12 @@ func main() {
 		log.Fatalf("Failed to start client: %v", err)
 	}
 
-	// Initialize the MCP session
+	// Initialize the MCP session, pinned to the last protocol version with
+	// server-initiated sampling: from 2026-07-28 a server asks through multi
+	// round-trip requests instead, so an unpinned client never receives one.
 	initRequest := mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
-			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+			ProtocolVersion: mcp.ProtocolVersion20251125,
 			Capabilities:    mcp.ClientCapabilities{
 				// Sampling capability will be automatically added by the client
 			},
