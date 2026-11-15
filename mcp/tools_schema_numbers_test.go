@@ -118,6 +118,7 @@ func TestToolSchemaKeepsExactNumbers(t *testing.T) {
 			Defs:                 map[string]any{"a": true},
 			Properties:           map[string]any{"a": true},
 			AdditionalProperties: false,
+			AdditionalFields:     map[string]any{"definitions": map[string]any{"b": false}},
 		}, schema)
 	})
 }

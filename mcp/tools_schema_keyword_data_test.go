@@ -113,7 +113,7 @@ func TestOutputSchemaOfKeptKeywordsOnly(t *testing.T) {
 // annotations checked.
 func TestSchemaDependenciesAreSchemas(t *testing.T) {
 	var schema ToolArgumentsSchema
-	require.NoError(t, json.Unmarshal([]byte(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","definitions":{"value":true},"dependencies":{"const":{"$ref":"#/definitions/value"},"list":["a"]}}`), &schema))
+	require.NoError(t, json.Unmarshal([]byte(`{"type":"object","definitions":{"value":true},"dependencies":{"const":{"$ref":"#/definitions/value"},"list":["a"]}}`), &schema))
 	dependencies := schema.AdditionalFields["dependencies"].(map[string]any)
 	assert.Equal(t, "#/$defs/value", dependencies["const"].(map[string]any)["$ref"])
 	assert.Equal(t, []any{"a"}, dependencies["list"])

@@ -91,10 +91,12 @@ func TestSchemaAdditionalFieldsCollisions(t *testing.T) {
 		{"structured", ToolArgumentsSchema{Type: "object", Properties: map[string]any{"x": true}, Required: []string{"x"}, Defs: map[string]any{"x": false}, AdditionalProperties: false}, `{"type":"object","properties":{"x":true},"required":["x"],"$defs":{"x":false},"additionalProperties":false,"title":"retained"}`},
 		{"omitted optional fields", ToolArgumentsSchema{}, `{"type":"","properties":{},"required":[],"title":"retained"}`},
 		{"array type", ToolArgumentsSchema{Types: []string{"object", "null"}}, `{"type":["object","null"],"properties":{},"required":[],"title":"retained"}`},
+		{"definitions", ToolArgumentsSchema{Type: "object", AdditionalFields: map[string]any{"definitions": map[string]any{"x": true}}}, `{"type":"object","properties":{},"required":[],"definitions":{"x":true},"title":"retained"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			extras := map[string]any{"type": "wrong", "properties": false, "required": false, "$defs": false, "additionalProperties": true, "definitions": map[string]any{"wrong": true}, "title": "retained"}
+			extras := map[string]any{"type": "wrong", "properties": false, "required": false, "$defs": false, "additionalProperties": true, "title": "retained"}
+			maps.Copy(extras, tt.schema.AdditionalFields)
 			original := maps.Clone(extras)
 			tt.schema.AdditionalFields = extras
 			encoded, err := json.Marshal(tt.schema)
@@ -137,29 +139,36 @@ func TestSchemaAdditionalFieldsErrors(t *testing.T) {
 	}
 }
 
-// TestSchemaAdditionalFieldsDraft07Refs checks reference normalization only when definitions is adopted.
+// TestSchemaAdditionalFieldsDraft07Refs checks reference normalization only when definitions is adopted:
+// for a dialect from 2019-09 on, or none, without $defs. Otherwise definitions and its refs stay as written.
 func TestSchemaAdditionalFieldsDraft07Refs(t *testing.T) {
-	tests := []struct{ name, defs, expectedRef string }{
-		{"adopt definitions", `"definitions":{"value":true}`, "#/$defs/value"},
-		{"defs precedence", `"$defs":{"value":false},"definitions":{"ignored":true}`, "#/definitions/value"},
-		{"no definitions", `"$defs":{"value":true}`, "#/definitions/value"},
+	const draft07 = `"$schema":"http://json-schema.org/draft-07/schema#",`
+	// kept is the definitions member left in AdditionalFields, if any.
+	tests := []struct{ name, dialect, defs, kept, expectedRef string }{
+		{"adopt definitions, undeclared", ``, `"definitions":{"value":true}`, ``, "#/$defs/value"},
+		{"adopt definitions, 2019-09", `"$schema":"https://json-schema.org/draft/2019-09/schema",`, `"definitions":{"value":true}`, ``, "#/$defs/value"},
+		{"adopt definitions, 2020-12", `"$schema":"https://json-schema.org/draft/2020-12/schema",`, `"definitions":{"value":true}`, ``, "#/$defs/value"},
+		{"draft-07 keeps definitions", draft07, `"definitions":{"value":true}`, `"definitions":{"value":true},`, "#/definitions/value"},
+		{"both containers, undeclared", ``, `"$defs":{"value":false},"definitions":{"kept":true}`, `"definitions":{"kept":true},`, "#/definitions/value"},
+		{"both containers, draft-07", draft07, `"$defs":{"value":false},"definitions":{"kept":true}`, `"definitions":{"kept":true},`, "#/definitions/value"},
+		{"no definitions", draft07, `"$defs":{"value":true}`, ``, "#/definitions/value"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			const extras = `"$schema":"http://json-schema.org/draft-07/schema#","$ref":"#/definitions/value","oneOf":[{"$ref":"#/definitions/value"}],"anyOf":[{"$ref":"#/definitions/value"}],"allOf":[{"$ref":"#/definitions/value"}],"if":{"$ref":"#/definitions/value"},"then":{"$ref":"#/definitions/value"},"else":{"$ref":"#/definitions/value"},"x-external":{"$ref":"https://example.com/definitions/value"}`
+			const extras = `"$ref":"#/definitions/value","oneOf":[{"$ref":"#/definitions/value"}],"anyOf":[{"$ref":"#/definitions/value"}],"allOf":[{"$ref":"#/definitions/value"}],"if":{"$ref":"#/definitions/value"},"then":{"$ref":"#/definitions/value"},"else":{"$ref":"#/definitions/value"},"x-external":{"$ref":"https://example.com/definitions/value"}`
 			var schema ToolArgumentsSchema
-			require.NoError(t, json.Unmarshal([]byte(`{"type":"object",`+tt.defs+`,`+extras+`}`), &schema))
-			assert.NotContains(t, schema.AdditionalFields, "definitions")
-			assert.NotContains(t, schema.Defs, "ignored")
+			require.NoError(t, json.Unmarshal([]byte(`{"type":"object",`+tt.dialect+tt.defs+`,`+extras+`}`), &schema))
+			assert.NotContains(t, schema.Defs, "kept")
 			encoded, err := json.Marshal(schema.AdditionalFields)
 			require.NoError(t, err)
-			expected := strings.ReplaceAll(`{`+extras+`}`, "#/definitions/value", tt.expectedRef)
+			expected := strings.ReplaceAll(`{`+tt.dialect+tt.kept+extras+`}`, "#/definitions/value", tt.expectedRef)
 			assert.JSONEq(t, expected, string(encoded))
 			full, err := json.Marshal(schema)
 			require.NoError(t, err)
 			var wire map[string]any
 			require.NoError(t, json.Unmarshal(full, &wire))
-			assert.NotContains(t, wire, "definitions")
+			_, hasDefinitions := wire["definitions"]
+			assert.Equal(t, tt.kept != "", hasDefinitions, "definitions on the wire")
 			assert.Equal(t, tt.expectedRef, wire["$ref"])
 		})
 	}

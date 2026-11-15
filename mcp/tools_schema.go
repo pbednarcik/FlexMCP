@@ -27,10 +27,10 @@ type ToolArgumentsSchema struct {
 	AdditionalProperties any `json:"additionalProperties,omitempty"`
 	// AdditionalFields holds the top-level JSON Schema keywords the other
 	// fields do not model, such as $schema, title or oneOf. The modeled names
-	// (type, properties, required, additionalProperties, $defs and its alias
-	// definitions) are reserved: an entry under one of them is never written,
-	// even when its field is empty. Decoding keeps numbers exact, as
-	// json.Number.
+	// (type, properties, required, additionalProperties and $defs) are
+	// reserved: an entry under one of them is never written, even when its
+	// field is empty. definitions is kept here, as written, unless decoding
+	// moved it to Defs. Decoding keeps numbers exact, as json.Number.
 	AdditionalFields map[string]any `json:"-"`
 	// PropertyOrder is the marshal order of the top-level Properties keys.
 	// UnmarshalJSON sets it from the "properties" object. Names that are not
@@ -79,7 +79,7 @@ func (tis *ToolArgumentsSchema) UnmarshalJSON(data []byte) error {
 // ToolArgumentsSchema.
 func isModeledToolSchemaKeyword(key string) bool {
 	switch key {
-	case "type", "properties", "required", "additionalProperties", "$defs", "definitions":
+	case "type", "properties", "required", "additionalProperties", "$defs":
 		return true
 	}
 	return false
@@ -220,9 +220,11 @@ func propertyOrder(raw json.RawMessage) []string {
 	return order
 }
 
-// It handles both "$defs" (JSON Schema 2019-09+) and "definitions" (JSON Schema draft-07)
-// by reading either field and storing it in the Defs field. Decoding keeps
-// numbers exact, as json.Number.
+// toolArgumentsSchemaUnmarshalJSON decodes data into tis, keeping numbers
+// exact, as json.Number. A definitions keyword moves to Defs, its local
+// "#/definitions/..." refs rewritten to "#/$defs/...", only when Defs is
+// still nil once $defs is decoded and $schema names no draft before 2019-09;
+// otherwise it stays in AdditionalFields as written, refs untouched.
 func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) error {
 	// Use a temporary type to avoid infinite recursion
 	type Alias ToolArgumentsSchema
@@ -296,23 +298,31 @@ func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) err
 			delete(additionalFields, key)
 		}
 	}
-	if len(additionalFields) == 0 {
-		additionalFields = nil
+	// A null definitions is no container, and is dropped.
+	if additionalFields["definitions"] == nil {
+		delete(additionalFields, "definitions")
 	}
 
-	// If $defs wasn't provided but definitions was, use definitions.
-	// Marshaling re-emits Defs as "$defs", so local "#/definitions/..." $ref
-	// pointers must be rewritten to "#/$defs/..." or the round-tripped schema
-	// carries dangling references that strict validators reject.
-	if tis.Defs == nil && definitions != nil {
+	// definitions moves to Defs when Defs is still nil and the dialect reads
+	// $defs: 2019-09 on, or none declared. Defs is marshalled as "$defs", so
+	// local "#/definitions/..." $ref pointers are rewritten to "#/$defs/...",
+	// or they would dangle. Otherwise definitions stays in additionalFields as
+	// written: an older draft reads no $defs, and a schema with both
+	// containers needs both. The moved map is the local decode and the kept
+	// one additionalFields' own, so the two never share a value.
+	dialect := schemaDialectOf(additionalFields["$schema"])
+	if definitions != nil && tis.Defs == nil && !dialect.beforeDraft2019() {
+		delete(additionalFields, "definitions")
 		tis.Defs = definitions
-		dialect := schemaDialectOf(additionalFields["$schema"])
 		rewriteDraft07LocalRefsIn(tis.Defs, dialect)
 		rewriteDraft07LocalRefsIn(tis.Properties, dialect)
 		rewriteDraft07LocalRefs(tis.AdditionalProperties, dialect)
 		// The kept keywords are the root's own: its $id does not stop the
 		// rewrite, a nested one does.
 		rewriteDraft07LocalRefsAt(additionalFields, dialect, true)
+	}
+	if len(additionalFields) == 0 {
+		additionalFields = nil
 	}
 
 	tis.AdditionalFields = additionalFields
