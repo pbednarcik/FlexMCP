@@ -76,7 +76,9 @@ request over a held-open stream. That cannot work on a stateless protocol, so
 the server now says what it needs and the client retries the call with the
 answers attached.
 
-Write the handler once, and it works for clients of either era:
+Write the handler once, and the client retries for you. Only clients of this
+revision can answer it; a client of an earlier revision gets
+`server.ErrInputRequiresModernClient` instead:
 
 ```go
 srv.AddTool(mcp.NewTool("deploy"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -236,7 +238,9 @@ upgrading either side. When you are ready to adopt the new capabilities:
 
 1. **Rewrite server-initiated requests as multi round-trip handlers.** Replace
    `RequestSampling`, `RequestElicitation`, and `RequestRoots` calls with
-   `NewInputRequestBuilder`. The result works for old and new clients alike.
+   `NewInputRequestBuilder`. Only clients of this revision can answer the
+   result; a client of an earlier revision gets
+   `server.ErrInputRequiresModernClient` instead.
 2. **Stop relying on protocol-level session state.** Mint an explicit handle
    from a tool and have the model pass it back as an argument. This works
    better than state hidden in the transport, because the model can see the
