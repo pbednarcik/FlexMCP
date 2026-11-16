@@ -2,6 +2,10 @@
 
 Learn how to implement MCP servers that can request LLM completions from clients using the sampling capability.
 
+:::warning[Sampling is deprecated]
+Protocol version 2026-07-28 deprecates sampling: new servers should not adopt it, and existing ones should call an LLM provider's API directly instead. It may be removed from the first protocol revision released on or after 2027-07-28. This page is for servers that keep sampling for compatibility with the clients that still offer it.
+:::
+
 ## Overview
 
 Sampling allows MCP servers to request LLM completions from clients, enabling bidirectional communication where servers can leverage client-side LLM capabilities. This is particularly useful for tools that need to generate content, answer questions, or perform reasoning tasks.
@@ -18,43 +22,15 @@ When you request sampling from a client:
 **Design your tools accordingly:**
 - Provide clear descriptions of why sampling is needed
 - Use descriptive system prompts explaining the purpose
-- Handle rejection errors gracefully
-- Consider timeouts for user approval delays
+- Expect a rejected request to end the call, with no retry for your tool to handle
 - Don't assume immediate or automatic approval
 
 Well-designed sampling requests improve user trust and approval rates.
 :::
 
-## Enabling Sampling
-
-To enable sampling in your server, call `EnableSampling()` during server setup:
-
-```go
-package main
-
-import (
-    "context"
-    "github.com/pbednarcik/flexmcp/mcp"
-    "github.com/pbednarcik/flexmcp/server"
-)
-
-func main() {
-    // Create server
-    mcpServer := server.NewMCPServer("my-server", "1.0.0")
-    
-    // Enable sampling capability
-    mcpServer.EnableSampling()
-    
-    // Add tools that use sampling...
-    
-    // Start server
-    server.ServeStdio(mcpServer)
-}
-```
-
 ## Requesting Sampling
 
-Use `RequestSampling()` within tool handlers to request LLM completions:
+The server sends the client no requests of its own. A tool that needs a completion returns a [multi round-trip request](/protocol-2026-07-28#multi-round-trip-requests) instead: `server.NewInputRequestBuilder` collects what the tool needs, `Sample` asks for a completion under a key the tool chooses, and `ToolResult` renders the request as the tool's result. The client runs its sampling handler and calls the tool again with the same arguments and the completion attached, which `server.SamplingResponse` finds under the same key:
 
 ```go
 mcpServer.AddTool(mcp.Tool{
@@ -81,11 +57,23 @@ mcpServer.AddTool(mcp.Tool{
         return nil, err
     }
     
+    // On the retry, the client's completion waits under the key asked for
+    if result := server.SamplingResponse(request.Params.InputResponses, "answer"); result != nil {
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{
+                mcp.TextContent{
+                    Type: "text",
+                    Text: fmt.Sprintf("LLM Response: %s", mcp.GetTextFromContent(result.Content)),
+                },
+            },
+        }, nil
+    }
+
     systemPrompt := request.GetString("system_prompt", "You are a helpful assistant.")
     
-    // Create sampling request
-    samplingRequest := mcp.CreateMessageRequest{
-        CreateMessageParams: mcp.CreateMessageParams{
+    // First call: ask the client for a completion
+    return server.NewInputRequestBuilder("").
+        Sample("answer", mcp.CreateMessageParams{
             Messages: []mcp.SamplingMessage{
                 {
                     Role: mcp.RoleUser,
@@ -98,99 +86,78 @@ mcpServer.AddTool(mcp.Tool{
             SystemPrompt: systemPrompt,
             MaxTokens:    1000,
             Temperature:  0.7,
-        },
-    }
-    
-    // Request sampling from client
-    result, err := mcpServer.RequestSampling(ctx, samplingRequest)
-    if err != nil {
-        return &mcp.CallToolResult{
-            Content: []mcp.Content{
-                mcp.TextContent{
-                    Type: "text",
-                    Text: fmt.Sprintf("Error requesting sampling: %v", err),
-                },
-            },
-            IsError: true,
-        }, nil
-    }
-    
-    // Return the LLM response
-    return &mcp.CallToolResult{
-        Content: []mcp.Content{
-            mcp.TextContent{
-                Type: "text",
-                Text: fmt.Sprintf("LLM Response: %s", getTextFromContent(result.Content)),
-            },
-        },
-    }, nil
+        }).
+        ToolResult(), nil
 })
 ```
 
+The argument to `NewInputRequestBuilder` is an opaque request state that the client echoes back on the retry, so the tool can resume where it left off; it may be empty. The client can read it, so it is no place for secrets.
+
 ## Sampling Request Parameters
 
-The `CreateMessageRequest` supports various parameters to control LLM behavior:
+`Sample` takes an `mcp.CreateMessageParams`, whose fields control LLM behavior:
 
 ```go
-samplingRequest := mcp.CreateMessageRequest{
-    CreateMessageParams: mcp.CreateMessageParams{
-        // Required: Messages to send to the LLM
-        Messages: []mcp.SamplingMessage{
-            {
-                Role: mcp.RoleUser,        // or mcp.RoleAssistant
-                Content: mcp.TextContent{   // or mcp.ImageContent
-                    Type: "text",
-                    Text: "Your message here",
-                },
+params := mcp.CreateMessageParams{
+    // Required: Messages to send to the LLM
+    Messages: []mcp.SamplingMessage{
+        {
+            Role: mcp.RoleUser,        // or mcp.RoleAssistant
+            Content: mcp.TextContent{   // or mcp.ImageContent
+                Type: "text",
+                Text: "Your message here",
             },
         },
-
-        // Optional: System prompt for context
-        SystemPrompt: "You are a helpful assistant.",
-
-        // Optional: Maximum tokens to generate
-        MaxTokens: 1000,
-
-        // Optional: Temperature for randomness (0.0 to 1.0)
-        Temperature: 0.7,
-
-        // Optional: Stop sequences
-        StopSequences: []string{"\\n\\n"},
-
-        // Optional (2025-11-25): Context inclusion hint. Only send a value other
-        // than "none" when the client advertised `sampling.context` — see
-        // [Capability Gating](#capability-gating-2025-11-25) below.
-        IncludeContext: "thisServer",
-
-        // Optional (2025-11-25): Tools the model may use during generation, and
-        // how aggressively the model should reach for them. Only send these when
-        // the client advertised `sampling.tools`.
-        Tools: []mcp.Tool{ /* ... */ },
-        ToolChoice: &mcp.ToolChoice{Mode: mcp.ToolChoiceModeAuto},
     },
+
+    // Optional: System prompt for context
+    SystemPrompt: "You are a helpful assistant.",
+
+    // Required: Maximum tokens to generate
+    MaxTokens: 1000,
+
+    // Optional: Temperature for randomness (0.0 to 1.0)
+    Temperature: 0.7,
+
+    // Optional: Stop sequences
+    StopSequences: []string{"\n\n"},
+
+    // Optional (2025-11-25): Context inclusion. Omit it; it defaults to
+    // "none", and its other values are deprecated. See
+    // [Capability Gating](#capability-gating-2025-11-25) below.
+
+    // Optional (2025-11-25): Tools the model may use during generation, and
+    // how aggressively the model should reach for them. Only send these when
+    // the client advertised `sampling.tools`.
+    Tools: []mcp.Tool{ /* ... */ },
+    ToolChoice: &mcp.ToolChoice{Mode: mcp.ToolChoiceModeAuto},
 }
 ```
 
 ## Capability Gating (2025-11-25)
 
-The 2025-11-25 protocol revision splits sampling into a baseline capability and two opt-in sub-capabilities. Inspect the connected session's [`ClientCapabilities.Sampling`](https://pkg.go.dev/github.com/pbednarcik/flexmcp/mcp#SamplingCapability) before sending the gated fields — a conforming client MUST reject a request that violates the matrix below.
+The 2025-11-25 protocol revision splits sampling into a baseline capability and two opt-in sub-capabilities. From 2026-07-28 the client declares its capabilities on every request, and a handler reads them from `server.RequestProtocolInfoFromContext(ctx)`. Check the [`SamplingCapability`](https://pkg.go.dev/github.com/pbednarcik/flexmcp/mcp#SamplingCapability) there before sending the gated fields:
 
 | Field on `CreateMessageParams` | Required client sub-capability | Sub-capability is `nil` ⇒ |
 |--------------------------------|--------------------------------|---------------------------|
-| `IncludeContext` (any value other than `"none"`) | `Sampling.Context` | Omit the field or send `"none"` |
+| `IncludeContext` (`"thisServer"` or `"allServers"`, both deprecated) | `Sampling.Context` | Omit the field (it defaults to `"none"`) |
 | `Tools`                        | `Sampling.Tools`               | Omit the field            |
 | `ToolChoice`                   | `Sampling.Tools`               | Omit the field            |
+
+The server enforces the `Sampling.Tools` rows itself: a request for a completion that carries `Tools` or `ToolChoice` fails the call with `mcp.MissingRequiredClientCapabilityError` when the client did not declare `Sampling.Tools`. It does not check `IncludeContext`, so gating that field is up to the handler.
 
 A typical pattern inside a tool handler:
 
 ```go
 func askLLMWithTools(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    session := server.ClientSessionFromContext(ctx)
-    sessionWithClient, ok := session.(server.SessionWithClientInfo)
-    if !ok {
-        return mcp.NewToolResultError("client session is not capability-aware"), nil
+    if result := server.SamplingResponse(request.Params.InputResponses, "answer"); result != nil {
+        return mcp.NewToolResultText(mcp.GetTextFromContent(result.Content)), nil
     }
-    caps := sessionWithClient.GetClientCapabilities()
+
+    var sampling *mcp.SamplingCapability
+    if info := server.RequestProtocolInfoFromContext(ctx); info != nil && info.ClientCapabilities != nil {
+        sampling = info.ClientCapabilities.Sampling
+    }
 
     params := mcp.CreateMessageParams{
         Messages:  []mcp.SamplingMessage{ /* ... */ },
@@ -198,18 +165,18 @@ func askLLMWithTools(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
     }
 
     // Only attach Tools / ToolChoice if the client opted in.
-    if caps.Sampling != nil && caps.Sampling.Tools != nil {
+    if sampling != nil && sampling.Tools != nil {
         params.Tools = []mcp.Tool{ /* ... */ }
         params.ToolChoice = &mcp.ToolChoice{Mode: mcp.ToolChoiceModeAuto}
     }
 
-    // Only ask for context inclusion if the client opted in.
-    if caps.Sampling != nil && caps.Sampling.Context != nil {
+    // Deprecated: ask for context inclusion only from a client that declared
+    // sampling.context.
+    if sampling != nil && sampling.Context != nil {
         params.IncludeContext = "thisServer"
     }
 
-    result, err := mcpServer.RequestSampling(ctx, mcp.CreateMessageRequest{CreateMessageParams: params})
-    // ...
+    return server.NewInputRequestBuilder("").Sample("answer", params).ToolResult(), nil
 }
 ```
 
@@ -264,7 +231,7 @@ mcp.TextContent{
 mcp.ImageContent{
     Type: "image",
     Data: "base64-encoded-image-data",
-    MimeType: "image/jpeg",
+    MIMEType: "image/jpeg",
 }
 ```
 
@@ -296,43 +263,29 @@ Use the constructors `mcp.NewToolUseContent` and `mcp.NewToolResultContent` to b
 
 ## Error Handling
 
-Always handle sampling errors gracefully:
+The handler never sees a sampling error: it returns its request, and it is called again only with an answer. Three things end the call instead, and the client gets them as the error from `CallTool`:
+
+- **The client did not declare the capability.** The server answers with `mcp.MissingRequiredClientCapabilityError`, error `-32021`, naming the capabilities the request needed: `Sampling` for any completion, and `Sampling.Tools` for one that carries tools. A client with a sampling handler declares `Sampling`.
+- **The client speaks an earlier protocol version.** A version before 2026-07-28 cannot carry a multi round-trip request, and the server sends no request of its own, so the call fails with `server.ErrInputRequiresModernClient` (on the wire, an internal error naming 2026-07-28).
+- **The client's sampling handler fails**, for example because the user rejected the request. The client ends the call with that error and does not call the tool again.
+
+To answer a client without sampling with a tool error of your own instead, check before asking:
 
 ```go
-result, err := mcpServer.RequestSampling(ctx, samplingRequest)
-if err != nil {
-    // Log the error
-    log.Printf("Sampling request failed: %v", err)
-    
-    // Return appropriate error response
-    return &mcp.CallToolResult{
-        Content: []mcp.Content{
-            mcp.TextContent{
-                Type: "text",
-                Text: "Sorry, I couldn't process your request at this time.",
-            },
-        },
-        IsError: true,
-    }, nil
+info := server.RequestProtocolInfoFromContext(ctx)
+if info == nil || info.ClientCapabilities == nil || info.ClientCapabilities.Sampling == nil {
+    return mcp.NewToolResultError("this tool needs a client that supports sampling"), nil
 }
 ```
 
 ## Context and Timeouts
 
-Use context for timeout control:
-
-```go
-// Set a timeout for the sampling request
-ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-defer cancel()
-
-result, err := mcpServer.RequestSampling(ctx, samplingRequest)
-```
+The handler does not wait for the completion: it returns at once, and the client calls the tool again when its handler has answered. A timeout set inside the handler therefore bounds neither the user's approval nor the LLM. The client's context bounds the call as a whole, and `client.WithMaxInputRoundTrips` bounds how many requests one call sends while the server keeps asking (by default 10, the first included).
 
 ## Best Practices
 
-1. **Enable Sampling Early**: Call `EnableSampling()` during server initialization
-2. **Handle Timeouts**: Set appropriate timeouts for sampling requests
+1. **Check for the Answer First**: Look for `SamplingResponse` before asking, so the retry finishes the work
+2. **Gate Optional Fields**: Send `Tools`, `ToolChoice` and `IncludeContext` only to clients that declared them
 3. **Graceful Errors**: Always provide meaningful error messages to users
 4. **Content Extraction**: Use helper functions to extract text from responses
 5. **System Prompts**: Use clear system prompts to guide LLM behavior
@@ -349,18 +302,17 @@ import (
     "context"
     "fmt"
     "log"
-    "time"
     
     "github.com/pbednarcik/flexmcp/mcp"
     "github.com/pbednarcik/flexmcp/server"
 )
 
+// answerKey identifies the completion across the two round trips.
+const answerKey = "answer"
+
 func main() {
     // Create server
     mcpServer := server.NewMCPServer("sampling-example-server", "1.0.0")
-    
-    // Enable sampling capability
-    mcpServer.EnableSampling()
     
     // Add sampling tool
     mcpServer.AddTool(mcp.Tool{
@@ -386,11 +338,24 @@ func main() {
             return nil, err
         }
         
+        // On the retry, return the LLM response
+        if result := server.SamplingResponse(request.Params.InputResponses, answerKey); result != nil {
+            return &mcp.CallToolResult{
+                Content: []mcp.Content{
+                    mcp.TextContent{
+                        Type: "text",
+                        Text: fmt.Sprintf("LLM Response (model: %s): %s",
+                            result.Model, mcp.GetTextFromContent(result.Content)),
+                    },
+                },
+            }, nil
+        }
+
         systemPrompt := request.GetString("system_prompt", "You are a helpful assistant.")
         
-        // Create sampling request
-        samplingRequest := mcp.CreateMessageRequest{
-            CreateMessageParams: mcp.CreateMessageParams{
+        // First call: ask the client for a completion
+        return server.NewInputRequestBuilder("").
+            Sample(answerKey, mcp.CreateMessageParams{
                 Messages: []mcp.SamplingMessage{
                     {
                         Role: mcp.RoleUser,
@@ -403,36 +368,8 @@ func main() {
                 SystemPrompt: systemPrompt,
                 MaxTokens:    1000,
                 Temperature:  0.7,
-            },
-        }
-        
-        // Request sampling with timeout
-        samplingCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-        defer cancel()
-        
-        result, err := mcpServer.RequestSampling(samplingCtx, samplingRequest)
-        if err != nil {
-            return &mcp.CallToolResult{
-                Content: []mcp.Content{
-                    mcp.TextContent{
-                        Type: "text",
-                        Text: fmt.Sprintf("Error requesting sampling: %v", err),
-                    },
-                },
-                IsError: true,
-            }, nil
-        }
-        
-        // Return the LLM response
-        return &mcp.CallToolResult{
-            Content: []mcp.Content{
-                mcp.TextContent{
-                    Type: "text",
-                    Text: fmt.Sprintf("LLM Response (model: %s): %s", 
-                        result.Model, getTextFromContent(result.Content)),
-                },
-            },
-        }, nil
+            }).
+            ToolResult(), nil
     })
     
     // Start server
@@ -441,62 +378,44 @@ func main() {
         log.Fatalf("Server error: %v", err)
     }
 }
-
-// Helper function to extract text from content
-func getTextFromContent(content interface{}) string {
-    switch c := content.(type) {
-    case mcp.TextContent:
-        return c.Text
-    case string:
-        return c
-    default:
-        return fmt.Sprintf("%v", content)
-    }
-}
 ```
 
 ## Transport Support
 
-Sampling is supported on the following transports:
+A multi round-trip request travels as the result of the client's own request, so sampling works on every transport a FlexMCP server serves, for a client that has a sampling handler and speaks protocol version 2026-07-28 or later. A client pinned to an earlier version gets `server.ErrInputRequiresModernClient` on every transport.
 
 ### STDIO Transport
-
-STDIO transport provides full sampling support with JSON-RPC message passing:
 
 ```go
 // Start STDIO server with sampling
 server.ServeStdio(mcpServer)
 ```
 
-The client must implement a `SamplingHandler` and declare sampling capability during initialization.
+### StreamableHTTP Transport
+
+```go
+// Start StreamableHTTP server with sampling
+httpServer := server.NewStreamableHTTPServer(mcpServer)
+httpServer.Start(":8080")
+```
+
+Each round trip is a POST of its own, and no connection is held open between them. See [StreamableHTTP sampling](/transports/http#sampling-support).
 
 ### In-Process Transport
 
-In-process transport offers the most efficient sampling implementation with direct method calls:
-
 ```go
 // Create in-process client with sampling handler
-mcpClient, err := client.NewInProcessClientWithSamplingHandler(mcpServer, samplingHandler)
+mcpClient, err := client.NewInProcessClientWithOptions(mcpServer,
+    client.WithSamplingHandler(samplingHandler),
+)
 if err != nil {
     log.Fatal(err)
 }
 ```
 
-**Benefits of in-process sampling:**
-- **Direct Method Calls**: No JSON-RPC serialization overhead
-- **Type Safety**: Compile-time type checking
-
-### Unsupported Transports
-
-The following transports do not currently support sampling:
-- **SSE Transport**: One-way streaming nature prevents bidirectional sampling
-- **StreamableHTTP Transport**: Stateless HTTP requests don't support sampling callbacks
-
-For these transports, consider implementing LLM integration directly in your tool handlers rather than using sampling.
-
 ## Next Steps
 
 - Learn about [client-side sampling implementation](/clients/advanced-sampling)
 - Explore [advanced server features](/servers/advanced)
-- Check out the [sampling examples](https://github.com/mark3labs/mcp-go/tree/main/examples/sampling_server)
+- Check out the multi round-trip example in `examples/multi_round_trip`
 - See [in-process sampling documentation](/transports/inprocess#sampling-support) for embedded scenarios
