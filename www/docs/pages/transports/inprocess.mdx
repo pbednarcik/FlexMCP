@@ -271,11 +271,13 @@ func main() {
 
 ## Sampling Support
 
-In-process transport supports sampling, allowing servers to request LLM completions from clients. This enables bidirectional communication where servers can leverage client-side LLM capabilities.
+The in-process transport takes no requests from the server, so a server reaches the client's sampling handler only through [multi round-trip requests](/protocol-2026-07-28#multi-round-trip-requests), from protocol version 2026-07-28: a tool returns the completion it needs as its result, and the client runs its sampling handler and calls the tool again with the answer attached. Leave the protocol version unpinned, and the in-process client negotiates 2026-07-28 with the server.
+
+Sampling is deprecated; see [the note on the server page](/servers/advanced-sampling) before adopting it.
 
 ### Enabling Sampling
 
-To enable sampling in your in-process server, call `EnableSampling()` during server setup:
+Sampling is enabled on the client: give it a handler with `client.WithSamplingHandler`, and it declares the sampling capability on its requests. The server needs no option; a tool asks with `server.NewInputRequestBuilder`:
 
 ```go
 package main
@@ -322,9 +324,8 @@ func (h *MockSamplingHandler) CreateMessage(ctx context.Context, request mcp.Cre
 }
 
 func main() {
-    // Create server with sampling enabled
+    // Create server; its tools ask for sampling through multi round-trip requests
     mcpServer := server.NewMCPServer("sampling-server", "1.0.0")
-    mcpServer.EnableSampling()
 
     // Add a tool that uses sampling
     mcpServer.AddTool(mcp.Tool{
@@ -350,11 +351,24 @@ func main() {
             return nil, err
         }
 
+        // On the retry, return the LLM response
+        if result := server.SamplingResponse(request.Params.InputResponses, "answer"); result != nil {
+            return &mcp.CallToolResult{
+                Content: []mcp.Content{
+                    mcp.TextContent{
+                        Type: "text",
+                        Text: fmt.Sprintf("LLM Response (model: %s): %s",
+                            result.Model, mcp.GetTextFromContent(result.Content)),
+                    },
+                },
+            }, nil
+        }
+
         systemPrompt := request.GetString("system_prompt", "You are a helpful assistant.")
 
-        // Create sampling request
-        samplingRequest := mcp.CreateMessageRequest{
-            CreateMessageParams: mcp.CreateMessageParams{
+        // First call: ask the client for a completion
+        return server.NewInputRequestBuilder("").
+            Sample("answer", mcp.CreateMessageParams{
                 Messages: []mcp.SamplingMessage{
                     {
                         Role: mcp.RoleUser,
@@ -367,38 +381,15 @@ func main() {
                 SystemPrompt: systemPrompt,
                 MaxTokens:    1000,
                 Temperature:  0.7,
-            },
-        }
-
-        // Request sampling from client
-        result, err := mcpServer.RequestSampling(ctx, samplingRequest)
-        if err != nil {
-            return &mcp.CallToolResult{
-                Content: []mcp.Content{
-                    mcp.TextContent{
-                        Type: "text",
-                        Text: fmt.Sprintf("Error requesting sampling: %v", err),
-                    },
-                },
-                IsError: true,
-            }, nil
-        }
-
-        // Return the LLM response
-        return &mcp.CallToolResult{
-            Content: []mcp.Content{
-                mcp.TextContent{
-                    Type: "text",
-                    Text: fmt.Sprintf("LLM Response (model: %s): %s",
-                        result.Model, result.Content.(mcp.TextContent).Text),
-                },
-            },
-        }, nil
+            }).
+            ToolResult(), nil
     })
 
     // Create client with sampling handler
     mockHandler := &MockSamplingHandler{}
-    mcpClient, err := client.NewInProcessClientWithSamplingHandler(mcpServer, mockHandler)
+    mcpClient, err := client.NewInProcessClientWithOptions(mcpServer,
+        client.WithSamplingHandler(mockHandler),
+    )
     if err != nil {
         log.Fatalf("Failed to create client: %v", err)
     }
@@ -410,8 +401,8 @@ func main() {
         log.Fatalf("Failed to start client: %v", err)
     }
 
+    // No protocol version: the client negotiates the latest with the server
     initRequest := mcp.InitializeRequest{}
-    initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
     initRequest.Params.ClientInfo = mcp.Implementation{
         Name:    "sampling-client",
         Version: "1.0.0",
@@ -422,7 +413,7 @@ func main() {
         log.Fatalf("Failed to initialize: %v", err)
     }
 
-    // Call the tool that uses sampling
+    // Call the tool that uses sampling; the client answers and retries for you
     result, err := mcpClient.CallTool(ctx, mcp.CallToolRequest{
         Params: mcp.CallToolParams{
             Name: "ask_llm",
@@ -444,6 +435,8 @@ func main() {
     }
 }
 ```
+
+The fields a tool can set on the request are listed under [Sampling Request Parameters](/servers/advanced-sampling#sampling-request-parameters).
 
 ### Real LLM Integration
 
@@ -546,75 +539,27 @@ func main() {
     openaiHandler := NewOpenAISamplingHandler("your-api-key")
     
     // Create client with OpenAI sampling
-    mcpClient, err := client.NewInProcessClientWithSamplingHandler(mcpServer, openaiHandler)
+    mcpClient, err := client.NewInProcessClientWithOptions(mcpServer,
+        client.WithSamplingHandler(openaiHandler),
+    )
     if err != nil {
         log.Fatal(err)
     }
+    defer mcpClient.Close()
     
     // ... rest of the setup
 }
 ```
 
-### Sampling Request Parameters
-
-The `CreateMessageRequest` supports various parameters to control LLM behavior:
-
-```go
-samplingRequest := mcp.CreateMessageRequest{
-    CreateMessageParams: mcp.CreateMessageParams{
-        // Required: Messages to send to the LLM
-        Messages: []mcp.SamplingMessage{
-            {
-                Role: mcp.RoleUser,        // or mcp.RoleAssistant
-                Content: mcp.TextContent{   // or mcp.ImageContent
-                    Type: "text",
-                    Text: "Your message here",
-                },
-            },
-        },
-        
-        // Optional: System prompt for context
-        SystemPrompt: "You are a helpful assistant.",
-        
-        // Optional: Maximum tokens to generate
-        MaxTokens: 1000,
-        
-        // Optional: Temperature for randomness (0.0 to 1.0)
-        Temperature: 0.7,
-        
-        // Optional: Top-p sampling parameter
-        TopP: 0.9,
-        
-        // Optional: Stop sequences
-        StopSequences: []string{"\\n\\n"},
-    },
-}
-```
-
 ### Error Handling
 
-Always handle sampling errors gracefully:
+The client gets an error from `CallTool`, and the tool that asked for a completion is not called again, when:
 
-```go
-result, err := mcpServer.RequestSampling(ctx, samplingRequest)
-if err != nil {
-    // Log the error
-    log.Printf("Sampling request failed: %v", err)
-    
-    // Return appropriate error response
-    return &mcp.CallToolResult{
-        Content: []mcp.Content{
-            mcp.TextContent{
-                Type: "text",
-                Text: "Sorry, I couldn't process your request at this time.",
-            },
-        },
-        IsError: true,
-    }, nil
-}
-```
+- **The client is pinned to an earlier protocol version.** Before 2026-07-28 a multi round-trip request cannot be carried, so the server answers with `server.ErrInputRequiresModernClient`, which reaches the client as an internal error naming 2026-07-28.
+- **The client did not declare the sampling capability**, as by default a client without a sampling handler does not. The server answers with `mcp.MissingRequiredClientCapabilityError`; `mcp.IsMissingRequiredClientCapability` recognizes it. A client that declares sampling through `client.WithClientCapabilities` but has no handler is asked anyway, and fails the call itself with "no sampling handler configured".
+- **The sampling handler returns an error**, for example because the user rejected the request. The client ends the call with that error.
 
-
+See [Error Handling](/servers/advanced-sampling#error-handling) on the server page for the server's side.
 
 ## Next Steps
 
