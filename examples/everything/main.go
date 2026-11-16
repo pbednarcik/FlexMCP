@@ -466,7 +466,7 @@ func handleLongRunningOperationTool(
 // 	prompt, _ := arguments["prompt"].(string)
 // 	maxTokens, _ := arguments["maxTokens"].(float64)
 
-// 	// This is a mock implementation. In a real scenario, you would use the server's RequestSampling method.
+// 	// This is a mock implementation. In a real scenario, you would ask the client for a completion with server.NewInputRequestBuilder and its Sample method.
 // 	result := fmt.Sprintf(
 // 		"Sample LLM result for prompt: '%s' (max tokens: %d)",
 // 		prompt,
