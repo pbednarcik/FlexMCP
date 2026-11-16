@@ -885,7 +885,9 @@ The headers are automatically populated by the transport layer and are available
 
 ## Sampling Support
 
-StreamableHTTP transport now supports bidirectional sampling, allowing servers to request LLM completions from clients. This enables advanced scenarios where servers can leverage client-side LLM capabilities.
+A FlexMCP server sends the client no requests of its own, so a StreamableHTTP server asks for a completion the way every FlexMCP server does: a tool returns a [multi round-trip request](/protocol-2026-07-28#multi-round-trip-requests), and the client runs its sampling handler and calls the tool again with the answer. This needs protocol version 2026-07-28 on both ends.
+
+Sampling is deprecated; see [the note on the server page](/servers/advanced-sampling) before adopting it.
 
 :::warning[Security: Human-in-the-Loop Required]
 Per the [MCP specification](https://modelcontextprotocol.io/specification/2025-06-18/client/sampling), implementations **SHOULD** always include a human in the loop with the ability to deny sampling requests.
@@ -907,29 +909,30 @@ See the [example implementation](#example-with-approval-flow) below for a refere
 
 ### Requirements for Sampling
 
-To enable sampling with StreamableHTTP transport, the client **must** use the `WithContinuousListening()` option:
+The client needs a sampling handler, and no transport option:
 
 ```go
 // Client setup with sampling support
-httpTransport, err := transport.NewStreamableHTTP(
-    serverURL,
-    transport.WithContinuousListening(), // Required for sampling
-)
+httpTransport, err := transport.NewStreamableHTTP(serverURL)
+if err != nil {
+    log.Fatal(err)
+}
 
 // Create client with sampling handler
 mcpClient := client.NewClient(httpTransport, 
     client.WithSamplingHandler(samplingHandler))
 ```
 
-Without `WithContinuousListening()`, the client won't maintain a persistent connection to receive sampling requests from the server.
+Leave out `WithContinuousListening()`. It opens the standalone `GET` stream, which protocol version 2026-07-28 removed, so a transport using it keeps the connection on an earlier version, where a tool that asks for a completion fails the call.
+
+The same client also answers a server of an earlier protocol version that sends `sampling/createMessage` requests of its own. Such a server sends them on the response stream of the client's `tools/call` POST while the call is in progress, so no transport option is needed for that either.
 
 ### Server-Side Implementation
 
-Enable sampling in your StreamableHTTP server:
+A tool asks for a completion with `server.NewInputRequestBuilder`:
 
 ```go
 mcpServer := server.NewMCPServer("HTTP Sampling Server", "1.0.0")
-mcpServer.EnableSampling()
 
 // Add a tool that uses sampling
 mcpServer.AddTool(mcp.Tool{
@@ -946,14 +949,16 @@ mcpServer.AddTool(mcp.Tool{
         Required: []string{"question"},
     },
 }, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    // On the retry, the completion waits under the key asked for
+    if result := server.SamplingResponse(req.Params.InputResponses, "answer"); result != nil {
+        return mcp.NewToolResultText(mcp.GetTextFromContent(result.Content)), nil
+    }
+
     question := mcp.ParseString(req, "question", "")
     
-    // Request sampling from client
-    samplingRequest := mcp.CreateMessageRequest{
-        Request: mcp.Request{
-            Method: string(mcp.MethodSamplingCreateMessage),
-        },
-        CreateMessageParams: mcp.CreateMessageParams{
+    // First call: ask the client for a completion
+    return server.NewInputRequestBuilder("").
+        Sample("answer", mcp.CreateMessageParams{
             Messages: []mcp.SamplingMessage{
                 {
                     Role: mcp.RoleUser,
@@ -964,30 +969,23 @@ mcpServer.AddTool(mcp.Tool{
                 },
             },
             MaxTokens: 1000,
-        },
-    }
-    
-    result, err := mcpServer.RequestSampling(ctx, samplingRequest)
-    if err != nil {
-        return mcp.NewToolResultError(fmt.Sprintf("Sampling failed: %v", err)), nil
-    }
-    
-    return mcp.NewToolResultText(mcp.GetTextFromContent(result.Content)), nil
+        }).
+        ToolResult(), nil
 })
 ```
 
 ### How It Works
 
-1. **Persistent Connection**: When `WithContinuousListening()` is enabled, the client maintains a persistent SSE connection to the server
-2. **Bidirectional Communication**: The server can send sampling requests through the SSE stream
-3. **Response Channel**: The client responds to sampling requests via HTTP POST to the same endpoint
-4. **Session Correlation**: Responses are correlated using session IDs to ensure they reach the correct handler
+1. **First Call**: The client POSTs `tools/call`, and the tool answers with an `input_required` result carrying the sampling request
+2. **Client-Side Sampling**: The client runs its sampling handler, where the user approves the request
+3. **Retry**: The client POSTs `tools/call` again, a new request with the same arguments and the completion in `inputResponses`, and the tool finishes
+4. **No Held Connection**: Each round trip is a POST of its own, and nothing stays open between them
 
 ### Limitations
 
-- Sampling requires `WithContinuousListening()` to maintain the SSE connection
-- Without continuous listening, the transport operates in stateless request/response mode only
-- Network interruptions may require reconnection and re-establishment of the sampling channel
+- Both ends must speak protocol version 2026-07-28 or later: a client on an earlier version, whether pinned by `client.WithProtocolVersion`, by the version on its `Initialize` request, or by `WithContinuousListening()`, gets `server.ErrInputRequiresModernClient` from a tool that asks
+- The client bounds the round trips of one call with `client.WithMaxInputRoundTrips` (by default 10)
+- The tool never sees a rejection: when the client's handler fails, the call ends on the client with that error
 
 ### Example with Approval Flow
 
@@ -1034,7 +1032,7 @@ func (h *ApprovalSamplingHandler) CreateMessage(ctx context.Context, request mcp
 **Key Points:**
 - Users must explicitly approve both the request (before sending to LLM) and the response (before returning to server)
 - Users can modify prompts or responses before approval
-- Rejection at any stage returns an error to the server
+- Rejection at any stage returns an error: a multi round-trip call fails with it on the client, and a server of an earlier protocol version gets it as the answer to its request
 - The UI should clearly display what the server is requesting and why
 
 ## Embedding in Non-net/http Frameworks
