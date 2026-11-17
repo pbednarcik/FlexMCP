@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,7 +11,9 @@ import (
 
 // isLoopbackHost reports whether addr refers to a loopback interface. addr
 // may be a bare host ("localhost", "127.0.0.1", "::1", "[::1]") or a
-// host:port pair ("localhost:3000", "127.0.0.1:3000", "[::1]:3000").
+// host:port pair ("localhost:3000", "127.0.0.1:3000", "[::1]:3000"). The
+// name compares by ASCII case only and without one trailing dot, as a fully
+// qualified "localhost." names the same host; "localhost.." does not.
 //
 // It is part of DNS rebinding protection: a request that arrives on a
 // connection a rebinding attack can reach must name the server, otherwise a
@@ -18,8 +21,11 @@ import (
 // drive a victim's browser to interact with it.
 func isLoopbackHost(addr string) bool {
 	host := hostName(addr)
-	if strings.EqualFold(host, "localhost") {
+	if equalFoldASCII(strings.TrimSuffix(host, "."), "localhost") {
 		return true
+	}
+	if !mayBeIP(host) {
+		return false
 	}
 	ip, err := netip.ParseAddr(host)
 	if err != nil {
@@ -28,8 +34,13 @@ func isLoopbackHost(addr string) bool {
 	return ip.IsLoopback()
 }
 
-// hostName is host without its port and the brackets of an IPv6 literal.
+// hostName is host without its port and the brackets of an IPv6 literal. A
+// host without a colon has no port, and is not handed to net.SplitHostPort,
+// which would only allocate its error.
 func hostName(host string) string {
+	if strings.IndexByte(host, ':') < 0 {
+		return strings.Trim(host, "[]")
+	}
 	name, _, err := net.SplitHostPort(host)
 	if err != nil {
 		// host might be a bare host without a port.
@@ -44,7 +55,7 @@ func hostName(host string) string {
 // would allocate on every browser request for a three-field answer.
 func originHost(origin string) (string, bool) {
 	scheme, rest, ok := strings.Cut(origin, "://")
-	if !ok || (!strings.EqualFold(scheme, "http") && !strings.EqualFold(scheme, "https")) {
+	if !ok || (!equalFoldASCII(scheme, "http") && !equalFoldASCII(scheme, "https")) {
 		return "", false
 	}
 	if host, _, found := strings.Cut(rest, "/"); found {
@@ -82,17 +93,21 @@ func isRebindingTarget(ip netip.Addr) bool {
 
 // hostNamesServer reports whether host, a Host header or an origin's host,
 // names the server at ip: a loopback name, ip itself, or one of allowed.
-// Names are compared without their port, case-insensitively and without a
-// trailing dot; an IP literal is compared as an address, so "[::1]" and
-// "::1" are one.
+// Names are compared without their port, by ASCII case only and without a
+// trailing dot; an IP literal is compared as an address without its zone,
+// so "[::1]" and "::1" are one, as are "[fe80::1%25en0]" and "fe80::1".
 func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
 	if isLoopbackHost(host) {
 		return true
 	}
 	name := hostName(host)
-	hostIP, isIP := netip.ParseAddr(name)
+	var hostIP netip.Addr
+	isIP := errNotIP
+	if mayBeIP(name) {
+		hostIP, isIP = netip.ParseAddr(name)
+	}
 	if isIP == nil {
-		hostIP = hostIP.Unmap()
+		hostIP = hostIP.Unmap().WithZone("")
 		if hostIP == ip {
 			return true
 		}
@@ -100,12 +115,15 @@ func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
 	for _, entry := range allowed {
 		entryName := hostName(entry)
 		if isIP == nil {
-			if entryIP, err := netip.ParseAddr(entryName); err == nil && entryIP.Unmap() == hostIP {
+			if !mayBeIP(entryName) {
+				continue
+			}
+			if entryIP, err := netip.ParseAddr(entryName); err == nil && entryIP.Unmap().WithZone("") == hostIP {
 				return true
 			}
 			continue
 		}
-		if strings.EqualFold(strings.TrimSuffix(name, "."), strings.TrimSuffix(entryName, ".")) {
+		if equalFoldASCII(strings.TrimSuffix(name, "."), strings.TrimSuffix(entryName, ".")) {
 			return true
 		}
 	}
@@ -117,6 +135,7 @@ func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
 // attack reaches (isRebindingTarget), a request whose Origin header is
 // present and does not name the server (hostNamesServer, with
 // allowedHosts) is answered 403 Forbidden, and so, on a loopback address,
+// and, once allowedHosts names hosts, on every request whatever its address,
 // is one whose Host header does not; then it returns true. Otherwise it
 // returns false and writes nothing. checkOrigin false leaves Origin to a
 // configured CORS allow list, the authority on it then.
@@ -126,26 +145,35 @@ func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
 // reports about the page that sent it, which rebinding cannot change. Host
 // names the rebound domain too, but on a private address it names the
 // server's own hostname as well, as a reverse proxy or a container network
-// forwards it, so Host is checked only on a loopback address, where the
-// local-server guidance asks for it. The server validates Origin on every
-// connection and answers an invalid one with 403 (Transports.md row 14).
+// forwards it, so without a list Host is checked only on a loopback
+// address, where the local-server guidance asks for it. The server
+// validates Origin on every connection and answers an invalid one with 403
+// (Transports.md row 14).
 //
-// Requests arriving on a public address are never rejected: the attacker
-// reaches that server without rebinding.
+// With allowedHosts naming hosts, Host is checked on every request, on any
+// address or none known: a public address only the victim's network
+// reaches, such as a firewalled global IPv6 address, is a rebinding target
+// too, and every legitimate client names the server in Host, so the list
+// turns none away. Without a list a request on a public address is not
+// checked: the attacker reaches such a server without rebinding.
 //
 // See https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 func rejectDNSRebinding(w http.ResponseWriter, r *http.Request, checkOrigin bool, allowedHosts []string) bool {
-	localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
-	if !ok || localAddr == nil {
-		return false
+	// ip stays the zero address when the connection's address is unknown,
+	// which names no server: only a loopback name or a listed host does.
+	var ip netip.Addr
+	target := false
+	if localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil {
+		if addr, ok := localAddrIP(localAddr); ok {
+			ip, target = addr, isRebindingTarget(addr)
+		}
 	}
-	ip, ok := localAddrIP(localAddr)
-	if !ok || !isRebindingTarget(ip) {
-		return false
-	}
-	if ip.IsLoopback() && !hostNamesServer(r.Host, ip, allowedHosts) {
+	if (len(allowedHosts) > 0 || (target && ip.IsLoopback())) && !hostNamesServer(r.Host, ip, allowedHosts) {
 		http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q; a name the server is known by is allowed with WithAllowedHosts", r.Host), http.StatusForbidden)
 		return true
+	}
+	if !target {
+		return false
 	}
 	if origin := r.Header.Get("Origin"); checkOrigin && origin != "" {
 		if host, ok := originHost(origin); !ok || !hostNamesServer(host, ip, allowedHosts) {
@@ -154,4 +182,39 @@ func rejectDNSRebinding(w http.ResponseWriter, r *http.Request, checkOrigin bool
 		}
 	}
 	return false
+}
+
+// equalFoldASCII reports whether a and b are equal once ASCII letters are
+// lowered, every other byte matching exactly. Host names and schemes compare
+// this way (RFC 3986 sections 3.1 and 3.2.2): Unicode case folding, as in
+// strings.EqualFold, takes some distinct hosts for one, such as a long s for
+// an s, or names with a final and a medial sigma.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// lowerASCII is c with A to Z lowered, and any other byte as it is.
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// errNotIP stands for ParseAddr's error on a name mayBeIP rules out, which
+// is not asked to parse it: its error would be allocated on every request.
+var errNotIP = errors.New("not an IP literal")
+
+// mayBeIP is false only for a name netip.ParseAddr refuses: an IPv4 literal
+// starts with a digit and an IPv6 one holds a colon.
+func mayBeIP(s string) bool {
+	return s != "" && ('0' <= s[0] && s[0] <= '9' || strings.IndexByte(s, ':') >= 0)
 }
