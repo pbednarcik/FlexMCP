@@ -945,7 +945,8 @@ func TestStdioServer_AToolCallCancelledWhileQueuedIsNotStarted(t *testing.T) {
 	stdioServer := NewStdioServer(mcpServer)
 	stdioServer.responses = make(chan stdioResponse, 1)
 	id := int64(7)
-	token := stdioServer.cancelled.start(id)
+	token, free := stdioServer.cancelled.start(id)
+	require.True(t, free)
 	stdioServer.cancelled.cancel(id)
 	stdioServer.toolCallQueue = make(chan *toolCallWork, 1)
 	stdioServer.toolCallQueue <- &toolCallWork{

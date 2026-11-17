@@ -72,12 +72,19 @@ type StdioServer struct {
 // may reuse an id once it has cancelled the request on it, and the cancelled
 // request, its response perhaps still queued, must not be taken for the new
 // one, nor the new one for it. The id, as requestIDValue decodes it (exact
-// for an integer), names the latest request on it, the one a cancel means.
+// for an integer), names the request in flight on it, queued or running, the
+// one a cancel means; a second request on that id is refused while it is
+// (BaseProtocol.md row 4), and a cancel frees the id at once. A refusal gets
+// a token of its own, never in latest, and is dropped when, at its write,
+// the request it was refused for is no longer the one in flight on the id:
+// cancelled, answered, or the id taken by a new request, on which the
+// refusal would land. Writing it finishes its own token and nothing else.
 type cancelledRequests struct {
 	mu        sync.Mutex
 	tokens    uint64
-	latest    map[any]uint64  // id -> the token of the latest request on it
-	cancelled map[uint64]bool // token -> whether the request was cancelled
+	latest    map[any]uint64    // id -> the token of the request in flight on it
+	cancelled map[uint64]bool   // token -> whether the request was cancelled
+	refusals  map[uint64]uint64 // an unwritten refusal's token -> the token of the request it was refused for
 }
 
 // comparableID reports whether id can key the map: a request id is a string or
@@ -91,32 +98,42 @@ func comparableID(id any) bool {
 	return false
 }
 
-// start records a request on id as in flight and returns its token.
-func (c *cancelledRequests) start(id any) uint64 {
+// start records a request on id as in flight and returns its token. free is
+// false when a request on id is in flight already, queued or running: that
+// one is left as it is, and the token is the refusal's, which finish drops
+// once that one is no longer in flight on id.
+func (c *cancelledRequests) start(id any) (token uint64, free bool) {
 	if !comparableID(id) {
-		return 0
+		return 0, true
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.latest == nil {
 		c.latest = make(map[any]uint64)
 		c.cancelled = make(map[uint64]bool)
+		c.refusals = make(map[uint64]uint64)
+	}
+	if inFlight, taken := c.latest[id]; taken {
+		c.tokens++
+		c.refusals[c.tokens] = inFlight
+		return c.tokens, false
 	}
 	c.tokens++
 	c.latest[id] = c.tokens
 	c.cancelled[c.tokens] = false
-	return c.tokens
+	return c.tokens, true
 }
 
 // reset forgets every request: nothing is in flight when Listen starts.
 func (c *cancelledRequests) reset() {
 	c.mu.Lock()
-	c.latest, c.cancelled = nil, nil
+	c.latest, c.cancelled, c.refusals = nil, nil, nil
 	c.mu.Unlock()
 }
 
-// cancel marks the request in flight on id as cancelled; an id with none is
-// ignored, as an invalid cancellation should be.
+// cancel marks the request in flight on id as cancelled and frees the id,
+// which a new request may then take while the cancelled one finishes; an id
+// with none is ignored, as an invalid cancellation should be.
 func (c *cancelledRequests) cancel(id any) {
 	if !comparableID(id) {
 		return
@@ -125,6 +142,7 @@ func (c *cancelledRequests) cancel(id any) {
 	defer c.mu.Unlock()
 	if token, ok := c.latest[id]; ok {
 		c.cancelled[token] = true
+		delete(c.latest, id)
 	}
 }
 
@@ -137,13 +155,20 @@ func (c *cancelledRequests) isCancelled(token uint64) bool {
 }
 
 // finish forgets the request token and reports whether it was cancelled
-// while in flight. A later request on the same id is left as it is.
+// while in flight. A later request on the same id is left as it is. For a
+// refusal's token it reports whether the request the refusal was refused
+// for is no longer in flight on id, cancelled or answered: the id is free
+// then, and the refusal is dropped.
 func (c *cancelledRequests) finish(id any, token uint64) bool {
 	if token == 0 {
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if refusedFor, refusal := c.refusals[token]; refusal {
+		delete(c.refusals, token)
+		return c.latest[id] != refusedFor
+	}
 	cancelled := c.cancelled[token]
 	delete(c.cancelled, token)
 	if c.latest[id] == token {
@@ -593,7 +618,15 @@ func (s *StdioServer) processMessage(ctx context.Context, line []byte) error {
 	}
 	var token uint64
 	if parsed && id != nil {
-		token = s.cancelled.start(id)
+		// The id is taken here, on the read loop, before the request is
+		// queued or handed to a goroutine: a duplicate of one waiting in the
+		// queue is refused as one already running is, and leaves the
+		// request in flight on the id, and a cancel naming it, alone.
+		var free bool
+		if token, free = s.cancelled.start(id); !free {
+			s.refuseInFlight(ctx, id, token, baseMessage.Method, rawMessage)
+			return nil
+		}
 	}
 	if parsed && baseMessage.Method == string(mcp.MethodToolsCall) {
 		// Queue tool calls for processing by workers
@@ -698,6 +731,30 @@ func stdioMessage(line []byte) (message json.RawMessage, members stdioMembers, r
 		return nil, stdioMembers{}, nil, false, false
 	}
 	return message, members, read, parsed, true
+}
+
+// refuseInFlight answers a request whose id is in flight already, off the
+// read loop, which must not wait on a client that stopped reading: the error
+// hooks see ErrRequestIDInFlight, as for the core's refusal, and the error
+// repeats the id (BaseProtocol.md row 10). Nothing else runs for it. token is
+// the refusal's own: the writer drops the refusal when the request in flight
+// on the id is cancelled or answered before it is written. A panicking hook
+// is recovered, as in handleMessage, and the duplicate gets an internal
+// error.
+func (s *StdioServer) refuseInFlight(ctx context.Context, id any, token uint64, method string, message json.RawMessage) {
+	s.requestWg.Go(func() {
+		response := func() (response mcp.JSONRPCMessage) {
+			defer func() {
+				if r := recover(); r != nil {
+					s.errLogger.Printf("panic recovered in stdio message handler: %v", r)
+					response = createErrorResponse(id, mcp.INTERNAL_ERROR, internalErrorMessage)
+				}
+			}()
+			s.server.hooks.onError(ctx, id, mcp.MCPMethod(method), message, ErrRequestIDInFlight)
+			return createErrorResponse(id, mcp.INVALID_REQUEST, ErrRequestIDInFlight.Error())
+		}()
+		s.queue(id, token, response)
+	})
 }
 
 // handleMessage runs HandleMessage, recovering a panicking handler so that
