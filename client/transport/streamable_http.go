@@ -269,8 +269,15 @@ func NewStreamableHTTP(serverURL string, options ...StreamableHTTPCOption) (*Str
 	return smc, nil
 }
 
-// Start initiates the HTTP connection to the server.
+// Start initiates the HTTP connection to the server. Once Close has run it
+// returns ErrTransportClosed, whether or not the transport was started, and
+// starts nothing.
 func (c *StreamableHTTP) Start(ctx context.Context) error {
+	// Close is final: checked before the started fast path, so a transport
+	// started and then closed is refused too.
+	if err := c.errIfClosed(); err != nil {
+		return err
+	}
 	// Start is idempotent - check if already initialized
 	select {
 	case <-c.initialized:
@@ -552,7 +559,22 @@ func (c *StreamableHTTP) RequiresLegacyProtocol() bool {
 
 // SendRequest sends a JSON-RPC request to the server and waits for a response.
 // Returns the raw JSON response message or an error if the request fails.
+// Once Close has run it sends nothing and returns ErrTransportClosed; a
+// request Close cuts short fails with an error that is ErrTransportClosed
+// and wraps the failure Close caused.
 func (c *StreamableHTTP) SendRequest(
+	ctx context.Context,
+	request JSONRPCRequest,
+) (*JSONRPCResponse, error) {
+	if err := c.errIfClosed(); err != nil {
+		return nil, err
+	}
+	response, err := c.sendRequest(ctx, request)
+	return response, c.closedError(err)
+}
+
+// sendRequest is SendRequest once the transport is known to be open.
+func (c *StreamableHTTP) sendRequest(
 	ctx context.Context,
 	request JSONRPCRequest,
 ) (*JSONRPCResponse, error) {
@@ -833,7 +855,19 @@ func releaseUnread(cancel context.CancelFunc, resp *http.Response) {
 }
 
 // SendNotification sends a JSON-RPC notification to the server without expecting a response.
+// Once Close has run it sends nothing and returns ErrTransportClosed; a
+// notification Close cuts short fails with an error that is
+// ErrTransportClosed and wraps the failure Close caused.
 func (c *StreamableHTTP) SendNotification(ctx context.Context, notification mcp.JSONRPCNotification) error {
+	if err := c.errIfClosed(); err != nil {
+		return err
+	}
+	return c.closedError(c.sendNotification(ctx, notification))
+}
+
+// sendNotification is SendNotification once the transport is known to be
+// open.
+func (c *StreamableHTTP) sendNotification(ctx context.Context, notification mcp.JSONRPCNotification) error {
 	// Marshal request
 	requestBody, err := json.Marshal(notification)
 	if err != nil {
@@ -949,4 +983,31 @@ func isJSONRPCErrorBody(body []byte) bool {
 		return false
 	}
 	return true
+}
+
+// errIfClosed returns ErrTransportClosed once Close has begun, and nil
+// before.
+func (c *StreamableHTTP) errIfClosed() error {
+	select {
+	case <-c.closed:
+		return ErrTransportClosed
+	default:
+		return nil
+	}
+}
+
+// closedError is the error of a send that failed: once Close has begun, an
+// error that is ErrTransportClosed and wraps err, as Close ends every request
+// in flight; before, err as it is. A nil err stays nil: a response that
+// arrived is the answer, whenever Close came.
+func (c *StreamableHTTP) closedError(err error) error {
+	if err == nil {
+		return nil
+	}
+	select {
+	case <-c.closed:
+		return fmt.Errorf("%w: %w", ErrTransportClosed, err)
+	default:
+		return err
+	}
 }
