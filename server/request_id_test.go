@@ -261,7 +261,8 @@ func TestStdioCancelsAnIDPastInt64(t *testing.T) {
 	var requests cancelledRequests
 	id, ok := requestIDValue(json.RawMessage(idTwoTo63))
 	require.True(t, ok)
-	token := requests.start(id)
+	token, free := requests.start(id)
+	require.True(t, free)
 	requests.cancel(id)
 	assert.True(t, requests.finish(id, token))
 }
