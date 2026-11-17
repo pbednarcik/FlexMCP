@@ -111,13 +111,15 @@ func WithRequestBodyTimeout(d time.Duration) StreamableHTTPOption {
 // so Origin catches the rebound request, while Host is left to the proxies
 // and container networks that set it on a private address. The protection
 // applies regardless of whether the server listens on one address or on
-// 0.0.0.0, and never affects requests arriving on a public address. When
+// 0.0.0.0; on a public address nothing is checked unless WithAllowedHosts
+// names hosts, which turns the Host check on there too. When
 // WithStreamableHTTPCORS names allowed origins, that list judges Origin
 // instead, and the loopback Host check stays.
 //
 // A browser page served from the server's own hostname on a private
 // network names that host with WithAllowedHosts. Disable the protection
-// only if you understand the security implications.
+// only if you understand the security implications. Disabling the
+// protection turns off the WithAllowedHosts check as well.
 //
 // See https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 func WithDisableLocalhostProtection(disable bool) StreamableHTTPOption {
@@ -219,20 +221,20 @@ func WithStreamableHTTPCORS(opts ...CORSOption) StreamableHTTPOption {
 	}
 }
 
-// WithAllowedHosts names hosts, besides loopback names and the connection's
-// own address, that a request arriving on a loopback, private or link-local
-// address may carry in its Origin header when no CORS allow list judges
-// Origin, and in its Host header on a loopback address: the server's own
-// hostnames, as a reverse proxy forwards them or a browser page served
-// from the server names them. A host is compared without its port,
-// case-insensitively and without a trailing dot; an IP literal as an
-// address. See WithDisableLocalhostProtection.
-//
-// On a public address Origin is left to the CORS allow list, when one is
-// configured: only a browser can be rebound, a browser's cross-origin POST
-// is already stopped by the content type the server requires and by the
-// absent preflight answer, and an allow list there would turn away every
-// unlisted browser client.
+// WithAllowedHosts names the hosts, besides loopback names and the address
+// the connection arrived on, that a request's Host and Origin headers may
+// name. Naming any turns the Host check on for every request ServeHTTP
+// serves, on whatever address it arrived, public included: one whose Host
+// names none of them is answered 403 Forbidden. Without a list Host is
+// checked on a loopback address only. Origin is judged on a loopback,
+// private, shared or link-local address when no CORS allow list judges it,
+// and never on a public one: only a browser can be rebound, a browser's
+// cross-origin POST is already stopped by the content type the server
+// requires and by the absent preflight answer, and an allow list there
+// would turn away every unlisted browser client. A host is compared
+// without its port, by ASCII case only and without a trailing dot; an IP
+// literal as an address. Handle applies none of this.
+// WithDisableLocalhostProtection turns the list off too.
 func WithAllowedHosts(hosts ...string) StreamableHTTPOption {
 	return func(s *StreamableHTTPServer) {
 		s.allowedHosts = append(s.allowedHosts, hosts...)

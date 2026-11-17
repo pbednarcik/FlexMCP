@@ -217,8 +217,9 @@ func writeHTTPError(w HTTPResponseWriter, msg string, code int) {
 //
 //   - WithStreamableHTTPCORS is NOT applied. Frameworks should use their
 //     native CORS middleware.
-//   - DNS rebinding protection is NOT applied, because Handle has no access
-//     to the connection's local address. Adapters for localhost-reachable
+//   - DNS rebinding protection is NOT applied, nor the Host check
+//     WithAllowedHosts turns on, because Handle has no access to the
+//     connection's local address. Adapters for localhost-reachable
 //     servers should validate the Host and Origin headers themselves (reject
 //     a non-loopback Host, or a present non-loopback Origin, on loopback
 //     connections with 403 Forbidden).

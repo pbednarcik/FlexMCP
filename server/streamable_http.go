@@ -138,9 +138,10 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 //
 // Requests arriving over a loopback, private or link-local connection with
 // an Origin header that does not name the server, or over a loopback
-// connection with a Host header that does not, are rejected with 403
-// Forbidden to protect against DNS rebinding attacks, unless
-// WithDisableLocalhostProtection is set; see WithAllowedHosts.
+// connection with a Host header that does not, or on any connection with a
+// Host header outside the hosts WithAllowedHosts names, once it names any,
+// are rejected with 403 Forbidden to protect against DNS rebinding attacks,
+// unless WithDisableLocalhostProtection is set; see WithAllowedHosts.
 //
 // ServeHTTP is the conventional net/http entry point; for non-net/http HTTP
 // frameworks (fasthttp, fiber, etc.), see Handle.

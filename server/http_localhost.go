@@ -18,7 +18,7 @@ import (
 // drive a victim's browser to interact with it.
 func isLoopbackHost(addr string) bool {
 	host := hostName(addr)
-	if strings.EqualFold(host, "localhost") {
+	if equalFoldASCII(host, "localhost") {
 		return true
 	}
 	ip, err := netip.ParseAddr(host)
@@ -44,7 +44,7 @@ func hostName(host string) string {
 // would allocate on every browser request for a three-field answer.
 func originHost(origin string) (string, bool) {
 	scheme, rest, ok := strings.Cut(origin, "://")
-	if !ok || (!strings.EqualFold(scheme, "http") && !strings.EqualFold(scheme, "https")) {
+	if !ok || (!equalFoldASCII(scheme, "http") && !equalFoldASCII(scheme, "https")) {
 		return "", false
 	}
 	if host, _, found := strings.Cut(rest, "/"); found {
@@ -82,7 +82,7 @@ func isRebindingTarget(ip netip.Addr) bool {
 
 // hostNamesServer reports whether host, a Host header or an origin's host,
 // names the server at ip: a loopback name, ip itself, or one of allowed.
-// Names are compared without their port, case-insensitively and without a
+// Names are compared without their port, by ASCII case only and without a
 // trailing dot; an IP literal is compared as an address, so "[::1]" and
 // "::1" are one.
 func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
@@ -105,7 +105,7 @@ func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
 			}
 			continue
 		}
-		if strings.EqualFold(strings.TrimSuffix(name, "."), strings.TrimSuffix(entryName, ".")) {
+		if equalFoldASCII(strings.TrimSuffix(name, "."), strings.TrimSuffix(entryName, ".")) {
 			return true
 		}
 	}
@@ -117,6 +117,7 @@ func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
 // attack reaches (isRebindingTarget), a request whose Origin header is
 // present and does not name the server (hostNamesServer, with
 // allowedHosts) is answered 403 Forbidden, and so, on a loopback address,
+// and, once allowedHosts names hosts, on every request whatever its address,
 // is one whose Host header does not; then it returns true. Otherwise it
 // returns false and writes nothing. checkOrigin false leaves Origin to a
 // configured CORS allow list, the authority on it then.
@@ -126,26 +127,35 @@ func hostNamesServer(host string, ip netip.Addr, allowed []string) bool {
 // reports about the page that sent it, which rebinding cannot change. Host
 // names the rebound domain too, but on a private address it names the
 // server's own hostname as well, as a reverse proxy or a container network
-// forwards it, so Host is checked only on a loopback address, where the
-// local-server guidance asks for it. The server validates Origin on every
-// connection and answers an invalid one with 403 (Transports.md row 14).
+// forwards it, so without a list Host is checked only on a loopback
+// address, where the local-server guidance asks for it. The server
+// validates Origin on every connection and answers an invalid one with 403
+// (Transports.md row 14).
 //
-// Requests arriving on a public address are never rejected: the attacker
-// reaches that server without rebinding.
+// With allowedHosts naming hosts, Host is checked on every request, on any
+// address or none known: a public address only the victim's network
+// reaches, such as a firewalled global IPv6 address, is a rebinding target
+// too, and every legitimate client names the server in Host, so the list
+// turns none away. Without a list a request on a public address is not
+// checked: the attacker reaches such a server without rebinding.
 //
 // See https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices#local-mcp-server-compromise
 func rejectDNSRebinding(w http.ResponseWriter, r *http.Request, checkOrigin bool, allowedHosts []string) bool {
-	localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
-	if !ok || localAddr == nil {
-		return false
+	// ip stays the zero address when the connection's address is unknown,
+	// which names no server: only a loopback name or a listed host does.
+	var ip netip.Addr
+	target := false
+	if localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil {
+		if addr, ok := localAddrIP(localAddr); ok {
+			ip, target = addr, isRebindingTarget(addr)
+		}
 	}
-	ip, ok := localAddrIP(localAddr)
-	if !ok || !isRebindingTarget(ip) {
-		return false
-	}
-	if ip.IsLoopback() && !hostNamesServer(r.Host, ip, allowedHosts) {
+	if (len(allowedHosts) > 0 || (target && ip.IsLoopback())) && !hostNamesServer(r.Host, ip, allowedHosts) {
 		http.Error(w, fmt.Sprintf("Forbidden: invalid Host header %q; a name the server is known by is allowed with WithAllowedHosts", r.Host), http.StatusForbidden)
 		return true
+	}
+	if !target {
+		return false
 	}
 	if origin := r.Header.Get("Origin"); checkOrigin && origin != "" {
 		if host, ok := originHost(origin); !ok || !hostNamesServer(host, ip, allowedHosts) {
@@ -154,4 +164,29 @@ func rejectDNSRebinding(w http.ResponseWriter, r *http.Request, checkOrigin bool
 		}
 	}
 	return false
+}
+
+// equalFoldASCII reports whether a and b are equal once ASCII letters are
+// lowered, every other byte matching exactly. Host names and schemes compare
+// this way (RFC 3986 sections 3.1 and 3.2.2): Unicode case folding, as in
+// strings.EqualFold, takes some distinct hosts for one, such as a long s for
+// an s, or names with a final and a medial sigma.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if lowerASCII(a[i]) != lowerASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// lowerASCII is c with A to Z lowered, and any other byte as it is.
+func lowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
