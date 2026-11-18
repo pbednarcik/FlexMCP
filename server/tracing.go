@@ -52,7 +52,8 @@ func WithPropagator(p tracing.Propagator) ServerOption {
 // WithMetaPropagator installs a propagator that extracts trace context from
 // the MCP _meta property bag of inbound requests (per SEP-414). It covers
 // all transports including stdio, where HTTP headers are unavailable.
-// A nil propagator is treated as a no-op.
+// A nil propagator is treated as a no-op, which costs a request nothing:
+// its _meta is not decoded.
 func WithMetaPropagator(p tracing.MetaPropagator) ServerOption {
 	if p == nil {
 		p = tracing.NoopMetaPropagator()
@@ -70,6 +71,12 @@ func (s *MCPServer) extractMeta(ctx context.Context, meta *mcp.Meta) context.Con
 		return ctx
 	}
 	return p.ExtractMeta(ctx, meta)
+}
+
+// extractsMeta reports whether a meta propagator other than the no-op is
+// installed: only then is a request's _meta worth decoding.
+func (s *MCPServer) extractsMeta() bool {
+	return s.metaPropagator != nil && s.metaPropagator != tracing.NoopMetaPropagator()
 }
 
 // noSpan ends a message span that was never started.
