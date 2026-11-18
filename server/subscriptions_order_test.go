@@ -221,6 +221,144 @@ func TestSubscriptionsListen_ListChangesWhileTheStreamIsSetUp(t *testing.T) {
 	})
 }
 
+// listenSessionKinds are the sessions a stream is set up on in the targeted
+// interleavings: the stream session and an in-process one.
+var listenSessionKinds = []struct {
+	name string
+	make func() (ClientSession, <-chan mcp.JSONRPCNotification)
+}{
+	{"stream session", func() (ClientSession, <-chan mcp.JSONRPCNotification) {
+		s := newStreamSession()
+		return s, s.notify
+	}},
+	{"in-process session", func() (ClientSession, <-chan mcp.JSONRPCNotification) {
+		s := NewInProcessSession("inproc")
+		s.Initialize()
+		s.MarkModern()
+		return s, s.ClientNotifications()
+	}},
+}
+
+// closedWithin waits up to two seconds for ch to close and reports whether
+// it did. A timeout is reported through t.Errorf, so a hook may wait with it
+// on any goroutine.
+func closedWithin(t *testing.T, ch <-chan struct{}, what string) bool {
+	t.Helper()
+	select {
+	case <-ch:
+		return true
+	case <-time.After(2 * time.Second):
+		t.Errorf("waited two seconds for %s", what)
+		return false
+	}
+}
+
+// The interleavings of a list change sent to one session with the setting up
+// of a stream on it, driven by the test hooks: the stream receives what it
+// would from a broadcast.
+func TestSubscriptionsListen_TargetedListChangesWhileTheStreamIsSetUp(t *testing.T) {
+	tools := mcp.SubscriptionFilter{ToolsListChanged: true}
+	newServer := func() *MCPServer {
+		return NewMCPServer("listen-test", "1.0.0", WithToolCapabilities(true), WithPromptCapabilities(true))
+	}
+	for _, kind := range listenSessionKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			t.Run("a targeted change between the acknowledgement and the record is sent once recorded", func(t *testing.T) {
+				srv := newServer()
+				session, notify := kind.make()
+				srv.testHookListen = func(stage string) {
+					if stage == "gap" {
+						assert.NoError(t, srv.SendNotificationToSpecificClient(session.SessionID(), toolsChanged, nil))
+					}
+				}
+				openStream(t, srv, session, tools)
+				receivesExactly(t, notify, acknowledged, toolsChanged)
+			})
+
+			t.Run("a targeted change started before the acknowledgement that reads the streams after it", func(t *testing.T) {
+				srv := newServer()
+				session, notify := kind.make()
+				started, release, delivered, finish := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+				srv.testHookBroadcast = func(stage string) {
+					switch stage {
+					case "started":
+						close(started)
+						closedWithin(t, release, "the acknowledgement")
+					case "delivered":
+						close(delivered)
+						closedWithin(t, finish, "the record")
+					}
+				}
+				require.NoError(t, srv.RegisterSession(t.Context(), session))
+				var sendErr error
+				sent := make(chan struct{})
+				go func() {
+					defer close(sent)
+					sendErr = srv.SendNotificationToSpecificClient(session.SessionID(), toolsChanged, nil)
+				}()
+				// Registered before the stream's, so it runs after the stream's
+				// cleanup ends the listen whose hooks release the send.
+				t.Cleanup(func() { closedWithin(t, sent, "the targeted send to return") })
+				if !closedWithin(t, started, "the targeted send to reach its hook") {
+					t.FailNow()
+				}
+				srv.testHookListen = func(stage string) {
+					switch stage {
+					case "gap":
+						close(release)
+						closedWithin(t, delivered, "the targeted send to read the streams")
+					case "established":
+						close(finish)
+					}
+				}
+				srv.UnregisterSession(t.Context(), session.SessionID())
+				openStream(t, srv, session, tools)
+				receivesExactly(t, notify, acknowledged, toolsChanged)
+				if closedWithin(t, sent, "the targeted send to return") {
+					assert.NoError(t, sendErr)
+				}
+			})
+
+			t.Run("a targeted change finished before the acknowledgement is not sent", func(t *testing.T) {
+				srv := newServer()
+				session, notify := kind.make()
+				require.NoError(t, srv.RegisterSession(t.Context(), session))
+				require.NoError(t, srv.SendNotificationToSpecificClient(session.SessionID(), toolsChanged, nil))
+				srv.UnregisterSession(t.Context(), session.SessionID())
+				openStream(t, srv, session, tools)
+				receivesExactly(t, notify, acknowledged)
+			})
+
+			t.Run("a targeted change after the record reaches the stream once", func(t *testing.T) {
+				srv := newServer()
+				session, notify := kind.make()
+				established := make(chan struct{})
+				srv.testHookListen = func(stage string) {
+					if stage == "established" {
+						close(established)
+					}
+				}
+				openStream(t, srv, session, tools)
+				require.True(t, closedWithin(t, established, "the record"))
+				require.NoError(t, srv.SendNotificationToSpecificClient(session.SessionID(), toolsChanged, nil))
+				receivesExactly(t, notify, acknowledged, toolsChanged)
+			})
+
+			t.Run("a targeted change the stream did not subscribe to is not sent", func(t *testing.T) {
+				srv := newServer()
+				session, notify := kind.make()
+				srv.testHookListen = func(stage string) {
+					if stage == "gap" {
+						assert.NoError(t, srv.SendNotificationToSpecificClient(session.SessionID(), mcp.MethodNotificationPromptsListChanged, nil))
+					}
+				}
+				openStream(t, srv, session, tools)
+				receivesExactly(t, notify, acknowledged)
+			})
+		})
+	}
+}
+
 // Only the stdio session, which encodes every notification before any other
 // code sees it, shares a stream's tag; the in-process one hands its
 // notifications to user code. A type that embeds either is neither: the
