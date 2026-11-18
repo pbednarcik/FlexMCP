@@ -215,10 +215,10 @@ type MCPServer struct {
 	// "gap", once the acknowledgement is queued and before the stream is
 	// recorded, and at "established", once any list change missed is sent.
 	testHookListen func(stage string)
-	// testHookBroadcast, nil outside tests, runs in a broadcast at "started",
-	// once a list change counts itself started and before the sessions are
-	// read, and at "delivered", once they are and before it counts itself
-	// finished.
+	// testHookBroadcast, nil outside tests, runs in a broadcast, and in
+	// SendNotificationToSpecificClient, at "started", once a list change
+	// counts itself started and before the sessions are read, and at
+	// "delivered", once they are and before it counts itself finished.
 	testHookBroadcast        func(stage string)
 	hooks                    *Hooks
 	taskHooks                *TaskHooks

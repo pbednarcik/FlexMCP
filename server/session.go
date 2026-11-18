@@ -473,6 +473,9 @@ func (s *MCPServer) SendNotificationToClient(
 // session of that era with no such stream receives nothing, and nil is
 // returned.
 //
+// A list change sent while a subscriptions/listen stream on the session is
+// being set up reaches the stream once it is recorded, as a broadcast's does.
+//
 // It returns ErrSessionNotFound or ErrSessionNotInitialized for a session
 // it cannot send to, and ErrNotificationChannelBlocked when a copy could not
 // be queued.
@@ -495,6 +498,17 @@ func (s *MCPServer) SendNotificationToSpecificClient(
 		Params: mcp.NotificationParams{
 			AdditionalFields: params,
 		},
+	}
+	// A list change counts itself as a broadcast does, so that a stream set
+	// up on the session meanwhile is sent it once recorded; see
+	// listChangeCounts.
+	if counts := s.listChanges.of(method); counts != nil {
+		counts.started.Add(1)
+		defer counts.finished.Add(1)
+	}
+	if s.testHookBroadcast != nil {
+		s.testHookBroadcast("started")
+		defer s.testHookBroadcast("delivered")
 	}
 	return s.notifyOutsideRequest(session, notification, true)
 }
