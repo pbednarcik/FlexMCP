@@ -330,7 +330,7 @@ func TestInputValidationHandlerPanic(t *testing.T) {
 // kind.
 func TestInputValidationHandlerProjectionPanic(t *testing.T) {
 	srv, runs := hookServer(t, hookSetup{answer: refuseWith(nil)})
-	compiled, err := compileSchema("t", []byte(hookSchema))
+	compiled, err := compileSchema("t", "input", []byte(hookSchema))
 	require.NoError(t, err)
 	inv := &inputInvalid{cause: &jsonschema.ValidationError{}, instance: map[string]any{}, schema: &cachedToolSchema{compiled: compiled}, text: "input schema validation failed"}
 	var fault error

@@ -59,10 +59,11 @@ func validateToolName(name string) error {
 }
 
 // checkToolDefinition runs every registration-time check on a tool: its name,
-// its x-mcp-header annotations, and, with validation on, that its schemas
-// compile. It returns the compiled schemas, uncached, for commitSchemas once
-// the tool's batch is registered. Called with toolsMu held; the caller panics
-// on an error, as a definition the server cannot serve is a programming error.
+// its x-mcp-header annotations, with validation on that its schemas compile,
+// and that it can be encoded as tools/list writes it. It returns the compiled
+// schemas, uncached, for commitSchemas once the tool's batch is registered.
+// Called with toolsMu held; the caller panics on an error, as a definition the
+// server cannot serve is a programming error.
 func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (toolSchemas, error) {
 	if err := validateToolName(tool.Name); err != nil {
 		return toolSchemas{}, err
@@ -77,6 +78,14 @@ func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (toolSchemas, error) {
 	output, err := s.outputValidator.compileAtRegistration(*tool)
 	if err != nil {
 		return toolSchemas{}, err
+	}
+	// A tool tools/list cannot encode would fail every list of the server's
+	// tools, and its schema could not be validated against: a structured
+	// schema holding +Inf or an unreadable json.Number, a raw one that is not
+	// JSON, a schema set both raw and structured. Checked last, so that with
+	// validation on a schema that does not compile is named as such.
+	if _, err := json.Marshal(tool); err != nil {
+		return toolSchemas{}, fmt.Errorf("tool %q cannot be encoded: %w", tool.Name, err)
 	}
 	return toolSchemas{input: input, output: output}, nil
 }

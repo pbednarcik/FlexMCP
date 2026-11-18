@@ -41,6 +41,9 @@ import (
 type compiledSchemaCache struct {
 	mu     sync.RWMutex
 	cached map[string]*cachedToolSchema
+	// kind is "input" or "output": the schemas the cache compiles, which
+	// their compile errors name.
+	kind string
 }
 
 // cachedToolSchema records the result of compiling the schema whose digest
@@ -80,10 +83,12 @@ func (e *cachedToolSchema) holdsDraft4() bool {
 	return answer == draft4Held
 }
 
-// newCompiledSchemaCache returns a fresh empty schema cache.
-func newCompiledSchemaCache() *compiledSchemaCache {
+// newCompiledSchemaCache returns a fresh empty cache of the schemas of kind,
+// "input" or "output", which its compile errors name.
+func newCompiledSchemaCache(kind string) *compiledSchemaCache {
 	return &compiledSchemaCache{
 		cached: make(map[string]*cachedToolSchema),
+		kind:   kind,
 	}
 }
 
@@ -113,7 +118,7 @@ func (c *compiledSchemaCache) compile(toolName string, schemaJSON []byte) *cache
 	if ok && entry.digest == digest {
 		return entry
 	}
-	compiled, compileErr := compileSchema(toolName, schemaJSON)
+	compiled, compileErr := compileSchema(toolName, c.kind, schemaJSON)
 	return &cachedToolSchema{digest: digest, compiled: compiled, compileErr: compileErr}
 }
 
@@ -149,7 +154,7 @@ type inputSchemaValidator struct {
 
 // newInputSchemaValidator returns a fresh validator with an empty cache.
 func newInputSchemaValidator() *inputSchemaValidator {
-	return &inputSchemaValidator{compiledSchemaCache: newCompiledSchemaCache()}
+	return &inputSchemaValidator{compiledSchemaCache: newCompiledSchemaCache("input")}
 }
 
 // invalidate drops cached compilations for the given tool names. The
@@ -618,7 +623,9 @@ func schemaDigest(schemaJSON []byte) string {
 // schemaJSONFor returns the JSON representation of the tool's input schema.
 // It prefers RawInputSchema when set, otherwise marshals the structured
 // InputSchema. The boolean return is false when the tool has no usable input
-// schema (e.g. an empty structured schema with no properties).
+// schema (e.g. an empty structured schema with no properties). Registration
+// refuses a tool that cannot be encoded, so a registered tool's schema always
+// marshals.
 func schemaJSONFor(tool mcp.Tool) ([]byte, bool) {
 	if len(tool.RawInputSchema) > 0 {
 		return tool.RawInputSchema, true
@@ -634,17 +641,18 @@ func schemaJSONFor(tool mcp.Tool) ([]byte, bool) {
 }
 
 // compileSchema parses a JSON Schema document and compiles it for the given
-// tool. The schema is registered against an opaque virtual URL so that
-// "$ref" resolution works without touching the filesystem or network.
-func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, error) {
+// tool; kind, "input" or "output", names the schema in its errors. The schema
+// is registered against an opaque virtual URL so that "$ref" resolution works
+// without touching the filesystem or network.
+func compileSchema(toolName, kind string, schemaJSON []byte) (*jsonschema.Schema, error) {
 	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemaJSON))
 	if err != nil {
-		return nil, fmt.Errorf("decode tool %q input schema: %w", toolName, err)
+		return nil, fmt.Errorf("decode tool %q %s schema: %w", toolName, kind, err)
 	}
 	resourceURL := toolSchemaURL(toolName)
 	c := jsonschema.NewCompiler()
 	if err := c.AddResource(resourceURL, doc); err != nil {
-		return nil, fmt.Errorf("register tool %q input schema: %w", toolName, err)
+		return nil, fmt.Errorf("register tool %q %s schema: %w", toolName, kind, err)
 	}
 	recovered, compiled, err := compileRecovering(c, resourceURL)
 	if recovered != nil {
@@ -659,15 +667,15 @@ func compileSchema(toolName string, schemaJSON []byte) (*jsonschema.Schema, erro
 			again, _, _ := compileRecovering(c, resourceURL)
 			return again
 		})
-		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
+		return nil, fmt.Errorf("compile tool %q %s schema: %w", toolName, kind, outOfRange)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, err)
+		return nil, fmt.Errorf("compile tool %q %s schema: %w", toolName, kind, err)
 	}
 	// A bound the metaschema does not read as a number compiles, and the
 	// compiler drops one big.Rat cannot read: it is refused as well.
 	if outOfRange := findBoundOutOfRange(doc, resourceURL); outOfRange != nil {
-		return nil, fmt.Errorf("compile tool %q input schema: %w", toolName, outOfRange)
+		return nil, fmt.Errorf("compile tool %q %s schema: %w", toolName, kind, outOfRange)
 	}
 	return compiled, nil
 }

@@ -28,7 +28,7 @@ func TestSchemaTypeArrayValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			data, ok := tt.getSchema(tool)
 			require.True(t, ok, "array-only schema must not be treated as absent")
-			compiled, err := compileSchema(tool.Name, data)
+			compiled, err := compileSchema(tool.Name, tt.name, data)
 			require.NoError(t, err)
 			assert.NoError(t, compiled.Validate(map[string]any{}))
 			assert.NoError(t, compiled.Validate(nil))

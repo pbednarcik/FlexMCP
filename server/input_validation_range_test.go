@@ -215,7 +215,7 @@ func TestRegistrationNamesABoundItCannotReadThatCompiles(t *testing.T) {
 			} else {
 				tool.RawInputSchema = json.RawMessage(tc.schema)
 			}
-			assert.PanicsWithValue(t, `tool "bounded" `+which+` schema cannot be compiled: compile tool "bounded" input schema: `+
+			assert.PanicsWithValue(t, `tool "bounded" `+which+` schema cannot be compiled: compile tool "bounded" `+which+` schema: `+
 				tc.at+`: number `+unreadable+` is out of range`, func() { srv.AddTool(tool, okHandler) }, "%s schema %s", which, tc.schema)
 			require.True(t, srv.toolsMu.TryLock(), "toolsMu is held after the refusal")
 			srv.toolsMu.Unlock()
@@ -232,6 +232,58 @@ func TestRegistrationNamesABoundItCannotReadThatCompiles(t *testing.T) {
 		srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
 		assert.NotPanics(t, func() { srv.AddTool(mcp.NewToolWithRawSchema("free", "", json.RawMessage(schema)), okHandler) }, schema)
 	}
+}
+
+// A structured schema, decoded from JSON as a proxy relaying tools/list would
+// or built in Go, is judged at registration as the same schema in raw form is:
+// a bound big.Rat cannot read is refused, with the schema's kind named on both
+// sides and the lock let go, and a const big.Rat reads is no bound.
+func TestRegistrationNamesABoundItCannotReadInATypedSchema(t *testing.T) {
+	const unreadable = `1e-1000001`
+	for _, tc := range []struct{ schema, at string }{
+		{`{"type":"object","$defs":{"d":{"exclusiveMinimum":` + unreadable + `}},"properties":{"n":{"$ref":"#/$defs/d"}}}`, `/$defs/d/exclusiveMinimum`},
+		{`{"type":"object","properties":{"n":{"type":"number","multipleOf":` + outOfRangeNumber + `}}}`, `/properties/n/multipleOf`},
+		{`{"type":"object","additionalProperties":{"maximum":` + unreadable + `}}`, `/additionalProperties/maximum`},
+		{`{"type":"object","allOf":[{"properties":{"n":{"minimum":` + unreadable + `}}}]}`, `/allOf/0/properties/n/minimum`},
+	} {
+		for _, output := range []bool{false, true} {
+			which := "input"
+			if output {
+				which = "output"
+			}
+			t.Run(which+" "+tc.at, func(t *testing.T) {
+				srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+				tool := mcp.NewTool("typed")
+				if output {
+					require.NoError(t, json.Unmarshal([]byte(tc.schema), &tool.OutputSchema))
+				} else {
+					require.NoError(t, json.Unmarshal([]byte(tc.schema), &tool.InputSchema))
+				}
+				msg := panicMessage(func() { srv.AddTool(tool, okHandler) })
+				want := `tool "typed" ` + which + ` schema cannot be compiled: compile tool "typed" ` + which + ` schema: ` + tc.at + `: number `
+				assert.True(t, strings.HasPrefix(msg, want), "refusal %q, want the prefix %q", msg, want)
+				assert.Contains(t, msg, "is out of range")
+				require.True(t, srv.toolsMu.TryLock(), "toolsMu is held after the refusal")
+				srv.toolsMu.Unlock()
+			})
+		}
+	}
+	t.Run("a Go-built json.Number bound", func(t *testing.T) {
+		srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+		tool := mcp.NewTool("g")
+		tool.InputSchema = mcp.ToolInputSchema{
+			Type:       "object",
+			Defs:       map[string]any{"d": map[string]any{"exclusiveMinimum": json.Number(unreadable)}},
+			Properties: map[string]any{"n": map[string]any{"$ref": "#/$defs/d"}},
+		}
+		assert.Contains(t, panicMessage(func() { srv.AddTool(tool, okHandler) }), "/$defs/d/exclusiveMinimum: number "+unreadable+" is out of range")
+	})
+	t.Run("a const big.Rat reads is no bound", func(t *testing.T) {
+		srv := NewMCPServer("test", "1.0.0", WithInputSchemaValidation())
+		tool := mcp.NewTool("c")
+		require.NoError(t, json.Unmarshal([]byte(`{"type":"object","properties":{"n":{"const":1e400}}}`), &tool.InputSchema))
+		assert.NotPanics(t, func() { srv.AddTool(tool, okHandler) })
+	})
 }
 
 // Registering a validated tool looks for a bound big.Rat cannot read only in
