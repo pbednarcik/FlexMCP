@@ -692,17 +692,6 @@ httpServer.Start(":8080")
 //   -> 200 application/json with the metadata above
 ```
 
-For SSE servers, use the equivalent `WithSSEProtectedResourceMetadata`:
-
-```go
-sseServer := server.NewSSEServer(mcpServer,
-    server.WithSSEProtectedResourceMetadata(server.ProtectedResourceMetadataConfig{
-        Resource:             "https://my-mcp-server.com",
-        AuthorizationServers: []string{"https://auth.example.com"},
-    }),
-)
-```
-
 #### Option B: Standalone handler for custom routing
 
 If you build your own `http.ServeMux` (or use a router like `chi` / `gin`),
@@ -737,8 +726,8 @@ mux.Handle(server.ProtectedResourceMetadataPath(cfg.Resource),
 // -> mounts at /.well-known/oauth-protected-resource/mcp
 ```
 
-The auto-mount options (`WithProtectedResourceMetadata` /
-`WithSSEProtectedResourceMetadata`) apply this rule automatically.
+The auto-mount option (`WithProtectedResourceMetadata`) applies this rule
+automatically.
 
 #### Handler behavior
 
@@ -762,30 +751,71 @@ rebinding, the browser sees a same-origin request and applies no
 cross-origin restrictions.
 
 The transport therefore validates the `Host` and `Origin` headers
-automatically. When a request arrives over a loopback connection
-(`127.0.0.1`, `[::1]`) but its `Host` header is not a localhost value
-(`localhost`, a `127.0.0.0/8` address, or `[::1]`, with or without a port),
-or its `Origin` header is present and not an `http` or `https` origin on such
-a host, the request is rejected with `403 Forbidden`. `Host` catches the
-rebound request itself; `Origin` is what the browser reports about the page
-that sent it, which rebinding cannot change. Requests without an `Origin`,
-which is every non-browser client, are not affected by the `Origin` check.
-When CORS is configured, its allow list judges `Origin` instead (see below)
-and the `Host` check stays.
+automatically, judged by the address the request arrived on (the
+connection's local address, `http.LocalAddrContextKey`), so the protection
+applies whether the server listens on one address or on `0.0.0.0`. It is
+enabled by default and requires no configuration:
 
-The protection is enabled by default and requires no configuration:
+- On a loopback address (`127.0.0.1`, `[::1]`), a `Host` header that does
+  not name the server is rejected with `403 Forbidden`. `Host` catches the
+  rebound request itself.
+- On a loopback, private (RFC 1918, `100.64.0.0/10`, IPv6 unique local) or
+  link-local address, a present `Origin` header that does not name the
+  server, or is not an `http` or `https` origin, is rejected with
+  `403 Forbidden`. `Origin` is what the browser reports about the page that
+  sent it, which rebinding cannot change, and a browser sends it on every
+  `POST`, so a rebound browser is caught on a LAN server too. Requests
+  without an `Origin`, which is every non-browser client, are not affected
+  by the `Origin` check.
+- When CORS is configured, its allow list judges `Origin` instead (see
+  below) and the `Host` checks stay.
 
-- It is detected at runtime from the connection's local address
-  (`http.LocalAddrContextKey`), so it applies whether the server listens on
-  `localhost` or `0.0.0.0`.
-- Requests arriving via non-loopback addresses (external traffic) are
-  never affected.
+A header names the server when its host is a loopback name (`localhost`, a
+`127.0.0.0/8` address or `[::1]`), the address the connection arrived on,
+or a host listed with `WithAllowedHosts`, with or without a port. Names
+compare by ASCII case only and ignore one trailing dot, so `localhost.`
+names the server as `localhost` does; an IP literal compares as an address,
+without its zone.
 
-**Reverse proxies:** if a proxy (nginx, Envoy, ...) on the same host
-forwards requests to the MCP server via localhost while preserving the
-original `Host` header, those requests would be rejected. Prefer
-configuring the proxy to rewrite the `Host` header to localhost;
-alternatively, opt out explicitly:
+#### Naming the server's hosts
+
+```go
+httpServer := server.NewStreamableHTTPServer(mcpServer,
+    server.WithAllowedHosts("mcp.example.com"),
+)
+```
+
+Naming any host turns the `Host` check on for every request `ServeHTTP`
+serves, on whatever address it arrived, public included, and also when the
+connection's address is unknown (then only a loopback name or a listed host
+names the server): a request whose `Host` does not name the server is
+rejected with `403 Forbidden`. List every name clients reach the server by;
+entries match on any port. An entry is a host, not a URL (`mcp.example.com`,
+not `https://mcp.example.com`); an empty entry, or one with only a port,
+names no host and is ignored, so a list of only such entries turns
+nothing on.
+
+Without a list, a request on a public address is not checked: an attacker
+reaches such a server without rebinding. But a public address only the
+victim's network reaches, such as a firewalled global IPv6 address or a
+host behind an IP allow list, can be rebound, so list the server's names
+there. On a public address the DNS rebinding check does not judge `Origin`,
+with a list or without; a configured CORS allow list judges it on every
+address.
+
+A browser page served from the server's own hostname on a private network
+sends that host in `Origin`: list it with `WithAllowedHosts`.
+
+**Reverse proxies:** a proxy (nginx, Envoy, ...) on the same host that
+forwards requests to the MCP server via localhost delivers them on a
+loopback address, where both headers are judged. A preserved `Host` header
+naming the proxy's public host is rejected, and so, unless a CORS allow
+list judges it, is a browser's `Origin`, which names the proxy's public
+host as well and which no `Host` rewrite changes. List that host with
+`WithAllowedHosts`: it then names the server as `Host` and as `Origin`.
+Rewriting the `Host` header to localhost at the proxy is enough only for
+clients that send no `Origin`, the non-browser ones. Alternatively, opt
+out explicitly:
 
 ```go
 httpServer := server.NewStreamableHTTPServer(mcpServer,
@@ -794,13 +824,13 @@ httpServer := server.NewStreamableHTTPServer(mcpServer,
 )
 ```
 
-Use `server.WithSSEDisableLocalhostProtection(true)` for the
-[SSE transport](/transports/sse#sse-server-options).
+Disabling the protection turns off the `WithAllowedHosts` check as well.
 
-The protection applies to `ServeHTTP` (and the SSE handlers) only. The
-framework-agnostic [`Handle`](#embedding-in-non-nethttp-frameworks) entry
-point has no access to the connection's local address, so adapters must
-enforce the check themselves — see [Behavior Notes](#behavior-notes).
+The protection applies to `ServeHTTP` only. The framework-agnostic
+[`Handle`](#embedding-in-non-nethttp-frameworks) entry point has no access
+to the connection's local address, so it applies neither the protection
+nor the `Host` check `WithAllowedHosts` turns on; adapters must enforce
+the check themselves — see [Behavior Notes](#behavior-notes).
 
 ### Cross-Origin Resource Sharing (CORS)
 
@@ -1189,11 +1219,14 @@ func mcpHandler(ctx *fasthttp.RequestCtx) {
 
 - **`WithStreamableHTTPCORS` is not applied** when entering through
   `Handle`. Use the framework's native CORS middleware.
-- **DNS rebinding protection is not applied** when entering through
-  `Handle`, because it has no access to the connection's local address.
-  Adapters for localhost-reachable servers should reject requests that
-  arrive on a loopback connection with a non-loopback `Host` header, or a
-  present non-loopback `Origin` header, answering `403 Forbidden`. See
+- **DNS rebinding protection is not applied**, nor the `Host` check
+  `WithAllowedHosts` turns on, when entering through `Handle`, because it
+  has no access to the connection's local address. Adapters should apply
+  it themselves, answering `403 Forbidden` when a header does not name the
+  server (a loopback name, the connection's address or a listed host):
+  `Host` on a loopback connection, or on any connection once hosts are
+  listed, and a present `Origin` on a loopback, private, shared or
+  link-local connection, unless a CORS allow list judges it. See
   [DNS Rebinding Protection](#dns-rebinding-protection) above.
 - **`WithProtectedResourceMetadata` is not applied** when entering through
   `Handle`. Mount the metadata route separately using
