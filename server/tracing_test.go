@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -133,4 +134,98 @@ func TestMessageSpanWithoutTracerStillExtracts(t *testing.T) {
 	ctx, end := s.startMessageSpan(t.Context(), http.Header{}, "tools/call")
 	end(nil)
 	assert.Equal(t, "remote", ctx.Value(propagatedKey{}))
+}
+
+// tracedToolCall is a modern tools/call whose _meta carries a traceparent.
+const tracedToolCall = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"a":"b"},"_meta":{` +
+	`"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"t","version":"1"},` +
+	`"io.modelcontextprotocol/protocolVersion":"` + mcp.LATEST_PROTOCOL_VERSION + `",` +
+	`"traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}}}`
+
+// echoServer is a server with opts and one tool, echo, that answers "ok".
+func echoServer(opts ...ServerOption) *MCPServer {
+	s := NewMCPServer("trace-srv", "1.0", append([]ServerOption{WithToolCapabilities(false)}, opts...)...)
+	s.AddTool(mcp.NewToolWithRawSchema("echo", "", json.RawMessage(`{"type":"object"}`)),
+		func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("ok"), nil
+		})
+	return s
+}
+
+// requireEchoAnswered fails t unless s answers tracedToolCall with "ok".
+func requireEchoAnswered(t *testing.T, s *MCPServer) {
+	t.Helper()
+	got, err := json.Marshal(s.HandleMessage(t.Context(), json.RawMessage(tracedToolCall)))
+	require.NoError(t, err)
+	require.Contains(t, string(got), `"ok"`, "the call was not answered: %s", got)
+}
+
+// tracedCallAllocs is the fewest allocations of one tracedToolCall over ten
+// measurements, on a server with opts.
+func tracedCallAllocs(t *testing.T, opts ...ServerOption) float64 {
+	t.Helper()
+	s := echoServer(opts...)
+	requireEchoAnswered(t, s)
+	ctx := t.Context()
+	message := json.RawMessage(tracedToolCall)
+	fewest := testing.AllocsPerRun(200, func() { s.HandleMessage(ctx, message) })
+	for range 9 {
+		fewest = min(fewest, testing.AllocsPerRun(200, func() { s.HandleMessage(ctx, message) }))
+	}
+	return fewest
+}
+
+// WithMetaPropagator(nil) installs the no-op, which extracts nothing: a
+// request costs what it costs with no propagator, its _meta not decoded.
+func TestWithMetaPropagator_TheNoopDecodesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's instrumentation allocates")
+	}
+	none := tracedCallAllocs(t)
+	for _, tt := range []struct {
+		name string
+		opt  ServerOption
+	}{
+		{"nil", WithMetaPropagator(nil)},
+		{"explicit no-op", WithMetaPropagator(tracing.NoopMetaPropagator())},
+	} {
+		if got := tracedCallAllocs(t, tt.opt); got > none {
+			t.Errorf("%s: %v allocations per call, want at most %v, as with no propagator", tt.name, got, none)
+		}
+	}
+}
+
+// uncomparablePropagator's type holds a slice, so comparing two of its values
+// with == panics.
+type uncomparablePropagator struct{ seen []string }
+
+func (uncomparablePropagator) InjectMeta(_ context.Context, meta *mcp.Meta) *mcp.Meta { return meta }
+func (uncomparablePropagator) ExtractMeta(ctx context.Context, _ *mcp.Meta) context.Context {
+	return ctx
+}
+
+// Telling the no-op apart from the installed propagator must not panic on a
+// propagator whose type cannot be compared.
+func TestWithMetaPropagator_AnUncomparablePropagatorIsServed(t *testing.T) {
+	s := echoServer(WithMetaPropagator(uncomparablePropagator{seen: []string{}}))
+	requireEchoAnswered(t, s)
+}
+
+// traceparentPropagator records the traceparent of the _meta it extracts.
+type traceparentPropagator struct{ seen *string }
+
+func (traceparentPropagator) InjectMeta(_ context.Context, meta *mcp.Meta) *mcp.Meta { return meta }
+func (p traceparentPropagator) ExtractMeta(ctx context.Context, meta *mcp.Meta) context.Context {
+	if meta != nil {
+		*p.seen, _ = meta.AdditionalFields["traceparent"].(string)
+	}
+	return ctx
+}
+
+// A propagator other than the no-op still sees the request's _meta.
+func TestWithMetaPropagator_ARealOneStillExtracts(t *testing.T) {
+	seen := ""
+	s := echoServer(WithMetaPropagator(traceparentPropagator{seen: &seen}))
+	requireEchoAnswered(t, s)
+	assert.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", seen)
 }
