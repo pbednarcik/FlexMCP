@@ -23,7 +23,7 @@ type outputSchemaValidator struct {
 
 // newOutputSchemaValidator returns a fresh validator with an empty cache.
 func newOutputSchemaValidator() *outputSchemaValidator {
-	return &outputSchemaValidator{compiledSchemaCache: newCompiledSchemaCache()}
+	return &outputSchemaValidator{compiledSchemaCache: newCompiledSchemaCache("output")}
 }
 
 // invalidate drops cached compilations for the given tool names. Safe to
@@ -153,7 +153,9 @@ func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, compiled *json
 // outputSchemaJSONFor returns the JSON representation of the tool's output
 // schema. It prefers RawOutputSchema when set, otherwise marshals the
 // structured OutputSchema. The boolean return is false when the tool
-// declares no usable output schema.
+// declares no usable output schema. Registration refuses a tool that cannot
+// be encoded, so a registered tool's output schema marshals whenever
+// tools/list writes it.
 func outputSchemaJSONFor(tool mcp.Tool) ([]byte, bool) {
 	if len(tool.RawOutputSchema) > 0 {
 		return tool.RawOutputSchema, true

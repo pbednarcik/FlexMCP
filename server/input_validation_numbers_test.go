@@ -136,7 +136,7 @@ func compileFuzzed(schema string) (compiled *jsonschema.Schema) {
 		}
 	}()
 	var err error
-	if compiled, err = compileSchema("n", []byte(schema)); err != nil {
+	if compiled, err = compileSchema("n", "input", []byte(schema)); err != nil {
 		return nil
 	}
 	return compiled
@@ -210,7 +210,7 @@ func checkNumbers(t testing.TB, compiled *jsonschema.Schema, args string, tally 
 
 func compileNumbersSchema(t testing.TB, schema string) *jsonschema.Schema {
 	t.Helper()
-	compiled, err := compileSchema("n", []byte(schema))
+	compiled, err := compileSchema("n", "input", []byte(schema))
 	require.NoError(t, err, schema)
 	return compiled
 }
@@ -345,7 +345,7 @@ func TestInputValidationOfTheDecodedArgumentsMatchesOnGeneratedNumbers(t *testin
 		if r.IntN(3) == 0 {
 			typ = "integer"
 		}
-		compiled, err := compileSchema("n", []byte(numbersSchema(typ, fmt.Sprintf("%q:%s", kw, bound))))
+		compiled, err := compileSchema("n", "input", []byte(numbersSchema(typ, fmt.Sprintf("%q:%s", kw, bound))))
 		if err != nil {
 			continue
 		}

@@ -23,7 +23,7 @@ import (
 // the tool called "t" does, and returns the failure validation answers.
 func invalidCall(t testing.TB, schema, args string) *inputInvalid {
 	t.Helper()
-	compiled, err := compileSchema("t", []byte(schema))
+	compiled, err := compileSchema("t", "input", []byte(schema))
 	require.NoError(t, err)
 	var params mcp.CallToolParams
 	require.NoError(t, json.Unmarshal([]byte(`{"name":"t","arguments":`+args+`}`), &params))
@@ -298,7 +298,7 @@ func projectionRows() []projectionRow {
 		{
 			name: "unencodable",
 			call: func(t testing.TB) *inputInvalid {
-				compiled, err := compileSchema("t", []byte(`{"type":"object"}`))
+				compiled, err := compileSchema("t", "input", []byte(`{"type":"object"}`))
 				require.NoError(t, err)
 				return invalidArguments(t, compiled, callArguments{decoded: map[string]any{"x": math.NaN()}})
 			},
@@ -892,7 +892,7 @@ func TestInputValidationUnencodableCallAllocations(t *testing.T) {
 	allocs := testing.AllocsPerRun(1000, func() { srv.HandleMessage(ctx, msg) })
 	assert.LessOrEqual(t, allocs, 41.0, "allocations per tools/call with unencodable arguments")
 
-	compiled, err := compileSchema("t", []byte(`{"type":"object"}`))
+	compiled, err := compileSchema("t", "input", []byte(`{"type":"object"}`))
 	require.NoError(t, err)
 	args := callArguments{decoded: map[string]any{"x": math.NaN()}}
 	inv := invalidArguments(t, compiled, args)
