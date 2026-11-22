@@ -504,6 +504,61 @@ func TestParamHeaderAnnotationsToleratesUnreadableSchema(t *testing.T) {
 	assert.Empty(t, ExtractParamHeaderBindings(tool))
 }
 
+// TestParamHeaderAnnotationsFoundHoweverTheKeyIsSpelled pins that a schema is
+// read for annotations whenever it may hold one: the key written with a JSON
+// escape, which both decodes unescape, or in another letter case, which a
+// decode into Go fields matches. A schema without the key is not read.
+func TestParamHeaderAnnotationsFoundHoweverTheKeyIsSpelled(t *testing.T) {
+	// The key with its h as a \u escape, built from pieces.
+	escaped := "x-mcp-\\" + "u0068eader"
+	schema := func(property string) json.RawMessage {
+		return json.RawMessage(`{"type":"object","properties":{"a":` + property + `}}`)
+	}
+	for name, raw := range map[string]json.RawMessage{
+		"escaped key on an array":    schema(`{"type":"array","` + escaped + `":"A"}`),
+		"upper-case key on an array": schema(`{"type":"array","X-MCP-HEADER":"A"}`),
+		"mixed-case key on an array": schema(`{"type":"array","X-Mcp-Header":"A"}`),
+		"escaped key under items":    json.RawMessage(`{"type":"object","items":{"` + escaped + `":"A"}}`),
+		"escaped key, schema unread": json.RawMessage(`{"properties":{"a":{"` + escaped + `":"A"`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool := &Tool{Name: "t", RawInputSchema: raw}
+			if name == "escaped key, schema unread" {
+				assert.NoError(t, ValidateParamHeaderAnnotations(tool), "an unreadable schema is tolerated")
+				assert.Empty(t, ExtractParamHeaderBindings(tool))
+				return
+			}
+			assert.Error(t, ValidateParamHeaderAnnotations(tool))
+		})
+	}
+	for name, raw := range map[string]json.RawMessage{
+		"escaped key":    schema(`{"type":"string","` + escaped + `":"A"}`),
+		"upper-case key": schema(`{"type":"string","X-MCP-HEADER":"A"}`),
+	} {
+		t.Run("binds "+name, func(t *testing.T) {
+			tool := &Tool{Name: "t", RawInputSchema: raw}
+			assert.Equal(t, map[string]string{"Mcp-Param-A": "v"},
+				GenerateParamHeaders(tool, json.RawMessage(`{"arguments":{"a":"v"}}`)))
+		})
+	}
+
+	plain := &Tool{Name: "t", RawInputSchema: schema(`{"type":"string","description":"no header-key here"}`)}
+	assert.NoError(t, ValidateParamHeaderAnnotations(plain))
+	assert.Empty(t, ExtractParamHeaderBindings(plain))
+}
+
+// A raw schema without the key is not decoded to look for annotations, at
+// registration or on a client's call: both checks allocate nothing.
+func TestParamHeaderAnnotationsNotLookedForInASchemaWithoutTheKey(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	tool := &Tool{Name: "t", RawInputSchema: json.RawMessage(`{"type":"object","properties":{"a-b":{"type":"string"}}}`)}
+	params := json.RawMessage(`{"arguments":{"a-b":"v"}}`)
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = ValidateParamHeaderAnnotations(tool) }))
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = GenerateParamHeaders(tool, params) }))
+}
+
 // TestParamHeaderIntegerAndBooleanValuesMustAgreeWithTheBody pins how a
 // mirrored integer or boolean is compared: the header is read as a number,
 // so a fraction of zero is the same integer, while a real fraction, text,

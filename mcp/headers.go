@@ -318,22 +318,55 @@ func (p headerSchemaProperty) isHeaderPrimitive() bool {
 	return true
 }
 
-// schemaHeaderProperties normalizes any input-schema representation (a typed
-// schema struct, map[string]any, or json.RawMessage) into the subset of fields
-// needed for x-mcp-header processing.
+// schemaHeaderProperties decodes an input schema's JSON (see inputSchemaJSON)
+// into the subset of fields needed for x-mcp-header processing.
 //
 // The error is reported separately from an absent schema so that callers which
 // must fail closed, such as annotation validation, can tell a schema with no
 // annotations apart from one that could not be read.
-func schemaHeaderProperties(schema any) (map[string]headerSchemaProperty, error) {
-	if schema == nil {
-		return nil, nil
-	}
+func schemaHeaderProperties(schema []byte) (map[string]headerSchemaProperty, error) {
 	var s headerSchemaProperty
-	if err := remarshal(schema, &s); err != nil {
+	if err := json.Unmarshal(schema, &s); err != nil {
 		return nil, fmt.Errorf("reading input schema: %w", err)
 	}
 	return s.Properties, nil
+}
+
+// inputSchemaJSON returns the tool's input schema as JSON: the raw schema as
+// given, else the structured one encoded.
+func inputSchemaJSON(tool *Tool) ([]byte, error) {
+	if len(tool.RawInputSchema) > 0 {
+		return tool.RawInputSchema, nil
+	}
+	return json.Marshal(tool.InputSchema)
+}
+
+// paramHeaderKey is the annotation's key as a byte slice, for
+// mayHoldParamHeader.
+var paramHeaderKey = []byte("x-mcp-header")
+
+// mayHoldParamHeader reports whether schema could hold an x-mcp-header key,
+// so that a schema without one is not decoded to look for it. It is false
+// only when schema names the key in no ASCII case (a decode into
+// headerSchemaProperty matches field names case-insensitively, and no other
+// rune folds to a letter of the key) and holds no \u escape, which could
+// spell it.
+func mayHoldParamHeader(schema []byte) bool {
+	if bytes.Contains(schema, []byte(`\u`)) {
+		return true
+	}
+	for off := 0; ; {
+		dash := bytes.IndexByte(schema[off:], '-')
+		if dash < 0 {
+			return false
+		}
+		// The key's first dash is its second byte.
+		if at := off + dash - 1; at >= 0 && at+len(paramHeaderKey) <= len(schema) &&
+			bytes.EqualFold(schema[at:at+len(paramHeaderKey)], paramHeaderKey) {
+			return true
+		}
+		off += dash + 1
+	}
 }
 
 // ExtractParamHeaderBindings returns a binding for every property in the
@@ -343,7 +376,11 @@ func ExtractParamHeaderBindings(tool *Tool) []ParamHeaderBinding {
 	if tool == nil {
 		return nil
 	}
-	props, err := schemaHeaderProperties(toolInputSchema(tool))
+	schema, err := inputSchemaJSON(tool)
+	if err != nil || !mayHoldParamHeader(schema) {
+		return nil
+	}
+	props, err := schemaHeaderProperties(schema)
 	if err != nil || len(props) == 0 {
 		return nil
 	}
@@ -381,7 +418,13 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 	if tool == nil {
 		return nil
 	}
-	props, err := schemaHeaderProperties(toolInputSchema(tool))
+	data, err := inputSchemaJSON(tool)
+	if err != nil || !mayHoldParamHeader(data) {
+		// A schema that does not encode fails every listing, and
+		// registration refuses it; one without the key has no annotation.
+		return nil
+	}
+	props, err := schemaHeaderProperties(data)
 	if err != nil {
 		// A structurally unreadable schema is tolerated rather than rejected,
 		// matching this package's existing policy for schemas that fail to
@@ -390,7 +433,7 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 		// no Mcp-Param-* header is ever generated from it.
 		return nil
 	}
-	if schema, err := genericSchema(toolInputSchema(tool)); err == nil {
+	if schema, err := genericSchema(data); err == nil {
 		var dialect schemaDialect
 		if root, ok := schema.(map[string]any); ok {
 			dialect = schemaDialectOf(root["$schema"])
@@ -407,11 +450,7 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 
 // genericSchema decodes schema into maps and slices, numbers kept as
 // json.Number so no number, however large, fails the decode.
-func genericSchema(schema any) (any, error) {
-	data, err := json.Marshal(schema)
-	if err != nil {
-		return nil, err
-	}
+func genericSchema(data []byte) (any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var generic any
@@ -782,13 +821,4 @@ func rawCallArguments(params json.RawMessage) (map[string]json.RawMessage, bool)
 		return nil, false
 	}
 	return raw.Arguments, true
-}
-
-// toolInputSchema returns the tool's input schema in whichever form it was
-// supplied, preferring the raw JSON schema when set.
-func toolInputSchema(tool *Tool) any {
-	if len(tool.RawInputSchema) > 0 {
-		return tool.RawInputSchema
-	}
-	return tool.InputSchema
 }
