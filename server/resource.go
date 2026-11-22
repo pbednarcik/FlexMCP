@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yosida95/uritemplate/v3"
+
 	"github.com/pbednarcik/flexmcp/mcp"
 )
 
@@ -312,24 +314,30 @@ func (s *MCPServer) handleReadResource(
 		return readResourceResult(contents), nil
 	}
 
-	// No direct handler: the templates are tried. Among those matching the
-	// URI, the one with the longest literal prefix is served, and between
-	// equal prefixes the one registered first, so two templates matching a
-	// URI answer the same way every time.
+	// No direct handler: the templates are tried. Among those whose
+	// variables match the URI, not only their regexp, the one with the
+	// longest literal prefix is served, and between equal prefixes the one
+	// registered first, so two templates matching a URI answer the same way
+	// every time.
 	var best *resourceTemplateEntry
+	var matchedVars uritemplate.Values
 	for _, entry := range s.resourceTemplates {
 		if entry.template.URITemplate == nil || !matchesTemplate(request.Params.URI, entry.template.URITemplate) {
 			continue
 		}
-		if best == nil || entry.literal > best.literal || (entry.literal == best.literal && entry.order < best.order) {
-			best = &entry
+		if best != nil && (entry.literal < best.literal || (entry.literal == best.literal && entry.order > best.order)) {
+			continue
 		}
+		vars := entry.template.URITemplate.Match(request.Params.URI)
+		if vars == nil {
+			continue
+		}
+		best, matchedVars = &entry, vars
 	}
 	var matchedHandler ResourceTemplateHandlerFunc
 	matched := best != nil
 	if matched {
 		matchedHandler = best.handler
-		matchedVars := best.template.URITemplate.Match(request.Params.URI)
 		// Convert matched variables to a map
 		request.Params.Arguments = make(map[string]any, len(matchedVars))
 		for name, value := range matchedVars {
