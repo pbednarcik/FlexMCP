@@ -1360,6 +1360,12 @@ func TestStreamableHTTP_ShutdownEndsOpenListenStreams(t *testing.T) {
 	defer cancel()
 	require.NoError(t, httpServer.Shutdown(shutdownCtx), "an open listen stream held Shutdown")
 
+	// The server ended the subscription: it answers the listen request,
+	// then closes the stream (Patterns.md row 19).
+	completion := nextListenMessage(t, stream)
+	assert.JSONEq(t, "7", string(completion.ID), "the listen request is answered")
+	require.NotNil(t, completion.Result)
+	assert.EqualValues(t, 7, completion.Result.Meta["io.modelcontextprotocol/subscriptionId"])
 	select {
 	case _, open := <-stream:
 		assert.False(t, open, "the stream delivered a message instead of closing")

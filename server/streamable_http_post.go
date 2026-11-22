@@ -179,7 +179,11 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	x.header = headerContext{Context: ctx, header: r.header()}
 	ctx = &x.header
 
-	// A listen stream ends when Shutdown says so; see Shutdown.
+	// A listen stream ends when Shutdown says so; see Shutdown. The response
+	// is still written then, ending the subscription with its result
+	// (Patterns.md row 19): only the connection's own end means nobody is
+	// there to answer.
+	responseCtx := ctx
 	if listening && s.shutdown != nil {
 		var stop context.CancelFunc
 		ctx, stop = context.WithCancel(ctx)
@@ -248,7 +252,7 @@ drainLoop:
 	}
 
 	x.mu.Unlock()
-	if ctx.Err() != nil {
+	if responseCtx.Err() != nil {
 		// The connection is gone; there is nobody to answer.
 		return
 	}

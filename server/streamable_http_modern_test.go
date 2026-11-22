@@ -485,10 +485,14 @@ func TestModernProtocol_ForwarderDoesNotOutliveTheRequest(t *testing.T) {
 
 // listenMessage is a notification read off a subscriptions/listen stream.
 type listenMessage struct {
-	Method string `json:"method"`
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
 	Params struct {
 		Meta map[string]any `json:"_meta"`
 	} `json:"params"`
+	Result *struct {
+		Meta map[string]any `json:"_meta"`
+	} `json:"result"`
 }
 
 // openListenStream opens a modern subscriptions/listen stream with the given
