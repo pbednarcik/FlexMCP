@@ -1,5 +1,7 @@
 package mcp
 
+import "slices"
+
 // PropertyOption is a function that configures a property in a Tool's input schema.
 // It allows for flexible configuration of JSON Schema properties using the functional options pattern.
 type PropertyOption func(map[string]any)
@@ -140,6 +142,19 @@ func DefaultArray[T any](value []T) PropertyOption {
 // Property Type Helpers
 //
 
+// setInputProperty stores schema as the tool's input property name. A
+// required flag moves from the property schema into InputSchema.Required,
+// listed once however often the property is declared.
+func setInputProperty(t *Tool, name string, schema map[string]any) {
+	if required, ok := schema["required"].(bool); ok && required {
+		delete(schema, "required")
+		if !slices.Contains(t.InputSchema.Required, name) {
+			t.InputSchema.Required = append(t.InputSchema.Required, name)
+		}
+	}
+	t.InputSchema.Properties[name] = schema
+}
+
 // WithInteger adds an integer property to the tool schema.
 // It accepts property options to configure the integer property's behavior and constraints.
 func WithInteger(name string, opts ...PropertyOption) ToolOption {
@@ -152,13 +167,7 @@ func WithInteger(name string, opts ...PropertyOption) ToolOption {
 			opt(schema)
 		}
 
-		// Remove required from property schema and add to InputSchema.required
-		if required, ok := schema["required"].(bool); ok && required {
-			delete(schema, "required")
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
-		}
-
-		t.InputSchema.Properties[name] = schema
+		setInputProperty(t, name, schema)
 	}
 }
 
@@ -174,13 +183,7 @@ func WithBoolean(name string, opts ...PropertyOption) ToolOption {
 			opt(schema)
 		}
 
-		// Remove required from property schema and add to InputSchema.required
-		if required, ok := schema["required"].(bool); ok && required {
-			delete(schema, "required")
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
-		}
-
-		t.InputSchema.Properties[name] = schema
+		setInputProperty(t, name, schema)
 	}
 }
 
@@ -196,13 +199,7 @@ func WithNumber(name string, opts ...PropertyOption) ToolOption {
 			opt(schema)
 		}
 
-		// Remove required from property schema and add to InputSchema.required
-		if required, ok := schema["required"].(bool); ok && required {
-			delete(schema, "required")
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
-		}
-
-		t.InputSchema.Properties[name] = schema
+		setInputProperty(t, name, schema)
 	}
 }
 
@@ -218,13 +215,7 @@ func WithString(name string, opts ...PropertyOption) ToolOption {
 			opt(schema)
 		}
 
-		// Remove required from property schema and add to InputSchema.required
-		if required, ok := schema["required"].(bool); ok && required {
-			delete(schema, "required")
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
-		}
-
-		t.InputSchema.Properties[name] = schema
+		setInputProperty(t, name, schema)
 	}
 }
 
@@ -241,13 +232,7 @@ func WithObject(name string, opts ...PropertyOption) ToolOption {
 			opt(schema)
 		}
 
-		// Remove required from property schema and add to InputSchema.required
-		if required, ok := schema["required"].(bool); ok && required {
-			delete(schema, "required")
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
-		}
-
-		t.InputSchema.Properties[name] = schema
+		setInputProperty(t, name, schema)
 	}
 }
 
@@ -265,13 +250,7 @@ func WithArray(name string, opts ...PropertyOption) ToolOption {
 			opt(schema)
 		}
 
-		// Remove required from property schema and add to InputSchema.required
-		if required, ok := schema["required"].(bool); ok && required {
-			delete(schema, "required")
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
-		}
-
-		t.InputSchema.Properties[name] = schema
+		setInputProperty(t, name, schema)
 	}
 }
 
@@ -286,13 +265,7 @@ func WithAny(name string, opts ...PropertyOption) ToolOption {
 			opt(schema)
 		}
 
-		// Remove required from property schema and add to InputSchema.required
-		if required, ok := schema["required"].(bool); ok && required {
-			delete(schema, "required")
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
-		}
-
-		t.InputSchema.Properties[name] = schema
+		setInputProperty(t, name, schema)
 	}
 }
 
