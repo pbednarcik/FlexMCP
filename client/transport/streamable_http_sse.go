@@ -168,12 +168,8 @@ func awaitSSEResponse(ctx context.Context, responses <-chan *JSONRPCResponse, en
 		}
 		return response, nil
 	case <-ctx.Done():
-		select {
-		case response := <-responses:
-			if response != nil {
-				return response, nil
-			}
-		default:
+		if response, ok := queuedResponse(responses); ok {
+			return response, nil
 		}
 		return nil, ctx.Err()
 	}

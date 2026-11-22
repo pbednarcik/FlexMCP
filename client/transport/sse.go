@@ -78,6 +78,9 @@ type SSE struct {
 	// stream ended has found the transport open and has not yet taken
 	// lifecycleMu to settle the end.
 	testHookStreamEnding func()
+	// testHookAwaitResponse, nil outside tests, runs when a request is
+	// posted and before its response is waited for.
+	testHookAwaitResponse func()
 
 	endpointTimeout time.Duration
 	responseTimeout time.Duration
@@ -556,16 +559,25 @@ func (c *SSE) SendRequest(
 	}
 	c.responses[idKey] = responseChan
 	c.mu.Unlock()
-	deleteResponseChan := func() {
+	// forget forgets the request's channel and takes a response queued on it.
+	// The reader queues a response and forgets its channel under mu, so once
+	// the channel is forgotten no response can follow; one already queued
+	// arrived before whatever ends the wait, and is the answer. Every exit
+	// from here on looks for one: a server may send the response on the
+	// stream before it answers the POST.
+	forget := func() (*JSONRPCResponse, bool) {
 		c.mu.Lock()
 		delete(c.responses, idKey)
 		c.mu.Unlock()
+		return queuedResponse(responseChan)
 	}
 
 	// Send request
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		deleteResponseChan()
+		if response, ok := forget(); ok {
+			return response, nil
+		}
 		if streamErr := c.streamError(); streamErr != nil {
 			return nil, streamErr
 		}
@@ -584,7 +596,9 @@ func (c *SSE) SendRequest(
 	releaseResponse(cancelPost, resp)
 
 	if err != nil {
-		deleteResponseChan()
+		if response, ok := forget(); ok {
+			return response, nil
+		}
 		if streamErr := c.streamError(); streamErr != nil {
 			return nil, streamErr
 		}
@@ -593,7 +607,9 @@ func (c *SSE) SendRequest(
 
 	// Check if we got an error response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		deleteResponseChan()
+		if response, ok := forget(); ok {
+			return response, nil
+		}
 		if resp.StatusCode == http.StatusUnauthorized || insufficientScope(resp, c.oauthHandler) {
 			return nil, authorizationError(resp, c.oauthHandler, c.oauthRecipient)
 		}
@@ -606,7 +622,9 @@ func (c *SSE) SendRequest(
 		remaining := time.Until(deadline)
 		// Check if context deadline has already passed
 		if remaining <= 0 {
-			deleteResponseChan()
+			if response, ok := forget(); ok {
+				return response, nil
+			}
 			return nil, ctx.Err()
 		}
 		// Use the shorter of remaining time or default timeout
@@ -618,13 +636,20 @@ func (c *SSE) SendRequest(
 	timer := time.NewTimer(responseTimeout)
 	defer timer.Stop()
 
+	if c.testHookAwaitResponse != nil {
+		c.testHookAwaitResponse()
+	}
 	select {
 	case <-ctx.Done():
-		deleteResponseChan()
+		if response, ok := forget(); ok {
+			return response, nil
+		}
 		return nil, ctx.Err()
 	case <-timer.C:
 		// Timeout handling
-		deleteResponseChan()
+		if response, ok := forget(); ok {
+			return response, nil
+		}
 		return nil, fmt.Errorf("timeout waiting for SSE response after %v: %w", responseTimeout, context.DeadlineExceeded)
 	case response, ok := <-responseChan:
 		if ok {

@@ -35,6 +35,10 @@ var (
 // using JSON-RPC messages. The client handles message routing between requests and
 // responses, and supports asynchronous notifications.
 type Stdio struct {
+	// testHookAwaitResponse, nil outside tests, runs when a request is
+	// written and before its response is waited for.
+	testHookAwaitResponse func()
+
 	command string
 	args    []string
 	env     []string
@@ -477,19 +481,25 @@ func (c *Stdio) SendRequest(
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
+	if c.testHookAwaitResponse != nil {
+		c.testHookAwaitResponse()
+	}
 	select {
 	case <-c.done:
-		// Drain responseChan first: a valid response may have been delivered
-		// just before readResponses closed the done channel on EOF.
-		select {
-		case response := <-responseChan:
-			return received(response)
-		default:
-		}
+		// A response delivered just before readResponses closed done on EOF
+		// is the answer.
 		deleteResponseChan()
+		if response, ok := queuedResponse(responseChan); ok {
+			return received(response)
+		}
 		return nil, ErrTransportClosed
 	case <-ctx.Done():
+		// A response already queued arrived before the cancel took, and is
+		// the answer.
 		deleteResponseChan()
+		if response, ok := queuedResponse(responseChan); ok {
+			return received(response)
+		}
 		return nil, ctx.Err()
 	case response := <-responseChan:
 		return received(response)

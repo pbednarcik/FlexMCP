@@ -165,16 +165,16 @@ func (c *Stdio) readResponses(ready chan struct{}) {
 }
 
 // answer hands response to the request waiting under idKey, if any; a nil
-// response tells it the answer could not be decoded.
+// response tells it the answer could not be decoded. It queues the response
+// and forgets the request's channel under mu, so a waiter that has forgotten
+// the channel finds any response that will ever come already queued. The
+// send cannot block: the channel holds one, and is forgotten with it.
 func (c *Stdio) answer(idKey responseKey, response *JSONRPCResponse) {
-	c.mu.RLock()
-	ch, exists := c.responses[idKey]
-	c.mu.RUnlock()
-	if exists {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ch, exists := c.responses[idKey]; exists {
 		ch <- response
-		c.mu.Lock()
 		delete(c.responses, idKey)
-		c.mu.Unlock()
 	}
 }
 
