@@ -72,6 +72,38 @@ func (tp *targetedInProcess) listen(t *testing.T) any {
 	return id
 }
 
+// copiesOf waits for a notification of method on each stream of ids, then
+// for 200 ms more, and returns how many copies each stream received, in the
+// order of ids. Any other notification, or one on another stream, fails the
+// test.
+func (tp *targetedInProcess) copiesOf(t *testing.T, method string, ids ...any) []int {
+	t.Helper()
+	copies := make([]int, len(ids))
+	count := func(n mcp.JSONRPCNotification) {
+		id := n.Params.Meta[mcp.MetaKeySubscriptionID]
+		at := slices.IndexFunc(ids, func(want any) bool { return assert.ObjectsAreEqual(want, id) })
+		if n.Method != method || at < 0 {
+			t.Errorf("unexpected notification %s %v", n.Method, n.Params.Meta)
+			return
+		}
+		copies[at]++
+	}
+	for i := range ids {
+		for copies[i] == 0 && !t.Failed() {
+			count(receive(t, tp.notifications))
+		}
+	}
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case n := <-tp.notifications:
+			count(n)
+		case <-deadline:
+			return copies
+		}
+	}
+}
+
 // quiet fails the test if a notification arrives within 200 ms.
 func (tp *targetedInProcess) quiet(t *testing.T) {
 	t.Helper()
@@ -118,14 +150,13 @@ func TestInProcessTargetedNotificationHonoursTheStream(t *testing.T) {
 		tp := newTargetedInProcess(t, mcp.ProtocolVersion20260728)
 		one, two := tp.listen(t), tp.listen(t)
 		require.NoError(t, tp.server.SendNotificationToSpecificClient(tp.sessionID, tools, nil))
-		first, second := receive(t, tp.notifications), receive(t, tp.notifications)
-		assert.Equal(t, tools, first.Method)
-		assert.Equal(t, tools, second.Method)
-		assert.ElementsMatch(t, []any{one, two}, []any{
-			first.Params.Meta[mcp.MetaKeySubscriptionID],
-			second.Params.Meta[mcp.MetaKeySubscriptionID],
-		})
-		tp.quiet(t)
+		// A listen still setting its stream up sends the session the list
+		// change again once the stream is recorded, as the send may have
+		// missed it, and that copy reaches every stream: each may receive one
+		// more per listen, never more.
+		for i, n := range tp.copiesOf(t, tools, one, two) {
+			assert.LessOrEqual(t, n, 3, "copies on stream %d", i+1)
+		}
 	})
 
 	t.Run("a modern session without a stream receives nothing", func(t *testing.T) {

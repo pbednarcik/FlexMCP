@@ -84,6 +84,38 @@ func (ts *targetedStdio) quiet(t *testing.T) {
 	}
 }
 
+// copiesOf waits for a notification of method on each stream of ids, then
+// for 200 ms more, and returns how many copies each stream received. Any
+// other notification, or one on another stream, fails the test.
+func (ts *targetedStdio) copiesOf(t *testing.T, method string, ids ...string) map[string]int {
+	t.Helper()
+	copies := make(map[string]int, len(ids))
+	count := func(msg map[string]any) {
+		id, _ := streamIDOf(msg).(string)
+		if msg["method"] != method || !slices.Contains(ids, id) {
+			t.Errorf("unexpected notification %v", msg)
+			return
+		}
+		copies[id]++
+	}
+	for _, id := range ids {
+		for copies[id] == 0 && !t.Failed() {
+			count(ts.next(t))
+		}
+	}
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case msg := <-ts.out:
+			if isNotification(msg) {
+				count(msg)
+			}
+		case <-deadline:
+			return copies
+		}
+	}
+}
+
 func isNotification(m map[string]any) bool {
 	_, hasMethod := m["method"]
 	_, hasID := m["id"]
@@ -138,11 +170,14 @@ func TestSendNotificationToSpecificClientHonoursListenStreams(t *testing.T) {
 		ts.listen(t, "listen-1")
 		ts.listen(t, "listen-2")
 		require.NoError(t, ts.server.SendNotificationToSpecificClient(ts.id(t), tools, nil))
-		first, second := ts.next(t), ts.next(t)
-		assert.Equal(t, tools, first["method"])
-		assert.Equal(t, tools, second["method"])
-		assert.ElementsMatch(t, []any{"listen-1", "listen-2"}, []any{streamIDOf(first), streamIDOf(second)})
-		ts.quiet(t)
+		copies := ts.copiesOf(t, tools, "listen-1", "listen-2")
+		// A listen still setting its stream up sends the session the list
+		// change again once the stream is recorded, as the send may have
+		// missed it (see listChangeCounts), and that copy reaches every
+		// stream: each may receive one more per listen, never more.
+		for id, n := range copies {
+			assert.LessOrEqual(t, n, 3, "copies on %v", id)
+		}
 	})
 
 	t.Run("a modern session without a stream receives nothing", func(t *testing.T) {
