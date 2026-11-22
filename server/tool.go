@@ -209,7 +209,6 @@ func (s *MCPServer) AddTaskTool(tool mcp.Tool, handler TaskToolHandlerFunc) {
 // tool is registered again. Changing a registered tool's definition while
 // calls run is a data race anyway.
 func (s *MCPServer) AddTools(tools ...ServerTool) {
-	s.implicitlyRegisterToolCapabilities()
 	s.addTools(tools)
 
 	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
@@ -243,6 +242,9 @@ func (s *MCPServer) addTools(tools []ServerTool) {
 		staged[name] = &entry
 		schemas[name] = compiled
 	}
+	// The batch is checked: only now does the server serve tools, so a
+	// refused one leaves it as it was.
+	s.implicitlyRegisterToolCapabilities()
 	maps.Copy(s.tools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
@@ -257,7 +259,6 @@ func (s *MCPServer) addTools(tools []ServerTool) {
 // again. Changing a registered tool's definition while calls run is a data
 // race anyway.
 func (s *MCPServer) AddTaskTools(taskTools ...ServerTaskTool) {
-	s.implicitlyRegisterToolCapabilities()
 	s.addTaskTools(taskTools)
 
 	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
@@ -288,6 +289,9 @@ func (s *MCPServer) addTaskTools(taskTools []ServerTaskTool) {
 		staged[name] = entry
 		schemas[name] = compiled
 	}
+	// The batch is checked: only now does the server serve tools, so a
+	// refused one leaves it as it was.
+	s.implicitlyRegisterToolCapabilities()
 	maps.Copy(s.taskTools, staged)
 	for name, entry := range staged {
 		s.toolHeaderBindings[name] = keepHeaderBindings(&entry.Tool)
@@ -301,7 +305,6 @@ func (s *MCPServer) addTaskTools(taskTools []ServerTaskTool) {
 // registered again. Changing a registered tool's definition while calls run
 // is a data race anyway.
 func (s *MCPServer) SetTools(tools ...ServerTool) {
-	s.implicitlyRegisterToolCapabilities()
 	s.replaceTools(tools)
 
 	// When the list of available tools changes, servers that declared the listChanged capability SHOULD send a notification.
@@ -332,6 +335,9 @@ func (s *MCPServer) replaceTools(tools []ServerTool) {
 		newTools[name] = &entry
 		schemas[name] = compiled
 	}
+	// The batch is checked: only now does the server serve tools, so a
+	// refused one leaves it as it was.
+	s.implicitlyRegisterToolCapabilities()
 	// The old tools' cached schemas go first, so the new ones compiled above
 	// are the ones kept.
 	for name := range s.tools {

@@ -384,7 +384,8 @@ func (s *MCPServer) GenerateInProcessSessionID() string {
 
 // Register tool capabilities due to a tool being added.  Default to
 // listChanged: true, but don't change the value if we've already explicitly
-// registered tools.listChanged false.
+// registered tools.listChanged false. Called with toolsMu held, once a batch
+// has passed its checks: capabilitiesMu is never held while toolsMu is taken.
 func (s *MCPServer) implicitlyRegisterToolCapabilities() {
 	s.implicitlyRegisterCapabilities(
 		func() bool { return s.capabilities.tools != nil },
