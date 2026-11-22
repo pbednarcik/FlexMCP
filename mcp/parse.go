@@ -462,6 +462,11 @@ func GetTextFromContent(content any) string {
 	switch c := content.(type) {
 	case TextContent:
 		return c.Text
+	case *TextContent:
+		if c == nil {
+			return fmt.Sprint(c)
+		}
+		return c.Text
 	case map[string]any:
 		// Handle JSON unmarshaled content
 		if contentType, exists := c["type"]; exists && contentType == "text" {

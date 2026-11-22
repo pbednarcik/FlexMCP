@@ -68,8 +68,12 @@ var (
 
 // Helper functions for type assertions
 
-// asType attempts to cast the given interface to the given type
+// asType attempts to cast the given interface to the given type. A *T is
+// one too: content types have value receivers, so a pointer is a Content.
 func asType[T any](content any) (*T, bool) {
+	if ptr, ok := content.(*T); ok {
+		return ptr, ptr != nil
+	}
 	tc, ok := content.(T)
 	if !ok {
 		return nil, false
