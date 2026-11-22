@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -471,10 +472,10 @@ func TestTaskHooks_CreatedHookPrecedesCancellation(t *testing.T) {
 		close(cancelled)
 	})
 	server := NewMCPServer("test-server", "1.0.0", WithTaskHooks(hooks), WithTaskCapabilities(true, true, false))
-	handlerDone := make(chan struct{})
+	var handlerRan atomic.Bool
 	server.AddTaskTool(mcp.Tool{Name: "slow", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
 		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CreateTaskResult, error) {
-			defer close(handlerDone)
+			handlerRan.Store(true)
 			<-ctx.Done()
 			return nil, ctx.Err()
 		})
@@ -493,12 +494,14 @@ func TestTaskHooks_CreatedHookPrecedesCancellation(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the task was never cancelled")
 	}
-	// The cancellation reached the handler, which started after it.
-	select {
-	case <-handlerDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the handler of a task cancelled during its created hook kept running")
-	}
+	// The task ended before its handler would start: the handler is not run,
+	// and its slot is given back.
+	require.Eventually(t, func() bool {
+		server.tasksMu.RLock()
+		defer server.tasksMu.RUnlock()
+		return server.activeTasks == 0
+	}, 5*time.Second, time.Millisecond)
+	assert.False(t, handlerRan.Load(), "the handler of a task cancelled during its created hook ran")
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, []string{"created", "cancelled"}, events)

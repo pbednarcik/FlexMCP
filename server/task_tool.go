@@ -199,7 +199,11 @@ func (s *MCPServer) executeTaskTool(
 	ended := s.tasks[entry.task.TaskId] != entry || entry.completed
 	s.tasksMu.Unlock()
 	if ended {
+		// The task was cancelled or expired before its handler started: the
+		// handler is not run, as its work would be for a task already over.
 		cancel()
+		s.markTaskCancelled(ctx, entry)
+		return
 	}
 
 	// The handler runs inside the task tool middlewares, outermost first;
@@ -221,53 +225,7 @@ func (s *MCPServer) executeTaskTool(
 		// and fails the task like any other error. cancelTask sets the status
 		// of a cancelled task; a handler that saw the cancel first sets it here.
 		if taskCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-			// Check if task was already cancelled via tasks/cancel
-			s.tasksMu.Lock()
-			alreadyCancelled := entry.task.Status == mcp.TaskStatusCancelled
-			s.tasksMu.Unlock()
-
-			if !alreadyCancelled {
-				// Handler detected cancellation before tasks/cancel was called
-				// Mark as cancelled with the context error message
-				cancelledAt := time.Now()
-				duration := cancelledAt.Sub(entry.createdAt)
-
-				// The metrics and the status are read under the lock; the
-				// notification and the hook go outside it.
-				var metrics *TaskMetrics
-				var status *mcp.Task
-				s.tasksMu.Lock()
-				if !entry.completed {
-					entry.task.Status = mcp.TaskStatusCancelled
-					entry.task.StatusMessage = "Task cancelled"
-					entry.task.LastUpdatedAt = cancelledAt.UTC().Format(time.RFC3339)
-					entry.completed = true
-					close(entry.done)
-
-					s.releaseTaskSlotLocked(entry)
-					status = new(entry.task)
-
-					if s.taskHooks != nil {
-						metrics = &TaskMetrics{
-							TaskID:        entry.task.TaskId,
-							ToolName:      entry.toolName,
-							Status:        entry.task.Status,
-							StatusMessage: entry.task.StatusMessage,
-							CreatedAt:     entry.createdAt,
-							CompletedAt:   &cancelledAt,
-							Duration:      duration,
-							SessionID:     entry.sessionID,
-						}
-					}
-				}
-				s.tasksMu.Unlock()
-				if status != nil {
-					s.sendTaskStatusNotification(entry.sessionID, *status)
-				}
-				if metrics != nil {
-					s.fireTaskHook(ctx, entry, func(ctx context.Context) { s.taskHooks.taskCancelled(ctx, *metrics) })
-				}
-			}
+			s.markTaskCancelled(ctx, entry)
 			return
 		}
 
@@ -333,7 +291,11 @@ func (s *MCPServer) executeRegularToolAsTask(
 	ended := s.tasks[entry.task.TaskId] != entry || entry.completed
 	s.tasksMu.Unlock()
 	if ended {
+		// The task was cancelled or expired before its handler started: the
+		// handler is not run, as its work would be for a task already over.
 		cancel()
+		s.markTaskCancelled(ctx, entry)
+		return
 	}
 
 	// The handler runs inside the tool middlewares, the chain built outside
@@ -355,53 +317,7 @@ func (s *MCPServer) executeRegularToolAsTask(
 		// and fails the task like any other error. cancelTask sets the status
 		// of a cancelled task; a handler that saw the cancel first sets it here.
 		if taskCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-			// Check if task was already cancelled via tasks/cancel
-			s.tasksMu.Lock()
-			alreadyCancelled := entry.task.Status == mcp.TaskStatusCancelled
-			s.tasksMu.Unlock()
-
-			if !alreadyCancelled {
-				// Handler detected cancellation before tasks/cancel was called
-				// Mark as cancelled with the context error message
-				cancelledAt := time.Now()
-				duration := cancelledAt.Sub(entry.createdAt)
-
-				// The metrics and the status are read under the lock; the
-				// notification and the hook go outside it.
-				var metrics *TaskMetrics
-				var status *mcp.Task
-				s.tasksMu.Lock()
-				if !entry.completed {
-					entry.task.Status = mcp.TaskStatusCancelled
-					entry.task.StatusMessage = "Task cancelled"
-					entry.task.LastUpdatedAt = cancelledAt.UTC().Format(time.RFC3339)
-					entry.completed = true
-					close(entry.done)
-
-					s.releaseTaskSlotLocked(entry)
-					status = new(entry.task)
-
-					if s.taskHooks != nil {
-						metrics = &TaskMetrics{
-							TaskID:        entry.task.TaskId,
-							ToolName:      entry.toolName,
-							Status:        entry.task.Status,
-							StatusMessage: entry.task.StatusMessage,
-							CreatedAt:     entry.createdAt,
-							CompletedAt:   &cancelledAt,
-							Duration:      duration,
-							SessionID:     entry.sessionID,
-						}
-					}
-				}
-				s.tasksMu.Unlock()
-				if status != nil {
-					s.sendTaskStatusNotification(entry.sessionID, *status)
-				}
-				if metrics != nil {
-					s.fireTaskHook(ctx, entry, func(ctx context.Context) { s.taskHooks.taskCancelled(ctx, *metrics) })
-				}
-			}
+			s.markTaskCancelled(ctx, entry)
 			return
 		}
 
@@ -452,4 +368,56 @@ func (s *MCPServer) executeRegularToolAsTask(
 		}
 	}
 	s.completeTask(entry, s.limitToolResult(result), nil)
+}
+
+// markTaskCancelled marks entry cancelled, when tasks/cancel has not done so
+// already, and tells its session and the cancelled hook. A task whose
+// handler saw its context end, or that ended before its handler started, is
+// marked here.
+func (s *MCPServer) markTaskCancelled(ctx context.Context, entry *taskEntry) {
+	// Check if task was already cancelled via tasks/cancel
+	s.tasksMu.Lock()
+	alreadyCancelled := entry.task.Status == mcp.TaskStatusCancelled
+	s.tasksMu.Unlock()
+
+	if !alreadyCancelled {
+		cancelledAt := time.Now()
+		duration := cancelledAt.Sub(entry.createdAt)
+
+		// The metrics and the status are read under the lock; the
+		// notification and the hook go outside it.
+		var metrics *TaskMetrics
+		var status *mcp.Task
+		s.tasksMu.Lock()
+		if !entry.completed {
+			entry.task.Status = mcp.TaskStatusCancelled
+			entry.task.StatusMessage = "Task cancelled"
+			entry.task.LastUpdatedAt = cancelledAt.UTC().Format(time.RFC3339)
+			entry.completed = true
+			close(entry.done)
+
+			s.releaseTaskSlotLocked(entry)
+			status = new(entry.task)
+
+			if s.taskHooks != nil {
+				metrics = &TaskMetrics{
+					TaskID:        entry.task.TaskId,
+					ToolName:      entry.toolName,
+					Status:        entry.task.Status,
+					StatusMessage: entry.task.StatusMessage,
+					CreatedAt:     entry.createdAt,
+					CompletedAt:   &cancelledAt,
+					Duration:      duration,
+					SessionID:     entry.sessionID,
+				}
+			}
+		}
+		s.tasksMu.Unlock()
+		if status != nil {
+			s.sendTaskStatusNotification(entry.sessionID, *status)
+		}
+		if metrics != nil {
+			s.fireTaskHook(ctx, entry, func(ctx context.Context) { s.taskHooks.taskCancelled(ctx, *metrics) })
+		}
+	}
 }

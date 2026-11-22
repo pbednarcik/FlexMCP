@@ -186,13 +186,24 @@ func TestScheduleTaskCleanup_CancelsRunningTaskOnTTL(t *testing.T) {
 				}
 			}()
 
-			select {
-			case <-started:
-			case <-time.After(time.Second):
-				t.Fatal("task handler did not start")
-			}
-
-			if !tt.expireBeforeStart {
+			if tt.expireBeforeStart {
+				// A task that expired before its handler started is not run.
+				select {
+				case <-exited:
+				case <-time.After(time.Second):
+					t.Fatal("task execution did not exit for an expired task")
+				}
+				select {
+				case <-started:
+					t.Fatal("the handler of an expired task ran")
+				default:
+				}
+			} else {
+				select {
+				case <-started:
+				case <-time.After(time.Second):
+					t.Fatal("task handler did not start")
+				}
 				s.scheduleTaskCleanup(taskID, entry, 50)
 			}
 
