@@ -226,26 +226,36 @@ func propertyOrder(raw json.RawMessage) []string {
 // still nil once $defs is decoded and $schema names no draft before 2019-09;
 // otherwise it stays in AdditionalFields as written, refs untouched.
 func toolArgumentsSchemaUnmarshalJSON(data []byte, tis *ToolArgumentsSchema) error {
-	// Use a temporary type to avoid infinite recursion
-	type Alias ToolArgumentsSchema
-	aux := &struct {
-		// Defs, Definitions and AdditionalProperties shadow their Alias
-		// fields so their numbers are decoded exactly.
-		Defs                 json.RawMessage `json:"$defs,omitempty"`
-		Definitions          json.RawMessage `json:"definitions,omitempty"`
-		AdditionalProperties json.RawMessage `json:"additionalProperties,omitempty"`
-		// Type shadows Alias.Type so an array-valued type decodes into Types.
-		Type json.RawMessage `json:"type"`
-		// Properties shadows Alias.Properties so the raw bytes keep the key
-		// order and its numbers are decoded exactly.
-		Properties json.RawMessage `json:"properties"`
-		*Alias
-	}{
-		Alias: (*Alias)(tis),
-	}
-
-	if err := json.Unmarshal(data, aux); err != nil {
+	// The modelled keywords are looked up by their exact names, as JSON keys
+	// and JSON Schema keywords are case-sensitive: a decode into struct
+	// fields matches a name in any case, and would take "Properties" for
+	// properties while AdditionalFields kept it too, so the schema encoded
+	// again with a properties it never had. A key in another case is an
+	// unknown keyword, kept in AdditionalFields as written.
+	var keywords map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keywords); err != nil {
 		return err
+	}
+	aux := struct {
+		// Defs, Definitions and AdditionalProperties are kept raw so their
+		// numbers are decoded exactly.
+		Defs, Definitions, AdditionalProperties json.RawMessage
+		// Type is kept raw so an array-valued type decodes into Types.
+		Type json.RawMessage
+		// Properties is kept raw so the raw bytes keep the key order and its
+		// numbers are decoded exactly.
+		Properties json.RawMessage
+	}{
+		Defs:                 keywords["$defs"],
+		Definitions:          keywords["definitions"],
+		AdditionalProperties: keywords["additionalProperties"],
+		Type:                 keywords["type"],
+		Properties:           keywords["properties"],
+	}
+	if required, ok := keywords["required"]; ok {
+		if err := json.Unmarshal(required, &tis.Required); err != nil {
+			return err
+		}
 	}
 
 	if len(aux.Type) > 0 {
