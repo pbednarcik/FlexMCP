@@ -498,3 +498,21 @@ func TestSchemaFor_NativeCustomEncoding(t *testing.T) {
 	assert.Contains(t, nodeProps, "count")
 	assert.NotContains(t, nodeProps, "other")
 }
+
+func TestSchemaFor_QuotedInt(t *testing.T) {
+	type request struct {
+		Count int    `json:"count,string" jsonschema_description:"Number of results"`
+		Mode  string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	raw, err := SchemaForRaw[request]()
+	require.NoError(t, err)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	properties := schema["properties"].(map[string]any)
+	count := properties["count"].(map[string]any)
+	payload, err := json.Marshal(request{Count: 42, Mode: "fast"})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"count":"42","mode":"fast"}`, string(payload))
+	assert.Equal(t, "string", count["type"])
+	assert.Equal(t, "Number of results", count["description"])
+}

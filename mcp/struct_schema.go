@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -35,6 +36,7 @@ func schemaFor[T any]() (*jsonschema.Schema, error) {
 	}
 
 	applyStructFieldTags(reflect.TypeFor[T](), schema)
+	applyQuotedFieldTags(reflect.TypeFor[T](), schema, false)
 	return schema, nil
 }
 
@@ -320,6 +322,97 @@ func nativeJSONFieldSelection(
 
 func sameJSONField(a, b reflect.StructField) bool {
 	return a.Name == b.Name && a.Type == b.Type && a.Tag == b.Tag
+}
+
+// applyQuotedFieldTags rewrites the schema of every selected field tagged
+// json:",string" to the quoted form encoding/json reads and writes, through
+// containers and nested structs alike.
+func applyQuotedFieldTags(t reflect.Type, schema *jsonschema.Schema, addressable bool) {
+	if schema == nil || hasCustomJSONEncoding(t, addressable) {
+		return
+	}
+	switch t.Kind() {
+	case reflect.Pointer:
+		applyQuotedFieldTags(t.Elem(), schema, true)
+	case reflect.Slice:
+		applyQuotedFieldTags(t.Elem(), schema.Items, true)
+	case reflect.Array:
+		applyQuotedFieldTags(t.Elem(), schema.Items, addressable)
+	case reflect.Map:
+		if t.Key().Kind() == reflect.String {
+			applyQuotedFieldTags(t.Elem(), schema.AdditionalProperties, false)
+		}
+	case reflect.Struct:
+		if schema.Properties == nil {
+			return
+		}
+		// jsonschema-go can accept a recursive embedding; the selection
+		// still returns its fields.
+		fields, _ := selectedJSONFields(t)
+		for _, field := range fields {
+			prop := schema.Properties[field.info.name]
+			if prop == nil {
+				continue
+			}
+			fieldAddressable := addressable || field.throughPointer
+			applyQuotedFieldTags(field.field.Type, prop, fieldAddressable)
+			if field.info.settings["string"] {
+				schema.Properties[field.info.name] = quotedFieldSchema(field.field, prop, fieldAddressable)
+			}
+		}
+	}
+}
+
+// quotedFieldSchema is the schema of a json:",string" field: a string, with
+// the field's own description and enum, each enum value quoted as
+// encoding/json quotes it. encoding/json honours the option only on a bool,
+// number or string, or a pointer to one, and never on a type that encodes
+// itself; any other field keeps schema. Go 1.27's encoding/json quotes
+// through a named pointer type too, where upstream follows the older
+// unnamed-pointer-only rule.
+func quotedFieldSchema(field reflect.StructField, schema *jsonschema.Schema, addressable bool) *jsonschema.Schema {
+	fieldType := field.Type
+	t := fieldType
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+		addressable = true
+	}
+	if hasCustomJSONEncoding(t, addressable) {
+		return schema
+	}
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.String:
+		// The quoted schema carries the selected field's annotations only,
+		// never a shadowed field's.
+		description, enums := fieldSchemaAnnotations(field)
+		quoted := &jsonschema.Schema{Type: "string", Description: description, Enum: enums}
+		// A quoted string is JSON-encoded inside the string; a json.Number
+		// is written as its digits.
+		if t.Kind() == reflect.String && t != reflect.TypeFor[json.Number]() && len(enums) > 0 {
+			quoted.Enum = make([]any, len(enums))
+			for i, value := range enums {
+				quoted.Enum[i] = value
+				if text, ok := value.(string); ok {
+					encoded, _ := json.Marshal(text) // Marshaling a string cannot fail.
+					quoted.Enum[i] = string(encoded)
+				}
+			}
+		}
+		// A pointer field reads and writes null as it did unquoted.
+		if fieldType.Kind() == reflect.Pointer {
+			quoted.Type = ""
+			quoted.Types = []string{"null", "string"}
+			if len(quoted.Enum) > 0 {
+				quoted.Enum = append(slices.Clip(quoted.Enum), nil)
+			}
+		}
+		return quoted
+	default:
+		return schema
+	}
 }
 
 // hasCustomJSONEncoding reports whether encoding/json encodes a value of t
