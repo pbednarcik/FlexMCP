@@ -790,9 +790,11 @@ serves, on whatever address it arrived, public included, and also when the
 connection's address is unknown (then only a loopback name or a listed host
 names the server): a request whose `Host` does not name the server is
 rejected with `403 Forbidden`. List every name clients reach the server by;
-entries match on any port. An entry is a host, not a URL (`mcp.example.com`,
-not `https://mcp.example.com`); an empty entry, or one with only a port,
-names no host and is ignored, so a list of only such entries turns
+entries match on any port. An entry is a host, with or without a port; the
+whitespace around it is dropped, and a URL names its host
+(`https://mcp.example.com/mcp` lists `mcp.example.com`). An entry that names
+no host, such as an empty or blank one, one with only a port, a lone dot or a
+URL without a host, is ignored, so a list of only such entries turns
 nothing on.
 
 Without a list, a request on a public address is not checked: an attacker

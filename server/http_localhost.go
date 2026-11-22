@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 )
 
@@ -32,6 +33,22 @@ func isLoopbackHost(addr string) bool {
 		return false
 	}
 	return ip.IsLoopback()
+}
+
+// allowedHostEntry is entry as WithAllowedHosts keeps it: without the
+// whitespace around it, and a URL's host when it is one, as in
+// "https://mcp.example.com:8443/mcp". ok is false for an entry that names
+// no host: an empty or blank one, one with only a port, a lone dot, or a URL
+// without a host. A URL that does not parse is kept as written, so it still
+// turns the Host check on and names nothing a request sends.
+func allowedHostEntry(entry string) (host string, ok bool) {
+	entry = strings.TrimSpace(entry)
+	if strings.Contains(entry, "://") {
+		if u, err := url.Parse(entry); err == nil {
+			entry = u.Host
+		}
+	}
+	return entry, strings.TrimSuffix(hostName(entry), ".") != ""
 }
 
 // hostName is host without its port and the brackets of an IPv6 literal. A

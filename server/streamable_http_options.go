@@ -234,14 +234,16 @@ func WithStreamableHTTPCORS(opts ...CORSOption) StreamableHTTPOption {
 // preflight answer, and the list would turn away every unlisted browser
 // client there. A host is compared without its port, by ASCII case only
 // and without a trailing dot; an IP literal as an address. An entry is a
-// host, with or without a port, not a URL; an empty one, or one with only a
-// port, names no host and is ignored, so a list of only such entries turns
-// nothing on. Handle applies none of this.
+// host, with or without a port, without the whitespace around it; a URL
+// names its host, so "https://mcp.example.com/mcp" lists mcp.example.com.
+// An entry that names no host, such as an empty or blank one, one with only
+// a port, a lone dot or a URL without a host, is ignored, so a list of only
+// such entries turns nothing on. Handle applies none of this.
 // WithDisableLocalhostProtection turns the list off too.
 func WithAllowedHosts(hosts ...string) StreamableHTTPOption {
 	return func(s *StreamableHTTPServer) {
-		for _, host := range hosts {
-			if hostName(host) != "" {
+		for _, entry := range hosts {
+			if host, ok := allowedHostEntry(entry); ok {
 				s.allowedHosts = append(s.allowedHosts, host)
 			}
 		}
