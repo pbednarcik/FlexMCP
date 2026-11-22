@@ -150,6 +150,27 @@ func (v *outputSchemaValidator) validateStructured(tool mcp.Tool, compiled *json
 	return true, nil
 }
 
+// unlistedOutputSchemaError returns why the tool's structured output schema
+// cannot be encoded, when tools/list leaves it out and output validation
+// would use it: Tool.MarshalJSON writes one only with a type or a keyword it
+// does not model, so the tool's own encode never reaches one with properties
+// or required and neither, and output validation, which takes a schema that
+// does not encode for none, would never check its results. Such a schema is
+// the author's all the same, and one that cannot be encoded is refused, as
+// one tools/list writes is. A schema tools/list writes answers nil, as does
+// one validation would not use either (only $defs or additionalProperties).
+func unlistedOutputSchemaError(tool *mcp.Tool) error {
+	schema := tool.OutputSchema
+	if len(tool.RawOutputSchema) > 0 || schema.Type != "" || schema.Types != nil || len(schema.AdditionalFields) > 0 {
+		return nil
+	}
+	if len(schema.Properties) == 0 && len(schema.Required) == 0 {
+		return nil
+	}
+	_, err := json.Marshal(schema)
+	return err
+}
+
 // outputSchemaJSONFor returns the JSON representation of the tool's output
 // schema. It prefers RawOutputSchema when set, otherwise marshals the
 // structured OutputSchema. The boolean return is false when the tool
