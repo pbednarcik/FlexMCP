@@ -46,8 +46,9 @@ func TestReadOnceDuplicateMembersKeepTheLastValue(t *testing.T) {
 			`,"io.modelcontextprotocol/clientCapabilities":{"roots":{}},"io.modelcontextprotocol/clientCapabilities":{}}}}`)
 		assert.Contains(t, out, `"text":"no roots"`, out)
 	})
+	// A JSON-RPC member named twice is refused before any read (member_names.go).
 	t.Run("params, then empty params", func(t *testing.T) {
 		out := call(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","_meta":{` + version + `,` + caps + `}},"params":{}}`)
-		assert.Contains(t, out, `"code":-32020`, "the header names echo, the last params no tool: %s", out)
+		assert.Contains(t, out, `"code":-32600`, "params named twice is an invalid request: %s", out)
 	})
 }

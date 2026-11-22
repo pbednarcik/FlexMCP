@@ -717,8 +717,11 @@ func (s *StdioServer) processMessage(ctx context.Context, line []byte) error {
 	}
 
 	// A cancellation is noted before the core acts on it, so the cancelled
-	// request's response is dropped whenever its handler returns.
-	if parsed && baseMessage.Method == string(mcp.MethodNotificationCancelled) {
+	// request's response is dropped whenever its handler returns. One whose
+	// member names only fold onto the defined ones is not: the core refuses
+	// it, and the request goes on.
+	if parsed && baseMessage.Method == string(mcp.MethodNotificationCancelled) &&
+		checkMemberNames(rawMessage, mcp.MethodNotificationCancelled).err() == nil {
 		cancelled, _ := requestIDValue(baseMessage.Params.RequestID)
 		s.cancelled.cancel(cancelled)
 	}

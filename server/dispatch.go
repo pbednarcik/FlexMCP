@@ -59,6 +59,17 @@ func (s *MCPServer) handleMessageRead(
 			"Failed to parse message",
 		)
 	}
+	// encoding/json read "Method" or "paramſ" as method or params above, and
+	// kept the last of a member named twice: such a request is refused before
+	// anything acts on that read, and such a notification or response, never
+	// answered, is dropped. The error repeats the id spelled as defined.
+	if check := checkMemberNames(message, baseMessage.Method); check.err() != nil {
+		if check.unanswered() {
+			return nil
+		}
+		id, _ := requestIDValue(check.id)
+		return createErrorResponse(id, mcp.INVALID_REQUEST, "Invalid request: "+check.err().Error())
+	}
 	// A response, success or error, to a request the server sent, such as a
 	// keep-alive ping: nothing waits for it, and a response is never answered,
 	// whatever its id, and a null result or error still makes one. A message
