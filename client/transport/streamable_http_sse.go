@@ -30,15 +30,9 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// end is why the stream ended without the response: failure, that it
-	// broke off or couldn't be resumed, and brokenOff, whether it broke
-	// off. It is written before responseChan is closed and read after, so
-	// the close orders the two; one variable, so that the reader's closure
-	// keeps one.
-	var end struct {
-		failure   error
-		brokenOff bool
-	}
+	// end is why the stream ended without the response; one variable, so
+	// that the reader's closure keeps one.
+	var end sseStreamEnd
 
 	// Start a goroutine to process the SSE stream
 	go func() {
@@ -144,9 +138,28 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 		end.brokenOff = cursor.err != nil
 	}()
 
-	// Wait for the response or context cancellation
+	return awaitSSEResponse(ctx, responseChan, &end)
+}
+
+// sseStreamEnd is why a stream ended without the response: failure, that it
+// broke off or couldn't be resumed, and brokenOff, whether it broke off. It
+// is written before the stream's response channel is closed and read after,
+// so the close orders the two.
+type sseStreamEnd struct {
+	failure   error
+	brokenOff bool
+}
+
+// awaitSSEResponse waits for the response the stream's reader queues on
+// responses, or for ctx to end. A closed responses is a stream that ended
+// without one, end saying why.
+//
+// A response already queued when ctx ends, by Close or the caller, is the
+// answer: it arrived. A select takes either of two ready cases at random, so
+// the end of ctx looks for one before it is reported.
+func awaitSSEResponse(ctx context.Context, responses <-chan *JSONRPCResponse, end *sseStreamEnd) (*JSONRPCResponse, error) {
 	select {
-	case response := <-responseChan:
+	case response := <-responses:
 		if response == nil {
 			if end.failure != nil || end.brokenOff {
 				return nil, end.failure
@@ -155,6 +168,13 @@ func (c *StreamableHTTP) handleSSEResponse(ctx context.Context, reader io.ReadCl
 		}
 		return response, nil
 	case <-ctx.Done():
+		select {
+		case response := <-responses:
+			if response != nil {
+				return response, nil
+			}
+		default:
+		}
 		return nil, ctx.Err()
 	}
 }
