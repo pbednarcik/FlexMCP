@@ -384,8 +384,12 @@ func TestStreamableHTTP_ListenerLeavesAForgottenSession(t *testing.T) {
 func TestStreamableHTTP_ListenerStopsWhenTheStreamNeverOpened(t *testing.T) {
 	server := newForgetfulServer()
 	server.getNotFound = true
-	trans := connectToForgetful(t, server, true)
-	require.Eventually(t, func() bool { return server.count("GET s1") == 1 }, 5*time.Second, time.Millisecond)
+	var logged lockedBuffer
+	trans := connectToForgetful(t, server, true, WithHTTPLogger(slog.New(slog.NewTextHandler(&logged, nil))))
+	// The listener decides once the 404 is in: the session must still be
+	// current then, or it listens again on the new one, as it should.
+	require.Eventually(t, func() bool { return strings.Contains(logged.String(), "session terminated, stopping listener") }, 5*time.Second, time.Millisecond)
+	require.Equal(t, 1, server.count("GET s1"))
 
 	require.NoError(t, listToolsOn(trans))
 	assert.Contains(t, server.entries(), "tools/list s1")
