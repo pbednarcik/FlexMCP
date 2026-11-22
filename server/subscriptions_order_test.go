@@ -38,12 +38,19 @@ var _ SessionWithSubscriptionStreams = (*streamSession)(nil)
 func openStream(t *testing.T, srv *MCPServer, session ClientSession, filter mcp.SubscriptionFilter) {
 	t.Helper()
 	require.NoError(t, srv.RegisterSession(t.Context(), session))
+	listenAs(t, srv, session, 7, filter)
+}
+
+// listenAs serves subscriptions/listen with id for filter on session, which
+// is registered already, in the background until the test ends.
+func listenAs(t *testing.T, srv *MCPServer, session ClientSession, id any, filter mcp.SubscriptionFilter) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(srv.WithContext(t.Context(), session))
 	ctx = WithRequestProtocolInfo(ctx, &RequestProtocolInfo{Modern: true, ProtocolVersion: mcp.ProtocolVersion20260728})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = srv.handleSubscriptionsListen(ctx, 7, mcp.SubscriptionsListenRequest{
+		_, _ = srv.handleSubscriptionsListen(ctx, id, mcp.SubscriptionsListenRequest{
 			Params: mcp.SubscriptionsListenParams{Notifications: filter},
 		})
 	}()
@@ -356,6 +363,75 @@ func TestSubscriptionsListen_TargetedListChangesWhileTheStreamIsSetUp(t *testing
 				receivesExactly(t, notify, acknowledged)
 			})
 		})
+	}
+}
+
+// A list change a stream being set up may have missed is sent again to that
+// stream alone: a stream already open on the session received it, and
+// receives it once.
+func TestSubscriptionsListen_AListChangeSentAgainReachesOnlyTheNewStream(t *testing.T) {
+	tools := mcp.SubscriptionFilter{ToolsListChanged: true}
+	for _, kind := range listenSessionKinds {
+		for _, send := range []struct {
+			name string
+			do   func(srv *MCPServer, session ClientSession) error
+		}{
+			{"targeted", func(srv *MCPServer, session ClientSession) error {
+				return srv.SendNotificationToSpecificClient(session.SessionID(), toolsChanged, nil)
+			}},
+			{"broadcast", func(srv *MCPServer, _ ClientSession) error {
+				srv.SendNotificationToAllClients(toolsChanged, nil)
+				return nil
+			}},
+		} {
+			t.Run(kind.name+"/"+send.name, func(t *testing.T) {
+				srv := NewMCPServer("listen-test", "1.0.0", WithToolCapabilities(true))
+				session, notify := kind.make()
+				established := make(chan struct{}, 2)
+				srv.testHookListen = func(stage string) {
+					if stage == "established" {
+						established <- struct{}{}
+					}
+				}
+				openStream(t, srv, session, tools)
+				require.True(t, closedWithin(t, established, "stream 7 to be set up"))
+				require.Equal(t, acknowledged, (<-notify).Method)
+
+				// Stream 7's listen is past its hooks, so only stream 8's reads this.
+				srv.testHookListen = func(stage string) {
+					switch stage {
+					case "gap":
+						assert.NoError(t, send.do(srv, session))
+					case "established":
+						established <- struct{}{}
+					}
+				}
+				listenAs(t, srv, session, 8, tools)
+				require.True(t, closedWithin(t, established, "stream 8 to be set up"))
+				assert.Equal(t, map[any]map[string]int{
+					7: {toolsChanged: 1},
+					8: {acknowledged: 1, toolsChanged: 1},
+				}, countByStream(notify))
+			})
+		}
+	}
+}
+
+// countByStream reads notify for 200 ms and counts each method per stream id.
+func countByStream(notify <-chan mcp.JSONRPCNotification) map[any]map[string]int {
+	counts := map[any]map[string]int{}
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case n := <-notify:
+			id := n.Params.Meta[mcp.MetaKeySubscriptionID]
+			if counts[id] == nil {
+				counts[id] = map[string]int{}
+			}
+			counts[id][n.Method]++
+		case <-deadline:
+			return counts
+		}
 	}
 }
 

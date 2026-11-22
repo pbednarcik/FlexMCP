@@ -171,12 +171,12 @@ func TestSendNotificationToSpecificClientHonoursListenStreams(t *testing.T) {
 		ts.listen(t, "listen-2")
 		require.NoError(t, ts.server.SendNotificationToSpecificClient(ts.id(t), tools, nil))
 		copies := ts.copiesOf(t, tools, "listen-1", "listen-2")
-		// A listen still setting its stream up sends the session the list
-		// change again once the stream is recorded, as the send may have
-		// missed it (see listChangeCounts), and that copy reaches every
-		// stream: each may receive one more per listen, never more.
+		// A listen still setting its stream up sends that stream the list
+		// change again once it is recorded, as the send may have missed it
+		// (see listChangeCounts): a stream may receive a second copy, never a
+		// third.
 		for id, n := range copies {
-			assert.LessOrEqual(t, n, 3, "copies on %v", id)
+			assert.LessOrEqual(t, n, 2, "copies on %v", id)
 		}
 	})
 

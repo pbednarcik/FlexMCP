@@ -150,12 +150,11 @@ func TestInProcessTargetedNotificationHonoursTheStream(t *testing.T) {
 		tp := newTargetedInProcess(t, mcp.ProtocolVersion20260728)
 		one, two := tp.listen(t), tp.listen(t)
 		require.NoError(t, tp.server.SendNotificationToSpecificClient(tp.sessionID, tools, nil))
-		// A listen still setting its stream up sends the session the list
-		// change again once the stream is recorded, as the send may have
-		// missed it, and that copy reaches every stream: each may receive one
-		// more per listen, never more.
+		// A listen still setting its stream up sends that stream the list
+		// change again once it is recorded, as the send may have missed it: a
+		// stream may receive a second copy, never a third.
 		for i, n := range tp.copiesOf(t, tools, one, two) {
-			assert.LessOrEqual(t, n, 3, "copies on stream %d", i+1)
+			assert.LessOrEqual(t, n, 2, "copies on stream %d", i+1)
 		}
 	})
 

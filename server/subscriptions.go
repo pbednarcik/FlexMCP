@@ -289,7 +289,7 @@ func (s *MCPServer) handleSubscriptionsListen(
 		defer streams.CloseSubscriptionStream(id)
 		s.closeStreamOnCancel(ctx, id, streams)
 	}
-	s.resendListChanges(session, allowed, finished)
+	s.resendListChanges(session, id, allowed, finished)
 	if s.testHookListen != nil {
 		s.testHookListen("established")
 	}
@@ -331,7 +331,8 @@ var listChangeMethods = [...]string{
 // before it and is counted in S, so S > F. One counter read twice would not
 // do: a broadcast counted before the first read, or after the second, can
 // still read the sessions between the two. A list change a broadcast did
-// deliver may arrive twice; it only asks the client to list again.
+// deliver to the new stream may arrive on it twice; it only asks the client
+// to list again. The other streams of the session are not sent it again.
 type listChangeCounts [len(listChangeMethods)]listChangeCount
 
 // listChangeCount is listChangeCounts' count of one list change.
@@ -357,16 +358,44 @@ func (c *listChangeCounts) finishedNow() (finished [len(listChangeMethods)]uint6
 	return finished
 }
 
-// resendListChanges sends session, whose stream subscribing to filter is now
-// recorded, a list change of each type filter admits that a broadcast
-// started since finished was read may have missed the stream with, as a
-// broadcast reaches the session.
-func (s *MCPServer) resendListChanges(session ClientSession, filter mcp.SubscriptionFilter, finished [len(listChangeMethods)]uint64) {
+// resendListChanges sends the stream id on session, subscribing to filter
+// and now recorded, a list change of each type filter admits that a
+// broadcast started since finished was read may have missed it with. Only
+// that stream is sent it: a stream recorded before the broadcast read the
+// sessions received it, and one recorded after sends its own.
+func (s *MCPServer) resendListChanges(session ClientSession, id any, filter mcp.SubscriptionFilter, finished [len(listChangeMethods)]uint64) {
 	for i, method := range listChangeMethods {
 		if filterAllows(filter, method) && s.listChanges[i].started.Load() > finished[i] {
-			s.broadcastToSession(session, mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: method})
+			s.sendToStream(session, id, mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: method})
 		}
 	}
+}
+
+// sendToStream queues notification, as a broadcast does, on the stream id of
+// session alone, tagged with its id, and nothing when the stream is no
+// longer open. A session that holds no streams of protocol version
+// 2026-07-28 is sent it as a broadcast reaches it.
+func (s *MCPServer) sendToStream(session ClientSession, id any, notification mcp.JSONRPCNotification) {
+	if streams, shared, ok := ownStreams(session); ok {
+		if open, modern := streams.streamsToBroadcast(); modern {
+			for _, stream := range open {
+				if stream.id == id {
+					s.deliverBroadcast(session, stream.tagged(notification, shared))
+				}
+			}
+			return
+		}
+	} else if streams, ok := session.(SessionWithSubscriptionStreams); ok {
+		if open, modern := streams.SubscriptionStreams(); modern {
+			for _, stream := range open {
+				if stream.ID == id {
+					s.deliverBroadcast(session, tagSubscription(notification, stream.ID))
+				}
+			}
+			return
+		}
+	}
+	s.broadcastToSession(session, notification)
 }
 
 // closeStreamOnCancel arranges for a cancel by notification to close the
