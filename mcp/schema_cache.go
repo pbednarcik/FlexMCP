@@ -173,6 +173,11 @@ func (c *SchemaCache) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("marshal schema cache key: %w", err)
 		}
+		// A value is spliced in as it is, so it must be one JSON value: one
+		// that is not would make the output unreadable, or add an entry.
+		if !json.Valid(c.schemas[k]) {
+			return nil, fmt.Errorf("schema cache entry %q is not a JSON value", k)
+		}
 		buf = append(buf, keyBytes...)
 		buf = append(buf, ':')
 		buf = append(buf, c.schemas[k]...)
