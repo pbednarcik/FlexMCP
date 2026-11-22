@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -518,11 +519,11 @@ func TestParamHeaderAnnotationsToleratesUnreadableSchema(t *testing.T) {
 	assert.Empty(t, ExtractParamHeaderBindings(tool))
 }
 
-// TestParamHeaderAnnotationsFoundHoweverTheKeyIsSpelled pins that a schema is
-// read for annotations whenever it may hold one: the key written with a JSON
-// escape, which both decodes unescape, or in another letter case, which a
-// decode into Go fields matches. A schema without the key is not read.
-func TestParamHeaderAnnotationsFoundHoweverTheKeyIsSpelled(t *testing.T) {
+// TestParamHeaderAnnotationsFoundHoweverTheKeyIsWritten pins that a schema is
+// read for annotations whenever it may hold one, the key written with a JSON
+// escape among them, which both decodes unescape; a schema without the key
+// is not read.
+func TestParamHeaderAnnotationsFoundHoweverTheKeyIsWritten(t *testing.T) {
 	// The key with its h as a \u escape, built from pieces.
 	escaped := "x-mcp-\\" + "u0068eader"
 	schema := func(property string) json.RawMessage {
@@ -530,8 +531,6 @@ func TestParamHeaderAnnotationsFoundHoweverTheKeyIsSpelled(t *testing.T) {
 	}
 	for name, raw := range map[string]json.RawMessage{
 		"escaped key on an array":    schema(`{"type":"array","` + escaped + `":"A"}`),
-		"upper-case key on an array": schema(`{"type":"array","X-MCP-HEADER":"A"}`),
-		"mixed-case key on an array": schema(`{"type":"array","X-Mcp-Header":"A"}`),
 		"escaped key under items":    json.RawMessage(`{"type":"object","items":{"` + escaped + `":"A"}}`),
 		"escaped key, schema unread": json.RawMessage(`{"properties":{"a":{"` + escaped + `":"A"`),
 	} {
@@ -545,20 +544,87 @@ func TestParamHeaderAnnotationsFoundHoweverTheKeyIsSpelled(t *testing.T) {
 			assert.Error(t, ValidateParamHeaderAnnotations(tool))
 		})
 	}
-	for name, raw := range map[string]json.RawMessage{
-		"escaped key":    schema(`{"type":"string","` + escaped + `":"A"}`),
-		"upper-case key": schema(`{"type":"string","X-MCP-HEADER":"A"}`),
-	} {
-		t.Run("binds "+name, func(t *testing.T) {
-			tool := &Tool{Name: "t", RawInputSchema: raw}
-			assert.Equal(t, map[string]string{"Mcp-Param-A": "v"},
-				GenerateParamHeaders(tool, json.RawMessage(`{"arguments":{"a":"v"}}`)))
-		})
-	}
+	t.Run("binds escaped key", func(t *testing.T) {
+		tool := &Tool{Name: "t", RawInputSchema: schema(`{"type":"string","` + escaped + `":"A"}`)}
+		assert.Equal(t, map[string]string{"Mcp-Param-A": "v"},
+			GenerateParamHeaders(tool, json.RawMessage(`{"arguments":{"a":"v"}}`)))
+	})
 
 	plain := &Tool{Name: "t", RawInputSchema: schema(`{"type":"string","description":"no header-key here"}`)}
 	assert.NoError(t, ValidateParamHeaderAnnotations(plain))
 	assert.Empty(t, ExtractParamHeaderBindings(plain))
+}
+
+// TestParamHeaderKeywordsAreCaseSensitive pins that x-mcp-header, type and
+// properties count only as JSON Schema spells them, as JSON keys are
+// case-sensitive: a key in another case is an unknown keyword, so it is not
+// an annotation, is not validated, and binds no header.
+func TestParamHeaderKeywordsAreCaseSensitive(t *testing.T) {
+	args := json.RawMessage(`{"arguments":{"a":"v","b":{"c":"w"}}}`)
+	for name, raw := range map[string]string{
+		"upper-case key":         `{"type":"object","properties":{"a":{"type":"array","X-MCP-HEADER":""}}}`,
+		"mixed-case key":         `{"type":"object","properties":{"a":{"type":"array","X-Mcp-Header":"bad header"}}}`,
+		"key under Properties":   `{"type":"object","Properties":{"a":{"type":"string","x-mcp-header":"A"}}}`,
+		"key beside a Type":      `{"type":"object","properties":{"a":{"Type":"string","x-mcp-header":"A"}}}`,
+		"key under a nested one": `{"type":"object","properties":{"b":{"type":"object","PROPERTIES":{"c":{"type":"string","x-mcp-header":"C"}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool := &Tool{Name: "t", RawInputSchema: json.RawMessage(raw)}
+			err := ValidateParamHeaderAnnotations(tool)
+			if name == "key beside a Type" {
+				// The annotation counts; the property declares no type.
+				assert.ErrorContains(t, err, "primitive types")
+				return
+			}
+			assert.NoError(t, err)
+			assert.Empty(t, GenerateParamHeaders(tool, args))
+		})
+	}
+	t.Run("the exact key beside one in another case", func(t *testing.T) {
+		tool := &Tool{Name: "t", RawInputSchema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string","X-MCP-HEADER":"B","x-mcp-header":"A"}}}`)}
+		require.NoError(t, ValidateParamHeaderAnnotations(tool))
+		assert.Equal(t, map[string]string{"Mcp-Param-A": "v"}, GenerateParamHeaders(tool, args))
+	})
+}
+
+// A schema the annotations cannot be read from is tolerated, as one that
+// does not parse is: trailing data after it, a property that is a boolean
+// schema, or properties that is not an object. A deeply nested schema is
+// read, its annotation bound and checked.
+func TestParamHeaderAnnotationsReadOrToleratedWhateverTheShape(t *testing.T) {
+	for name, raw := range map[string]string{
+		"trailing data":            `{"type":"object","properties":{"a":{"type":"array","x-mcp-header":"A"}}} {}`,
+		"a boolean property":       `{"type":"object","properties":{"b":true,"a":{"type":"array","x-mcp-header":"A"}}}`,
+		"properties not an object": `{"type":"object","properties":{"a":{"type":"array","x-mcp-header":"A"},"b":{"type":"object","properties":[]}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool := &Tool{Name: "t", RawInputSchema: json.RawMessage(raw)}
+			assert.NoError(t, ValidateParamHeaderAnnotations(tool))
+			assert.Empty(t, ExtractParamHeaderBindings(tool))
+		})
+	}
+
+	t.Run("nested 3000 deep", func(t *testing.T) {
+		const depth = 3000
+		nested := func(header string) json.RawMessage {
+			var b strings.Builder
+			b.WriteString(`{"type":"object"`)
+			for range depth {
+				b.WriteString(`,"properties":{"n":{"type":"object"`)
+			}
+			b.WriteString(`,"properties":{"leaf":{"type":"string","x-mcp-header":"` + header + `"}}`)
+			b.WriteString(strings.Repeat(`}}`, depth))
+			b.WriteString(`}`)
+			return json.RawMessage(b.String())
+		}
+		good := &Tool{Name: "t", RawInputSchema: nested("Leaf")}
+		require.NoError(t, ValidateParamHeaderAnnotations(good))
+		bindings := ExtractParamHeaderBindings(good)
+		require.Len(t, bindings, 1)
+		assert.Len(t, bindings[0].Path, depth+1)
+		assert.Equal(t, "Leaf", bindings[0].Header)
+		assert.Error(t, ValidateParamHeaderAnnotations(&Tool{Name: "t", RawInputSchema: nested("bad header")}))
+	})
 }
 
 // A raw schema without the key is not decoded to look for annotations, at

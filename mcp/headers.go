@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"slices"
@@ -277,10 +278,59 @@ func (b ParamHeaderBinding) HeaderName() string {
 // full JSON Schema 2020-12 vocabulary. Decoding it into a string would fail the
 // whole schema, silently disabling both header generation and annotation
 // validation for the tool.
+//
+// The keywords are read by their exact names (see headerPropertyOf).
 type headerSchemaProperty struct {
-	Type       json.RawMessage                 `json:"type"`
-	XMCPHeader json.RawMessage                 `json:"x-mcp-header,omitempty"`
-	Properties map[string]headerSchemaProperty `json:"properties,omitempty"`
+	Type       json.RawMessage
+	XMCPHeader json.RawMessage
+	Properties map[string]headerSchemaProperty
+}
+
+// errUnreadableSchema reports a schema, or a properties keyword, that is
+// neither a JSON object nor null.
+var errUnreadableSchema = errors.New("a schema or its properties is not an object")
+
+// headerPropertyOf reads schema, as genericSchema decoded it, into the
+// keywords x-mcp-header processing needs. They are read by their exact
+// names, as JSON keys and JSON Schema keywords are case-sensitive: a decode
+// into struct fields would match a name in any case, and take
+// "X-MCP-HEADER" for the annotation or "Properties" for properties. The
+// schema was decoded once, so reading it is linear in its size, however
+// deep it nests. It fails where a schema or a properties keyword is neither
+// an object nor null.
+func headerPropertyOf(schema any) (headerSchemaProperty, error) {
+	if schema == nil {
+		return headerSchemaProperty{}, nil
+	}
+	keywords, ok := schema.(map[string]any)
+	if !ok {
+		return headerSchemaProperty{}, errUnreadableSchema
+	}
+	var p headerSchemaProperty
+	var err error
+	if value, ok := keywords["type"]; ok {
+		if p.Type, err = json.Marshal(value); err != nil {
+			return headerSchemaProperty{}, err
+		}
+	}
+	if value, ok := keywords["x-mcp-header"]; ok {
+		if p.XMCPHeader, err = json.Marshal(value); err != nil {
+			return headerSchemaProperty{}, err
+		}
+	}
+	switch properties := keywords["properties"].(type) {
+	case nil:
+	case map[string]any:
+		p.Properties = make(map[string]headerSchemaProperty, len(properties))
+		for name, property := range properties {
+			if p.Properties[name], err = headerPropertyOf(property); err != nil {
+				return headerSchemaProperty{}, err
+			}
+		}
+	default:
+		return headerSchemaProperty{}, errUnreadableSchema
+	}
+	return p, nil
 }
 
 // typeNames returns the type names declared by the property, accepting both
@@ -319,17 +369,22 @@ func (p headerSchemaProperty) isHeaderPrimitive() bool {
 }
 
 // schemaHeaderProperties decodes an input schema's JSON (see inputSchemaJSON)
-// into the subset of fields needed for x-mcp-header processing.
+// once, and returns it decoded (see genericSchema) and the subset of its
+// fields needed for x-mcp-header processing.
 //
 // The error is reported separately from an absent schema so that callers which
 // must fail closed, such as annotation validation, can tell a schema with no
 // annotations apart from one that could not be read.
-func schemaHeaderProperties(schema []byte) (map[string]headerSchemaProperty, error) {
-	var s headerSchemaProperty
-	if err := json.Unmarshal(schema, &s); err != nil {
-		return nil, fmt.Errorf("reading input schema: %w", err)
+func schemaHeaderProperties(schema []byte) (any, map[string]headerSchemaProperty, error) {
+	generic, err := genericSchema(schema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading input schema: %w", err)
 	}
-	return s.Properties, nil
+	root, err := headerPropertyOf(generic)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading input schema: %w", err)
+	}
+	return generic, root.Properties, nil
 }
 
 // inputSchemaJSON returns the tool's input schema as JSON: the raw schema as
@@ -347,26 +402,10 @@ var paramHeaderKey = []byte("x-mcp-header")
 
 // mayHoldParamHeader reports whether schema could hold an x-mcp-header key,
 // so that a schema without one is not decoded to look for it. It is false
-// only when schema names the key in no ASCII case (a decode into
-// headerSchemaProperty matches field names case-insensitively, and no other
-// rune folds to a letter of the key) and holds no \u escape, which could
+// only when schema names the key nowhere and holds no \u escape, which could
 // spell it.
 func mayHoldParamHeader(schema []byte) bool {
-	if bytes.Contains(schema, []byte(`\u`)) {
-		return true
-	}
-	for off := 0; ; {
-		dash := bytes.IndexByte(schema[off:], '-')
-		if dash < 0 {
-			return false
-		}
-		// The key's first dash is its second byte.
-		if at := off + dash - 1; at >= 0 && at+len(paramHeaderKey) <= len(schema) &&
-			bytes.EqualFold(schema[at:at+len(paramHeaderKey)], paramHeaderKey) {
-			return true
-		}
-		off += dash + 1
-	}
+	return bytes.Contains(schema, paramHeaderKey) || bytes.Contains(schema, []byte(`\u`))
 }
 
 // ExtractParamHeaderBindings returns a binding for every property in the
@@ -380,7 +419,7 @@ func ExtractParamHeaderBindings(tool *Tool) []ParamHeaderBinding {
 	if err != nil || !mayHoldParamHeader(schema) {
 		return nil
 	}
-	props, err := schemaHeaderProperties(schema)
+	_, props, err := schemaHeaderProperties(schema)
 	if err != nil || len(props) == 0 {
 		return nil
 	}
@@ -424,7 +463,7 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 		// registration refuses it; one without the key has no annotation.
 		return nil
 	}
-	props, err := schemaHeaderProperties(data)
+	schema, props, err := schemaHeaderProperties(data)
 	if err != nil {
 		// A structurally unreadable schema is tolerated rather than rejected,
 		// matching this package's existing policy for schemas that fail to
@@ -433,14 +472,12 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 		// no Mcp-Param-* header is ever generated from it.
 		return nil
 	}
-	if schema, err := genericSchema(data); err == nil {
-		var dialect schemaDialect
-		if root, ok := schema.(map[string]any); ok {
-			dialect = schemaDialectOf(root["$schema"])
-		}
-		if at := misplacedParamHeader(schema, dialect, "#", true, false); at != "" {
-			return fmt.Errorf("x-mcp-header at %s: only a property reached from the root through properties alone may carry it", at)
-		}
+	var dialect schemaDialect
+	if root, ok := schema.(map[string]any); ok {
+		dialect = schemaDialectOf(root["$schema"])
+	}
+	if at := misplacedParamHeader(schema, dialect, "#", true, false); at != "" {
+		return fmt.Errorf("x-mcp-header at %s: only a property reached from the root through properties alone may carry it", at)
 	}
 	if len(props) == 0 {
 		return nil
@@ -449,13 +486,17 @@ func ValidateParamHeaderAnnotations(tool *Tool) error {
 }
 
 // genericSchema decodes schema into maps and slices, numbers kept as
-// json.Number so no number, however large, fails the decode.
+// json.Number so no number, however large, fails the decode. Anything but
+// one JSON value fails it, as json.Unmarshal does.
 func genericSchema(data []byte) (any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var generic any
 	if err := decoder.Decode(&generic); err != nil {
 		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, errors.New("invalid JSON after the top-level value")
 	}
 	return generic, nil
 }
