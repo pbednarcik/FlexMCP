@@ -361,16 +361,22 @@ func UniqueItems(unique bool) PropertyOption {
 // Limitations: Only supports simple string arrays. Use Items() for complex objects.
 func WithStringItems(opts ...PropertyOption) PropertyOption {
 	return func(schema map[string]any) {
-		itemSchema := map[string]any{
-			"type": "string",
-		}
-
-		for _, opt := range opts {
-			opt(itemSchema)
-		}
-
-		schema["items"] = itemSchema
+		schema["items"] = primitiveItems("string", opts)
 	}
+}
+
+// primitiveItems builds an item schema of the given type with opts. A
+// Required() among them is dropped: it means nothing for an item, and a
+// boolean "required" is not JSON Schema.
+func primitiveItems(kind string, opts []PropertyOption) map[string]any {
+	itemSchema := map[string]any{"type": kind}
+	for _, opt := range opts {
+		opt(itemSchema)
+	}
+	if _, ok := itemSchema["required"].(bool); ok {
+		delete(itemSchema, "required")
+	}
+	return itemSchema
 }
 
 // WithStringEnumItems configures an array's items to be of type string with a specified enum.
@@ -401,15 +407,7 @@ func WithStringEnumItems(values []string) PropertyOption {
 // Limitations: Only supports simple number arrays. Use Items() for complex objects.
 func WithNumberItems(opts ...PropertyOption) PropertyOption {
 	return func(schema map[string]any) {
-		itemSchema := map[string]any{
-			"type": "number",
-		}
-
-		for _, opt := range opts {
-			opt(itemSchema)
-		}
-
-		schema["items"] = itemSchema
+		schema["items"] = primitiveItems("number", opts)
 	}
 }
 
@@ -426,19 +424,7 @@ func WithNumberItems(opts ...PropertyOption) PropertyOption {
 // Limitations: Only supports simple integer arrays. Use Items() for complex objects.
 func WithIntegerItems(opts ...PropertyOption) PropertyOption {
 	return func(schema map[string]any) {
-		itemSchema := map[string]any{
-			"type": "integer",
-		}
-
-		for _, opt := range opts {
-			opt(itemSchema)
-		}
-
-		if required, ok := itemSchema["required"].(bool); ok && required {
-			delete(itemSchema, "required")
-		}
-
-		schema["items"] = itemSchema
+		schema["items"] = primitiveItems("integer", opts)
 	}
 }
 
@@ -455,14 +441,6 @@ func WithIntegerItems(opts ...PropertyOption) PropertyOption {
 // Limitations: Only supports simple boolean arrays. Use Items() for complex objects.
 func WithBooleanItems(opts ...PropertyOption) PropertyOption {
 	return func(schema map[string]any) {
-		itemSchema := map[string]any{
-			"type": "boolean",
-		}
-
-		for _, opt := range opts {
-			opt(itemSchema)
-		}
-
-		schema["items"] = itemSchema
+		schema["items"] = primitiveItems("boolean", opts)
 	}
 }
