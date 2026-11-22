@@ -213,8 +213,16 @@ func applyStructFieldTags(t reflect.Type, schema *jsonschema.Schema) {
 		return
 	}
 
+	// A recursive embedding (type T struct{ *T }) adds no new fields; the
+	// guard stops the walk from following it forever.
+	active := make(map[reflect.Type]bool)
 	var walk func(reflect.Type)
 	walk = func(structType reflect.Type) {
+		if active[structType] {
+			return
+		}
+		active[structType] = true
+		defer delete(active, structType)
 		for field := range structType.Fields() {
 			fieldType := field.Type
 			info := fieldJSONInfo(field)

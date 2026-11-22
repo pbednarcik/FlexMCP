@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -172,4 +173,24 @@ func TestSchemaFor_StructuredInputOutputExampleTags(t *testing.T) {
 	required := schema["required"].([]any)
 	assert.Contains(t, required, "location")
 	assert.NotContains(t, required, "units")
+}
+
+func TestSchemaFor_RecursiveEmbeddingTags(t *testing.T) {
+	type Node struct {
+		*Node
+		Count int `json:"count" jsonschema_description:"Number of results"`
+	}
+	_, err := jsonschema.For[Node](nil)
+	require.NoError(t, err, "native inference accepts the recursive embedding")
+
+	raw, err := SchemaForRaw[Node]()
+	require.NoError(t, err)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	count := schema["properties"].(map[string]any)["count"].(map[string]any)
+	assert.Equal(t, "integer", count["type"])
+	assert.Equal(t, "Number of results", count["description"])
+
+	tool := NewTool("recursive", WithInputSchema[Node]())
+	assert.JSONEq(t, string(raw), string(tool.RawInputSchema))
 }
