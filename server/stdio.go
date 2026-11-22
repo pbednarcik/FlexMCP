@@ -49,7 +49,8 @@ type StdioServer struct {
 	// stdout, which writes a response after the notifications queued
 	// before it; writerDone closes when that goroutine has written its last.
 	// listenDone is the caller's cancel of Listen: a response waiting to be
-	// queued gives up on it. A failed write ends Listen: the writer keeps
+	// queued gives up on it, and the writer writes nothing more, ending once
+	// a write it is in returns. A failed write ends Listen: the writer keeps
 	// the error in writeErr, closes writeFailed, and stops the input through
 	// stopInput; nothing more is written.
 	responses   chan stdioResponse
@@ -345,11 +346,29 @@ func (s *StdioServer) drainNotifications(stdout io.Writer) {
 	}
 }
 
+// listenCancelled reports whether the caller cancelled Listen.
+func (s *StdioServer) listenCancelled() bool {
+	return isClosed(s.listenDone)
+}
+
+// isClosed reports whether c is closed; a nil c never is.
+func isClosed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
+}
+
 // write writes one message to stdout. The first failure ends Listen, which
 // returns the error: the client is gone, and nothing more could reach it;
-// what is still queued is dropped.
+// what is still queued is dropped. So is everything after the caller's
+// cancel of Listen, which asks for the end: a writer the cancel left in a
+// write drops the rest of its queue once that write returns, and ends
+// before the next Listen starts.
 func (s *StdioServer) write(message mcp.JSONRPCMessage, stdout io.Writer) {
-	if s.writeErr != nil {
+	if s.writeErr != nil || s.listenCancelled() {
 		return
 	}
 	err := s.writeResponse(message, stdout)
@@ -516,11 +535,28 @@ func (s *StdioServer) answer(id any, token uint64, response mcp.JSONRPCMessage) 
 // the context is cancelled, or reading the input or writing the output
 // fails, and returns that error: a failed write ends it, since the client
 // is gone.
+//
+// A cancelled Listen returns without waiting for a write to an output
+// nobody reads; nothing more is written after that write returns. A later
+// Listen on the same server starts once that write has returned, or
+// returns the context's error if its own context ends first.
 func (s *StdioServer) Listen(
 	ctx context.Context,
 	stdin io.Reader,
 	stdout io.Writer,
 ) error {
+	// The last Listen's writer, when that Listen's cancel left it in a
+	// write, ends once the write returns: this Listen starts after it, so
+	// that the two never share the server's state, or wait for its own
+	// cancel.
+	if s.writerDone != nil && !isClosed(s.writerDone) {
+		select {
+		case <-s.writerDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	// Initialize the tool call queue
 	s.toolCallQueue = make(chan *toolCallWork, s.queueSize)
 	s.responses = make(chan stdioResponse, 16)
