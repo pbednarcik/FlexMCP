@@ -427,6 +427,9 @@ func hasCustomJSONEncoding(t reflect.Type, addressable bool) bool {
 	return false
 }
 
+// applyStructFieldTags sets each property's description and enum from the
+// field encoding/json picks for it (selectedJSONFields): a field it shadows
+// lends none, and one promoted from an unexported embedding keeps its own.
 func applyStructFieldTags(t reflect.Type, schema *jsonschema.Schema) {
 	if schema == nil || schema.Properties == nil {
 		return
@@ -437,51 +440,22 @@ func applyStructFieldTags(t reflect.Type, schema *jsonschema.Schema) {
 	if t.Kind() != reflect.Struct {
 		return
 	}
-
-	// A recursive embedding (type T struct{ *T }) adds no new fields; the
-	// guard stops the walk from following it forever.
-	active := make(map[reflect.Type]bool)
-	var walk func(reflect.Type)
-	walk = func(structType reflect.Type) {
-		if active[structType] {
-			return
+	// A recursive embedding (type T struct{ *T }) still returns its fields.
+	fields, _ := selectedJSONFields(t)
+	for _, field := range fields {
+		prop, ok := schema.Properties[field.info.name]
+		if !ok {
+			continue
 		}
-		active[structType] = true
-		defer delete(active, structType)
-		for field := range structType.Fields() {
-			fieldType := field.Type
-			info := fieldJSONInfo(field)
-			if info.omit {
-				continue
-			}
-			if field.Anonymous && !info.explicitName {
-				anonType := fieldType
-				if anonType.Kind() == reflect.Pointer {
-					anonType = anonType.Elem()
-				}
-				if anonType.Kind() == reflect.Struct {
-					walk(anonType)
-					continue
-				}
-			}
-
-			prop, ok := schema.Properties[info.name]
-			if !ok {
-				continue
-			}
-
-			description, enums := fieldSchemaAnnotations(field)
-			if description != "" {
-				prop.Description = description
-			}
-			if len(enums) > 0 {
-				prop.Enum = enums
-			}
-			applyStructFieldTagsToType(fieldType, prop)
+		description, enums := fieldSchemaAnnotations(field.field)
+		if description != "" {
+			prop.Description = description
 		}
+		if len(enums) > 0 {
+			prop.Enum = enums
+		}
+		applyStructFieldTagsToType(field.field.Type, prop)
 	}
-
-	walk(t)
 }
 
 func applyStructFieldTagsToType(t reflect.Type, schema *jsonschema.Schema) {
