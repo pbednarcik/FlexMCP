@@ -55,7 +55,16 @@ func supportsSchemaTagFallbackType(t reflect.Type, seen map[reflect.Type]bool) b
 		}
 		seen[t] = true
 		for field := range t.Fields() {
-			if fieldJSONInfo(field).omit {
+			// encoding/json promotes the fields of an unexported embedded
+			// struct, so their tags are checked too.
+			fieldType := field.Type
+			if fieldType.Kind() == reflect.Pointer {
+				fieldType = fieldType.Elem()
+			}
+			if !field.IsExported() && (!field.Anonymous || fieldType.Kind() != reflect.Struct) {
+				continue
+			}
+			if fieldJSONTagInfo(field).omit {
 				continue
 			}
 			if tag, ok := field.Tag.Lookup("jsonschema"); ok {
@@ -95,6 +104,20 @@ func (s *schemaFallbackState) schemaForStructFields(
 	if t.Kind() != reflect.Struct {
 		return jsonschema.ForType(t, opts)
 	}
+	fields, err := selectedJSONFields(t)
+	if err != nil {
+		return nil, err
+	}
+	return s.schemaForSelectedFields(t, fields, opts)
+}
+
+// schemaForSelectedFields builds the object schema of struct t from the
+// fields selectedJSONFields chose, in their order.
+func (s *schemaFallbackState) schemaForSelectedFields(
+	t reflect.Type,
+	fields []jsonSchemaField,
+	opts *jsonschema.ForOptions,
+) (*jsonschema.Schema, error) {
 	if s.active[t] {
 		return nil, fmt.Errorf("%w: %s", errRecursiveSchemaFallback, t)
 	}
@@ -107,59 +130,28 @@ func (s *schemaFallbackState) schemaForStructFields(
 		AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
 	}
 
-	var walk func(reflect.Type) error
-	walk = func(structType reflect.Type) error {
-		for field := range structType.Fields() {
-			fieldType := field.Type
-			info := fieldJSONInfo(field)
-			if info.omit {
+	for _, field := range fields {
+		fieldSchema, err := s.schemaForFieldType(field.field.Type, opts)
+		if err != nil {
+			if errors.Is(err, errRecursiveSchemaFallback) {
+				return nil, err
+			}
+			if opts.IgnoreInvalidTypes {
 				continue
 			}
-			if field.Anonymous && !info.explicitName {
-				anonType := fieldType
-				if anonType.Kind() == reflect.Pointer {
-					anonType = anonType.Elem()
-				}
-				if anonType.Kind() == reflect.Struct {
-					if s.active[anonType] {
-						return fmt.Errorf("%w: %s", errRecursiveSchemaFallback, anonType)
-					}
-					s.active[anonType] = true
-					if err := walk(anonType); err != nil {
-						return err
-					}
-					delete(s.active, anonType)
-					continue
-				}
-			}
-
-			fieldSchema, err := s.schemaForFieldType(fieldType, opts)
-			if err != nil {
-				if errors.Is(err, errRecursiveSchemaFallback) {
-					return err
-				}
-				if opts.IgnoreInvalidTypes {
-					continue
-				}
-				return err
-			}
-			if fieldSchema == nil {
-				continue
-			}
-
-			schema.Properties[info.name] = fieldSchema
-			schema.PropertyOrder = append(schema.PropertyOrder, info.name)
-
-			if !info.settings["omitempty"] && !info.settings["omitzero"] {
-				schema.Required = append(schema.Required, info.name)
-			}
+			return nil, err
 		}
-		return nil
+		if fieldSchema == nil {
+			continue
+		}
+
+		schema.Properties[field.info.name] = fieldSchema
+		schema.PropertyOrder = append(schema.PropertyOrder, field.info.name)
+		if !field.info.settings["omitempty"] && !field.info.settings["omitzero"] {
+			schema.Required = append(schema.Required, field.info.name)
+		}
 	}
 
-	if err := walk(t); err != nil {
-		return nil, err
-	}
 	return schema, nil
 }
 
@@ -278,6 +270,80 @@ func applyStructFieldTagsToType(t reflect.Type, schema *jsonschema.Schema) {
 	}
 }
 
+type jsonSchemaField struct {
+	field     reflect.StructField
+	info      jsonFieldInfo
+	depth     int
+	ambiguous bool
+}
+
+// selectedJSONFields resolves which fields of struct t encoding/json reads
+// and writes, in first-seen order: among fields sharing a JSON name the
+// shallowest wins, at one depth a tagged field beats an untagged one, and two
+// of a kind at one depth are both dropped. An unexported embedded struct
+// still promotes its fields. A recursive embedding returns the fields found
+// with errRecursiveSchemaFallback.
+func selectedJSONFields(t reflect.Type) ([]jsonSchemaField, error) {
+	fields := make(map[string]jsonSchemaField)
+	var names []string
+	var cycleErr error
+	active := make(map[reflect.Type]bool)
+	var walk func(reflect.Type, int)
+	walk = func(t reflect.Type, depth int) {
+		if active[t] {
+			cycleErr = fmt.Errorf("%w: %s", errRecursiveSchemaFallback, t)
+			return
+		}
+		active[t] = true
+		defer delete(active, t)
+		for field := range t.Fields() {
+			info := fieldJSONTagInfo(field)
+			if info.omit {
+				continue
+			}
+			fieldType := field.Type
+			if fieldType.Kind() == reflect.Pointer {
+				fieldType = fieldType.Elem()
+			}
+			if field.Anonymous && !info.explicitName && fieldType.Kind() == reflect.Struct {
+				walk(fieldType, depth+1)
+				continue
+			}
+			if !field.IsExported() && (!field.Anonymous || fieldType.Kind() != reflect.Struct) {
+				continue
+			}
+			previous, exists := fields[info.name]
+			if !exists {
+				names = append(names, info.name)
+			} else {
+				if previous.depth < depth {
+					continue
+				}
+				if previous.depth == depth {
+					if previous.info.explicitName && !info.explicitName {
+						continue
+					}
+					if previous.info.explicitName == info.explicitName {
+						previous.ambiguous = true
+						fields[info.name] = previous
+						continue
+					}
+				}
+			}
+			fields[info.name] = jsonSchemaField{field: field, info: info, depth: depth}
+		}
+	}
+	walk(t, 0)
+
+	var selected []jsonSchemaField
+	for _, name := range names {
+		if field := fields[name]; !field.ambiguous {
+			selected = append(selected, field)
+		}
+	}
+	return selected, cycleErr
+}
+
 func fieldSchemaAnnotations(field reflect.StructField) (string, []any) {
 	description := ""
 	var enums []any
@@ -337,7 +403,12 @@ func fieldJSONInfo(field reflect.StructField) jsonFieldInfo {
 	if !field.IsExported() {
 		return jsonFieldInfo{omit: true}
 	}
+	return fieldJSONTagInfo(field)
+}
 
+// fieldJSONTagInfo reads the json tag alone, exported or not: an unexported
+// embedded struct still promotes its fields.
+func fieldJSONTagInfo(field reflect.StructField) jsonFieldInfo {
 	info := jsonFieldInfo{name: field.Name}
 	tag, ok := field.Tag.Lookup("json")
 	if !ok {

@@ -58,6 +58,16 @@ func TestSchemaFor_UnsupportedJSONSchemaOptionReturnsError(t *testing.T) {
 
 	_, err := SchemaForRaw[request]()
 	require.ErrorContains(t, err, "tag must not begin with 'WORD='")
+
+	type private struct {
+		Count int `json:"count,string" jsonschema:"description=Count"`
+	}
+	type promoted struct {
+		private
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	_, err = SchemaForRaw[promoted]()
+	require.ErrorContains(t, err, "tag must not begin with 'WORD='")
 }
 
 func TestSchemaFor_NamedAnonymousStructTags(t *testing.T) {
@@ -193,4 +203,94 @@ func TestSchemaFor_RecursiveEmbeddingTags(t *testing.T) {
 
 	tool := NewTool("recursive", WithInputSchema[Node]())
 	assert.JSONEq(t, string(raw), string(tool.RawInputSchema))
+}
+
+// TestSchemaFor_FallbackFieldSelection pins the tag fallback to the fields
+// encoding/json reads and writes: the shallowest field wins, a tagged field
+// beats an untagged one at the same depth, two of a kind at the same depth
+// drop each other, and an unexported embedding still promotes its fields.
+func TestSchemaFor_FallbackFieldSelection(t *testing.T) {
+	type Inner struct {
+		Count int `json:"count"`
+	}
+	type shadowed struct {
+		Count string `json:"count"`
+		Inner
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	type private struct {
+		Count  int `json:"count"`
+		hidden int
+	}
+	type promoted struct {
+		private
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	type Plain struct{ Count int }
+	type Tagged struct {
+		Other string `json:"Count"`
+	}
+	type OtherPlain struct{ Count bool }
+	type taggedWins struct {
+		Plain
+		Tagged
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	type taggedFirst struct {
+		Tagged
+		Plain
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	// Two untagged fields at one depth: go vet refuses two equal json tags.
+	type ambiguous struct {
+		Plain
+		OtherPlain
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	type namedPrivate struct {
+		private `json:"nested"`
+		Mode    string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	for _, test := range []struct {
+		name     string
+		raw      func() (json.RawMessage, error)
+		value    any
+		wantJSON string
+		nested   string
+		property string
+		kind     string
+		required []any
+	}{
+		{name: "shallow field shadows embedded", raw: SchemaForRaw[shadowed], value: shadowed{Count: "x", Inner: Inner{Count: 7}, Mode: "fast"}, wantJSON: `{"count":"x","mode":"fast"}`, property: "count", kind: "string", required: []any{"count", "mode"}},
+		{name: "unexported embedding promotes", raw: SchemaForRaw[promoted], value: promoted{private: private{Count: 7, hidden: 9}, Mode: "fast"}, wantJSON: `{"count":7,"mode":"fast"}`, property: "count", kind: "integer", required: []any{"count", "mode"}},
+		{name: "tagged beats untagged", raw: SchemaForRaw[taggedWins], value: taggedWins{Plain: Plain{Count: 7}, Tagged: Tagged{Other: "x"}, Mode: "fast"}, wantJSON: `{"Count":"x","mode":"fast"}`, property: "Count", kind: "string", required: []any{"Count", "mode"}},
+		{name: "tagged first beats untagged", raw: SchemaForRaw[taggedFirst], value: taggedFirst{Tagged: Tagged{Other: "x"}, Plain: Plain{Count: 7}, Mode: "fast"}, wantJSON: `{"Count":"x","mode":"fast"}`, property: "Count", kind: "string", required: []any{"Count", "mode"}},
+		{name: "ambiguous dropped", raw: SchemaForRaw[ambiguous], value: ambiguous{Mode: "fast"}, wantJSON: `{"mode":"fast"}`, property: "Count", required: []any{"mode"}},
+		{name: "named unexported embedding", raw: SchemaForRaw[namedPrivate], value: namedPrivate{private: private{Count: 7, hidden: 9}, Mode: "fast"}, wantJSON: `{"nested":{"count":7},"mode":"fast"}`, nested: "nested", property: "count", kind: "integer", required: []any{"count"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, err := json.Marshal(test.value)
+			require.NoError(t, err)
+			require.JSONEq(t, test.wantJSON, string(encoded))
+
+			raw, err := test.raw()
+			require.NoError(t, err)
+			var schema map[string]any
+			require.NoError(t, json.Unmarshal(raw, &schema))
+			if test.nested != "" {
+				nested, ok := schema["properties"].(map[string]any)[test.nested].(map[string]any)
+				require.True(t, ok, "property %q missing from %s", test.nested, raw)
+				schema = nested
+			}
+			properties := schema["properties"].(map[string]any)
+			assert.NotContains(t, properties, "hidden")
+			if test.kind == "" {
+				assert.NotContains(t, properties, test.property)
+			} else {
+				require.Contains(t, properties, test.property)
+				assert.Equal(t, test.kind, properties[test.property].(map[string]any)["type"])
+			}
+			assert.Equal(t, test.required, schema["required"])
+		})
+	}
 }

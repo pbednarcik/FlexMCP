@@ -597,3 +597,63 @@ func TestInputSchemaValidation_AdditionalSchemaKeywords(t *testing.T) {
 	require.True(t, ok, "expected *mcp.CallToolResult, got %T", jr.Result)
 	require.False(t, result.IsError, "%#v", result)
 }
+
+// TestSchemaValidation_FallbackFieldSelection validates the arguments
+// encoding/json binds against a tag-fallback schema: a field promoted from an
+// unexported embedding is accepted, and a depth-0 field's type wins over the
+// embedded field it shadows.
+func TestSchemaValidation_FallbackFieldSelection(t *testing.T) {
+	type private struct {
+		Count int `json:"count"`
+	}
+	type promoted struct {
+		private
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	type Inner struct {
+		Count int `json:"count"`
+	}
+	type shadowed struct {
+		Count string `json:"count"`
+		Inner
+		Mode string `json:"mode" jsonschema:"enum=fast,enum=safe"`
+	}
+	for _, test := range []struct {
+		name    string
+		tool    mcp.Tool
+		target  any
+		count   any
+		success bool
+	}{
+		{name: "promoted field accepted", tool: mcp.NewTool("fallback", mcp.WithInputSchema[promoted](), mcp.WithOutputSchema[promoted]()), target: &promoted{}, count: 7, success: true},
+		{name: "promoted field typed", tool: mcp.NewTool("fallback", mcp.WithInputSchema[promoted](), mcp.WithOutputSchema[promoted]()), target: &promoted{}, count: "7"},
+		{name: "shallow field accepted", tool: mcp.NewTool("fallback", mcp.WithInputSchema[shadowed](), mcp.WithOutputSchema[shadowed]()), target: &shadowed{}, count: "x", success: true},
+		{name: "shadowed type rejected", tool: mcp.NewTool("fallback", mcp.WithInputSchema[shadowed](), mcp.WithOutputSchema[shadowed]()), target: &shadowed{}, count: 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.NotEmpty(t, test.tool.RawInputSchema)
+			called := false
+			srv := NewMCPServer("fallback", "1.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+			srv.AddTool(test.tool, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				called = true
+				if err := req.BindArguments(test.target); err != nil {
+					return nil, err
+				}
+				return mcp.NewToolResultStructuredOnly(test.target), nil
+			})
+			args := map[string]any{"count": test.count, "mode": "fast"}
+			response := callTool(t, srv, "fallback", args)
+			if test.success {
+				requireToolSuccess(t, response)
+				got, err := json.Marshal(test.target)
+				require.NoError(t, err)
+				want, err := json.Marshal(args)
+				require.NoError(t, err)
+				assert.JSONEq(t, string(want), string(got))
+			} else {
+				requireToolErrorContaining(t, response, "count")
+			}
+			assert.Equal(t, test.success, called)
+		})
+	}
+}
