@@ -477,11 +477,12 @@ func (c *SSE) SendRequest(
 	ctx context.Context,
 	request JSONRPCRequest,
 ) (*JSONRPCResponse, error) {
-	if !c.started.Load() {
-		return nil, errors.New("transport not started yet")
-	}
+	// Closed comes first: a transport closed before it started is closed.
 	if c.closed.Load() {
 		return nil, errSSEClosed
+	}
+	if !c.started.Load() {
+		return nil, errors.New("transport not started yet")
 	}
 	// A request sent after the stream ended fails with errStreamEnded alone,
 	// without the end's cause: it never reached the server, and a cause of

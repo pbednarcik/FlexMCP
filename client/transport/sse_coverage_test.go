@@ -152,15 +152,19 @@ func TestSSE_SendRequest_NotStarted(t *testing.T) {
 // TestSSE_SendRequest_Closed verifies SendRequest fails with
 // "transport has been closed" after Close has run.
 func TestSSE_SendRequest_Closed(t *testing.T) {
-	sse := newBareSSE()
-	sse.started.Store(true)
-	sse.closed.Store(true)
+	for name, started := range map[string]bool{"after Start": true, "before Start": false} {
+		t.Run(name, func(t *testing.T) {
+			sse := newBareSSE()
+			sse.started.Store(started)
+			sse.closed.Store(true)
 
-	_, err := sse.SendRequest(t.Context(), JSONRPCRequest{
-		JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)),
-	})
-	require.EqualError(t, err, "transport has been closed")
-	require.ErrorIs(t, err, ErrTransportClosed)
+			_, err := sse.SendRequest(t.Context(), JSONRPCRequest{
+				JSONRPC: "2.0", ID: mcp.NewRequestId(int64(1)),
+			})
+			require.EqualError(t, err, "transport has been closed")
+			require.ErrorIs(t, err, ErrTransportClosed)
+		})
+	}
 }
 
 // TestSSE_SendRequest_EndpointNotReceived verifies SendRequest fails with
