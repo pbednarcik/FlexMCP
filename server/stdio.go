@@ -43,7 +43,8 @@ type StdioServer struct {
 	requestWg      sync.WaitGroup // Tracks in-flight request handlers
 	workerPoolSize int
 	queueSize      int
-	writeMu        sync.Mutex // Protects concurrent writes
+	writeMu        sync.Mutex   // Protects concurrent writes
+	encoder        encodeWriter // under writeMu
 
 	// responses carries every response to the one goroutine that writes
 	// stdout, which writes a response after the notifications queued
@@ -367,11 +368,24 @@ func isClosed(c <-chan struct{}) bool {
 // cancel of Listen, which asks for the end: a writer the cancel left in a
 // write drops the rest of its queue once that write returns, and ends
 // before the next Listen starts.
+//
+// A message that cannot be encoded, such as a tool result holding NaN, is no
+// failure of stdout: nothing of it was written. A response is answered with
+// an internal error in its place, anything else is dropped, and the cause is
+// logged.
 func (s *StdioServer) write(message mcp.JSONRPCMessage, stdout io.Writer) {
 	if s.writeErr != nil || s.listenCancelled() {
 		return
 	}
 	err := s.writeResponse(message, stdout)
+	if errors.Is(err, errNotEncoded) {
+		s.errLogger.Printf("A message that cannot be encoded was not sent: %v", err)
+		standIn, ok := answerInPlaceOf(message)
+		if !ok {
+			return
+		}
+		err = s.writeResponse(standIn, stdout)
+	}
 	if err == nil {
 		return
 	}
@@ -816,7 +830,8 @@ func (s *StdioServer) handleRequest(ctx context.Context, id any, token uint64, r
 }
 
 // writeResponse marshals and writes a JSON-RPC response message followed by a newline.
-// Returns an error if marshaling or writing fails.
+// Returns an error if marshaling or writing fails; one wrapping errNotEncoded
+// when the message could not be encoded, and nothing was written.
 func (s *StdioServer) writeResponse(
 	response mcp.JSONRPCMessage,
 	writer io.Writer,
@@ -829,7 +844,7 @@ func (s *StdioServer) writeResponse(
 	// marshals the whole message, newline included, into a pooled buffer
 	// before it writes, so nothing is written for a message that cannot be
 	// encoded, and a large result is not copied into a buffer of its own.
-	return json.NewEncoder(writer).Encode(response)
+	return s.encoder.encode(writer, nil, 0, response)
 }
 
 // ServeStdio is a convenience function that creates and starts a StdioServer with os.Stdin and os.Stdout.

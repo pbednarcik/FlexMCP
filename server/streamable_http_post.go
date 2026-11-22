@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -240,13 +241,7 @@ drainLoop:
 			if listening {
 				nt = tagSubscription(nt, requestID)
 			}
-			x.deliver(func() error {
-				x.upgrade()
-				if err := writeSSEEvent(w, nt); err != nil {
-					return err
-				}
-				return flush(w)
-			})
+			x.deliver(func() error { return x.event(nt) })
 		default:
 			break drainLoop
 		}
@@ -264,13 +259,7 @@ drainLoop:
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if (session.upgradeToSSE.Load() && canStream) || x.upgraded {
-		x.deliver(func() error {
-			x.upgrade()
-			if err := writeSSEEvent(w, response); err != nil {
-				return err
-			}
-			return flush(w)
-		})
+		x.deliver(func() error { return x.event(response) })
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		// Protocol version 2026-07-28 maps JSON-RPC error codes onto HTTP
@@ -283,8 +272,17 @@ drainLoop:
 			}
 		}
 		x.deliver(func() error {
-			w.WriteHeader(status)
-			return json.NewEncoder(w).Encode(response)
+			err := x.encoder.encode(w, w, status, response)
+			if !errors.Is(err, errNotEncoded) {
+				return err
+			}
+			standIn, ok := x.notSent(response, err)
+			if !ok {
+				return nil
+			}
+			// An internal error is 200 OK in every era
+			// (httpStatusForJSONRPCError).
+			return x.encoder.encode(w, w, http.StatusOK, standIn)
 		})
 	}
 }
@@ -319,6 +317,8 @@ type postExchange struct {
 	dead         bool
 	writeTimeout time.Duration
 	keepAlive    time.Duration // a listen stream's keep-alive interval; zero is none
+
+	encoder encodeWriter // the JSON answer's, under mu
 
 	// done stops the forwarder; forwarderExited lets the response path wait
 	// until it can no longer be holding an undelivered notification.
@@ -380,13 +380,35 @@ func (x *postExchange) write(nt mcp.JSONRPCNotification) {
 		// path remains the buffered JSON reply below.
 		return
 	}
-	x.deliver(func() error {
-		x.upgrade()
-		if err := writeSSEEvent(x.w, nt); err != nil {
-			return err
+	x.deliver(func() error { return x.event(nt) })
+}
+
+// event writes message to the response as one SSE event, and flushes it. A
+// message that cannot be encoded is not sent: a response is answered with an
+// internal error in its place, anything else is dropped, and the stream goes
+// on. mu is held.
+func (x *postExchange) event(message any) error {
+	x.upgrade()
+	err := writeSSEEvent(x.w, message)
+	if errors.Is(err, errNotEncoded) {
+		standIn, ok := x.notSent(message, err)
+		if !ok {
+			return nil
 		}
-		return flush(x.w)
-	})
+		err = writeSSEEvent(x.w, standIn)
+	}
+	if err != nil {
+		return err
+	}
+	return flush(x.w)
+}
+
+// notSent logs that message could not be encoded, err saying why, and
+// returns the stand-in that answers in its place, if it is a response.
+// Nothing of message was written: the response is as good as before.
+func (x *postExchange) notSent(message any, err error) (mcp.JSONRPCMessage, bool) {
+	x.server.logger.Error("a message that cannot be encoded was not sent", "err", err)
+	return answerInPlaceOf(message)
 }
 
 // comment writes an SSE comment line, a keep-alive, to a stream already
@@ -481,7 +503,7 @@ var (
 func writeSSEEvent(w io.Writer, data any) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to marshal data: %w", err)
+		return notEncoded(err)
 	}
 	// Encoded first, so an event that cannot be encoded writes nothing; the
 	// caller holds the response while the parts are written.
