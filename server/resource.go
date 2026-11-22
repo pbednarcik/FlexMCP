@@ -128,15 +128,35 @@ func (s *MCPServer) RemoveResource(uri string) {
 	}
 }
 
-// AddResourceTemplates registers multiple resource templates at once
+// AddResourceTemplates registers multiple resource templates at once. A
+// template without a URI template panics, and the batch changes nothing.
 func (s *MCPServer) AddResourceTemplates(resourceTemplates ...ServerResourceTemplate) {
+	checkResourceTemplates(resourceTemplates)
 	s.implicitlyRegisterResourceCapabilities()
-
-	s.resourcesMu.Lock()
-	s.addResourceTemplatesLocked(resourceTemplates)
-	s.resourcesMu.Unlock()
-
+	s.storeResourceTemplates(false, resourceTemplates)
 	s.notifyResourcesListChanged()
+}
+
+// checkResourceTemplates panics on a template without a URI template, which
+// the server could neither list nor match, before the batch changes anything:
+// a refused batch leaves the server as it was, its capabilities included.
+func checkResourceTemplates(resourceTemplates []ServerResourceTemplate) {
+	for _, entry := range resourceTemplates {
+		if entry.Template.URITemplate == nil || entry.Template.URITemplate.Template == nil {
+			panic(fmt.Sprintf("resource template %q has no URI template", entry.Template.Name))
+		}
+	}
+}
+
+// storeResourceTemplates adds resourceTemplates under resourcesMu, in place
+// of every template registered so far when replace is set.
+func (s *MCPServer) storeResourceTemplates(replace bool, resourceTemplates []ServerResourceTemplate) {
+	s.resourcesMu.Lock()
+	defer s.resourcesMu.Unlock()
+	if replace {
+		s.resourceTemplates = make(map[string]resourceTemplateEntry, len(resourceTemplates))
+	}
+	s.addResourceTemplatesLocked(resourceTemplates)
 }
 
 // addResourceTemplatesLocked is AddResourceTemplates under resourcesMu.
@@ -168,15 +188,12 @@ func (s *MCPServer) notifyResourcesListChanged() {
 
 // SetResourceTemplates replaces all existing resource templates with the
 // provided list, in one step: no read finds the templates gone between the
-// old and the new.
+// old and the new. A template without a URI template panics, and the call
+// changes nothing.
 func (s *MCPServer) SetResourceTemplates(templates ...ServerResourceTemplate) {
+	checkResourceTemplates(templates)
 	s.implicitlyRegisterResourceCapabilities()
-
-	s.resourcesMu.Lock()
-	s.resourceTemplates = make(map[string]resourceTemplateEntry, len(templates))
-	s.addResourceTemplatesLocked(templates)
-	s.resourcesMu.Unlock()
-
+	s.storeResourceTemplates(true, templates)
 	s.notifyResourcesListChanged()
 }
 
