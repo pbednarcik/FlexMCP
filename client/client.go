@@ -55,9 +55,11 @@ type Client struct {
 	logLevel   mcp.LoggingLevel
 	logLevelMu sync.RWMutex
 
-	// knownTools caches tool definitions so that tools/call requests can
-	// mirror x-mcp-header annotated parameters into HTTP headers (SEP-2243).
-	knownTools map[string]mcp.Tool
+	// knownTools holds, for each tool the client listed, the bindings of its
+	// x-mcp-header annotated parameters, nil for a tool with none, so that a
+	// tools/call mirrors them into HTTP headers (SEP-2243) without reading
+	// the tool's schema again.
+	knownTools map[string][]mcp.ParamHeaderBinding
 	toolsMu    sync.RWMutex
 
 	// maxInputRoundTrips bounds the multi round-trip retry loop.

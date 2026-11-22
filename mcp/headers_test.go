@@ -255,6 +255,20 @@ func TestGenerateParamHeaders(t *testing.T) {
 	assert.NotContains(t, headers, HeaderParamPrefix+"sql", "unannotated parameters stay in the body")
 }
 
+// GenerateParamHeadersWithBindings mirrors what GenerateParamHeaders does
+// from bindings extracted once, and nothing without bindings.
+func TestGenerateParamHeadersWithBindings(t *testing.T) {
+	params := json.RawMessage(`{"name":"query","arguments":{"sql":"select 1","region":"us-east-1","config":{"debug":true}}}`)
+	bindings := ExtractParamHeaderBindings(headerTool())
+	require.Len(t, bindings, 2)
+	assert.Equal(t, GenerateParamHeaders(headerTool(), params), GenerateParamHeadersWithBindings(bindings, params))
+	assert.Equal(t, map[string]string{HeaderParamPrefix + "Region": "us-east-1"},
+		GenerateParamHeadersWithBindings([]ParamHeaderBinding{{Path: []string{"region"}, Header: "Region"}}, params),
+		"only the bindings given are mirrored")
+	assert.Nil(t, GenerateParamHeadersWithBindings(nil, params))
+	assert.Nil(t, GenerateParamHeadersWithBindings(bindings, json.RawMessage(`{"name":"query"}`)), "a call without arguments mirrors nothing")
+}
+
 func TestGenerateParamHeadersSkipsAbsentArguments(t *testing.T) {
 	params := json.RawMessage(`{"name":"query","arguments":{"sql":"select 1"}}`)
 	assert.Empty(t, GenerateParamHeaders(headerTool(), params))

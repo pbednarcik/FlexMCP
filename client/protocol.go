@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"runtime/debug"
 	"slices"
@@ -368,30 +369,28 @@ func (c *Client) applyStandardHeaders(e *era, header http.Header, method string,
 	// Tool parameters annotated with x-mcp-header must be mirrored into
 	// Mcp-Param-* headers so gateways can route on them.
 	if mcp.MCPMethod(method) == mcp.MethodToolsCall {
-		var tool *mcp.Tool
+		var bindings []mcp.ParamHeaderBinding
 		if named {
-			tool = c.toolNamed(name)
+			bindings, _ = c.toolNamed(name)
 		} else {
-			tool = c.toolForCall(encoded)
+			bindings, _ = c.toolForCall(encoded)
 		}
-		if tool != nil {
-			for name, value := range mcp.GenerateParamHeaders(tool, encoded) {
-				header.Set(name, value)
-			}
+		for name, value := range mcp.GenerateParamHeadersWithBindings(bindings, encoded) {
+			header.Set(name, value)
 		}
 	}
 
 	return header
 }
 
-// toolForCall returns the cached tool definition named by a tools/call
-// request, or nil when the client has not listed tools yet.
-func (c *Client) toolForCall(params json.RawMessage) *mcp.Tool {
+// toolForCall returns the header bindings of the tool a tools/call request
+// names, and whether the client listed that tool.
+func (c *Client) toolForCall(params json.RawMessage) ([]mcp.ParamHeaderBinding, bool) {
 	var call struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(params, &call); err != nil {
-		return nil
+		return nil, false
 	}
 	return c.toolNamed(call.Name)
 }
@@ -411,19 +410,17 @@ func toolCallName(method string, params any) (string, bool) {
 	return call.Name, true
 }
 
-// toolNamed returns the cached definition of the tool named name, or nil
-// when the client has not listed it.
-func (c *Client) toolNamed(name string) *mcp.Tool {
+// toolNamed returns the header bindings of the tool named name, nil for one
+// with none, and whether the client listed it. The bindings are shared and
+// must not be changed.
+func (c *Client) toolNamed(name string) ([]mcp.ParamHeaderBinding, bool) {
 	if name == "" {
-		return nil
+		return nil, false
 	}
 	c.toolsMu.RLock()
 	defer c.toolsMu.RUnlock()
-	tool, ok := c.knownTools[name]
-	if !ok {
-		return nil
-	}
-	return &tool
+	bindings, ok := c.knownTools[name]
+	return bindings, ok
 }
 
 // InvalidToolHandler is called for each tool definition that ListTools,
@@ -486,7 +483,7 @@ func (c *Client) withoutInvalidHeaderTools(ctx context.Context, tools []mcp.Tool
 	return valid
 }
 
-// forgetTool drops a cached tool definition.
+// forgetTool drops what the client keeps of a tool it listed.
 func (c *Client) forgetTool(name string) {
 	c.toolsMu.Lock()
 	defer c.toolsMu.Unlock()
@@ -504,21 +501,30 @@ func (c *Client) mirrorsHeaders() bool {
 	return ok
 }
 
-// rememberTools caches the tool definitions of one page so that subsequent
-// tools/call requests can mirror x-mcp-header annotated parameters into HTTP
-// headers; a connection that mirrors none keeps none.
+// rememberTools keeps the header bindings of the tools of one page so that
+// subsequent tools/call requests can mirror x-mcp-header annotated parameters
+// into HTTP headers; a connection that mirrors none keeps none. Each schema
+// is read here, once per listing, rather than on every call.
 func (c *Client) rememberTools(tools []mcp.Tool) {
 	if len(tools) == 0 || !c.mirrorsHeaders() {
 		return
 	}
+	bindings := toolBindings(tools)
 	c.toolsMu.Lock()
 	defer c.toolsMu.Unlock()
 	if c.knownTools == nil {
-		c.knownTools = make(map[string]mcp.Tool, len(tools))
+		c.knownTools = make(map[string][]mcp.ParamHeaderBinding, len(tools))
 	}
-	for _, tool := range tools {
-		c.knownTools[tool.Name] = tool
+	maps.Copy(c.knownTools, bindings)
+}
+
+// toolBindings returns the header bindings of each tool, by name.
+func toolBindings(tools []mcp.Tool) map[string][]mcp.ParamHeaderBinding {
+	bindings := make(map[string][]mcp.ParamHeaderBinding, len(tools))
+	for i := range tools {
+		bindings[tools[i].Name] = mcp.ExtractParamHeaderBindings(&tools[i])
 	}
+	return bindings
 }
 
 // replaceTools makes the cache the server's whole list, as a complete walk
@@ -527,10 +533,7 @@ func (c *Client) replaceTools(tools []mcp.Tool) {
 	if !c.mirrorsHeaders() {
 		return
 	}
-	known := make(map[string]mcp.Tool, len(tools))
-	for _, tool := range tools {
-		known[tool.Name] = tool
-	}
+	known := toolBindings(tools)
 	c.toolsMu.Lock()
 	defer c.toolsMu.Unlock()
 	c.knownTools = known

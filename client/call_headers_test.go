@@ -58,7 +58,7 @@ func TestClient_AModernToolCallsHeadersNameWhatItsBodyNames(t *testing.T) {
 			c := NewClient(tr)
 			c.updateEra(func(e *era) { e.version = mcp.LATEST_PROTOCOL_VERSION })
 			c.initialized.Store(true)
-			c.knownTools = map[string]mcp.Tool{"q": region}
+			c.knownTools = map[string][]mcp.ParamHeaderBinding{"q": mcp.ExtractParamHeaderBindings(&region)}
 
 			var request mcp.CallToolRequest
 			request.Params.Name = tt.toolName

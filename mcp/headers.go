@@ -615,7 +615,14 @@ func lookupArgument(args map[string]json.RawMessage, path []string) (json.RawMes
 // onto a tools/call request, derived from the tool's x-mcp-header annotations
 // and the raw params of the call.
 func GenerateParamHeaders(tool *Tool, params json.RawMessage) map[string]string {
-	bindings := ExtractParamHeaderBindings(tool)
+	return GenerateParamHeadersWithBindings(ExtractParamHeaderBindings(tool), params)
+}
+
+// GenerateParamHeadersWithBindings is [GenerateParamHeaders] with the tool's
+// bindings already extracted by [ExtractParamHeaderBindings], so that a
+// client calling a tool many times reads its schema once. The bindings are
+// only read.
+func GenerateParamHeadersWithBindings(bindings []ParamHeaderBinding, params json.RawMessage) map[string]string {
 	if len(bindings) == 0 {
 		return nil
 	}

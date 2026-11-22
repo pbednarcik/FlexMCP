@@ -32,6 +32,13 @@ func listingScript(listings ...[]string) func(context.Context, int, transport.JS
 	})
 }
 
+// knows reports whether c keeps the tool called name, as a tools/call
+// naming it would find it.
+func knows(c *Client, name string) bool {
+	_, ok := c.toolForCall(json.RawMessage(`{"name":"` + name + `"}`))
+	return ok
+}
+
 // A complete listing replaces the cached tool definitions: a tool the
 // server stopped listing is no longer known.
 func TestACompleteListingReplacesTheToolCache(t *testing.T) {
@@ -43,12 +50,12 @@ func TestACompleteListingReplacesTheToolCache(t *testing.T) {
 
 	_, err = c.ListTools(t.Context(), mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	require.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"a"}`)), "a is known after the first listing")
+	require.True(t, knows(c, "a"), "a is known after the first listing")
 
 	_, err = c.ListTools(t.Context(), mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Nil(t, c.toolForCall(json.RawMessage(`{"name":"a"}`)), "a is forgotten after a listing without it")
-	assert.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"b"}`)))
+	assert.False(t, knows(c, "a"), "a is forgotten after a listing without it")
+	assert.True(t, knows(c, "b"))
 }
 
 // A connection that mirrors no headers keeps no tool cache.
@@ -99,15 +106,36 @@ func TestAWalkFromACursorMergesIntoTheToolCache(t *testing.T) {
 
 	_, err = c.ListTools(t.Context(), mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	require.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"a"}`)), "a is known after the whole walk")
+	require.True(t, knows(c, "a"), "a is known after the whole walk")
 
 	cursor := mcp.Cursor("p2")
 	request := mcp.ListToolsRequest{}
 	request.Params.Cursor = &cursor
 	_, err = c.ListTools(t.Context(), request)
 	require.NoError(t, err)
-	assert.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"a"}`)), "a stays known after a walk from a later page")
-	assert.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"b"}`)))
+	assert.True(t, knows(c, "a"), "a stays known after a walk from a later page")
+	assert.True(t, knows(c, "b"))
+}
+
+// A walk from a cursor on a client that has listed nothing yet keeps the
+// tools of its pages, so a call to one of them mirrors its headers.
+func TestAWalkFromACursorKeepsItsTools(t *testing.T) {
+	tr := &scriptedHTTPTransport{scriptedTransport{respond: pagedListingScript(map[string]string{
+		"":   `{"tools":[{"name":"a","inputSchema":{"type":"object"}}],"nextCursor":"p2"}`,
+		"p2": `{"tools":[{"name":"b","inputSchema":{"type":"object"}}]}`,
+	})}}
+	c := NewClient(tr)
+	require.NoError(t, c.Start(t.Context()))
+	_, err := c.Initialize(t.Context(), mcp.InitializeRequest{})
+	require.NoError(t, err)
+
+	cursor := mcp.Cursor("p2")
+	request := mcp.ListToolsRequest{}
+	request.Params.Cursor = &cursor
+	_, err = c.ListTools(t.Context(), request)
+	require.NoError(t, err)
+	assert.True(t, knows(c, "b"), "b is known after a walk from its page")
+	assert.False(t, knows(c, "a"), "a was on no page walked")
 }
 
 // IterTools caches as ListTools does: a walk from the first page to the last
@@ -131,12 +159,12 @@ func TestACompleteIterationReplacesTheToolCache(t *testing.T) {
 			require.NoError(t, err)
 
 			iterate(c, false)
-			require.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"a"}`)), "a is known after the first listing")
+			require.True(t, knows(c, "a"), "a is known after the first listing")
 
 			iterate(c, stopEarly)
-			assert.Equal(t, stopEarly, c.toolForCall(json.RawMessage(`{"name":"a"}`)) != nil,
+			assert.Equal(t, stopEarly, knows(c, "a"),
 				"a is forgotten only after a complete walk without it")
-			assert.NotNil(t, c.toolForCall(json.RawMessage(`{"name":"b"}`)))
+			assert.True(t, knows(c, "b"))
 		})
 	}
 }
