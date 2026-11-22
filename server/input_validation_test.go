@@ -657,3 +657,105 @@ func TestSchemaValidation_FallbackFieldSelection(t *testing.T) {
 		})
 	}
 }
+
+// TestSchemaValidation_NativeJSONNameShadowing validates against the depth-0
+// field encoding/json binds, not the embedded field of the same JSON name
+// that jsonschema-go lets win.
+func TestSchemaValidation_NativeJSONNameShadowing(t *testing.T) {
+	type Node struct {
+		Count int `json:"count"`
+	}
+	type Plain struct {
+		Other int `json:"other"`
+	}
+	type ShadowNode struct {
+		Hidden Node `json:"node,omitempty"` //nolint:modernize // Preserve omitempty to exercise native optional-field metadata before shadow selection.
+	}
+	type request struct {
+		Node Plain `json:"node"`
+		ShadowNode
+	}
+	tool := mcp.NewTool("shadow", mcp.WithInputSchema[request](), mcp.WithOutputSchema[request]())
+	for _, test := range []struct {
+		name    string
+		field   string
+		value   any
+		success bool
+	}{
+		{name: "selected field accepted", field: "other", value: 5, success: true},
+		{name: "selected field typed", field: "other", value: "5"},
+		{name: "shadowed field rejected", field: "count", value: 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.NotEmpty(t, tool.RawInputSchema)
+			called := false
+			srv := NewMCPServer("shadow", "1.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+			srv.AddTool(tool, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				called = true
+				var target request
+				if err := req.BindArguments(&target); err != nil {
+					return nil, err
+				}
+				return mcp.NewToolResultStructuredOnly(target), nil
+			})
+			args := map[string]any{"node": map[string]any{test.field: test.value}}
+			response := callTool(t, srv, "shadow", args)
+			if test.success {
+				requireToolSuccess(t, response)
+			} else {
+				requireToolErrorContaining(t, response, test.field)
+			}
+			assert.Equal(t, test.success, called)
+		})
+	}
+}
+
+func TestSchemaValidation_QuotedIgnoredShadow(t *testing.T) {
+	type Embedded struct {
+		Other int `json:"value,string"`
+	}
+	type request struct {
+		Embedded
+		Selected []func() `json:"value,omitempty"`
+	}
+	for _, value := range []request{{Other: 7}, {Other: 7, Selected: []func(){}}} {
+		encoded, err := json.Marshal(value) //nolint:staticcheck // Both nil and empty unsupported slices are omitted before encoding their elements.
+		require.NoError(t, err)
+		assert.JSONEq(t, `{}`, string(encoded))
+	}
+	raw, err := mcp.SchemaForRaw[request]()
+	require.NoError(t, err)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	properties, _ := schema["properties"].(map[string]any)
+	assert.NotContains(t, properties, "value", "the selected unsupported field must be ignored")
+	tool := mcp.NewTool("quoted", mcp.WithInputSchema[request](), mcp.WithOutputSchema[request]())
+	for _, test := range []struct {
+		name    string
+		args    map[string]any
+		success bool
+	}{
+		{name: "omitted unsupported field", args: map[string]any{}, success: true},
+		{name: "shadowed integer rejected", args: map[string]any{"value": 5}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			called := false
+			srv := NewMCPServer("quoted", "1.0", WithInputSchemaValidation(), WithOutputSchemaValidation())
+			srv.AddTool(tool, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				called = true
+				var target request
+				if err := req.BindArguments(&target); err != nil {
+					return nil, err
+				}
+				return mcp.NewToolResultStructuredOnly(target), nil
+			})
+			response := callTool(t, srv, "quoted", test.args)
+			if test.success {
+				requireToolSuccess(t, response)
+			} else {
+				requireToolErrorContaining(t, response, "value")
+			}
+			assert.Equal(t, test.success, called)
+		})
+	}
+}
