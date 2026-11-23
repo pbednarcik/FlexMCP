@@ -326,14 +326,14 @@ func (m *Meta) unmarshalJSONSlow(data []byte) error {
 	}
 	token := raw["progressToken"]
 	if _, number := token.(float64); number {
-		var exact struct {
-			ProgressToken json.RawMessage `json:"progressToken"`
-		}
+		// Read again into a map, whose keys match as spelled: a struct field
+		// would also take a key that only folds onto progressToken.
+		var exact map[string]json.RawMessage
 		if err := json.Unmarshal(data, &exact); err != nil {
 			return err
 		}
 		var err error
-		if token, err = decodeProgressToken(exact.ProgressToken); err != nil {
+		if token, err = decodeProgressToken(exact["progressToken"]); err != nil {
 			return err
 		}
 	}

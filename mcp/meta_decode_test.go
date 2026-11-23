@@ -52,7 +52,7 @@ var metaDiffCorpus = []string{
 	// duplicate keys: the last wins
 	`{"a":1,"a":2}`, `{"a":{"x":1},"a":{"y":2}}`, `{"a":[1],"a":{"z":true}}`, `{"a":{"x":{"y":1},"x":{"z":2}}}`,
 	`{"progressToken":"a","progressToken":5}`, `{"progressToken":5,"progressToken":"a"}`, `{"progressToken":1,"progressToken":2}`,
-	// keys the slow path's case-insensitive re-read of a numeric token matches
+	// keys that fold onto progressToken: fields of their own, never the token
 	`{"progressToken":1,"ProgressToken":"x"}`, `{"PROGRESSTOKEN":3}`, `{"progresstoken":3,"progressToken":4}`,
 	`{"progressToken":4,"progresstoken":3}`, `{"progreſsToken":1,"progressToken":2}`, `{"progressto\u212aen":1,"progressToken":2}`,
 	// keys it does not match: delimiters count
@@ -114,9 +114,6 @@ func checkMetaDiff(t *testing.T, data []byte) bool {
 		require.Equal(t, generic, got.AdditionalFields, "%q", data)
 		requireSameFloatBits(t, generic, got.AdditionalFields, data)
 		switch f, number := token.(float64); {
-		case foldsToProgressToken(generic):
-			// A numeric token is re-read by a case-insensitive match, so a
-			// folded key may give it: the slow path's comparison pins it.
 		case number:
 			require.True(t, sameNumber(got.ProgressToken, f), "%q: token %#v, want the number %v", data, got.ProgressToken, f)
 		default:
@@ -150,17 +147,6 @@ func requireSameFloatBits(t *testing.T, want, got any, data []byte) {
 			requireSameFloatBits(t, value, g[i], data)
 		}
 	}
-}
-
-// foldsToProgressToken reports whether a key of m other than progressToken
-// equals it under case folding.
-func foldsToProgressToken(m map[string]any) bool {
-	for key := range m {
-		if strings.EqualFold(key, "progressToken") {
-			return true
-		}
-	}
-	return false
 }
 
 // sameNumber reports whether token, a progress token read from a number, is

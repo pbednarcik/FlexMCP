@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"strconv"
-	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -101,8 +100,7 @@ var metaConstStrings = func() map[string]any {
 // would, and reports whether it could. It gives up, leaving m as it was, on
 // any input it cannot settle exactly as encoding/json does: not an object,
 // trailing data, a syntax error, invalid UTF-8 or an escape it cannot read, a
-// number out of range, a key other than progressToken that folds to it, or
-// an input longer than maxFastInput.
+// number out of range, or an input longer than maxFastInput.
 func (m *Meta) unmarshalFast(data []byte) bool {
 	if len(data) > maxFastInput {
 		return false
@@ -142,11 +140,6 @@ func (d *valueDecoder) meta(m *Meta) bool {
 				return false
 			}
 			continue
-		}
-		// The slow path re-reads a numeric token by a case-insensitive
-		// match, which such a key would take part in.
-		if strings.EqualFold(key, "progressToken") {
-			return false
 		}
 		value, ok := d.value()
 		if !ok {
