@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -80,7 +81,7 @@ func TestNewSlogLogger_RoutesRecordsToProvider(t *testing.T) {
 
 	var gotMethod string
 	var gotDuration float64
-	records[0].WalkAttributes(func(kv log.KeyValue) bool {
+	records[0].WalkAttributes(func(kv attribute.KeyValue) bool {
 		switch kv.Key {
 		case "mcp.method":
 			gotMethod = kv.Value.AsString()
