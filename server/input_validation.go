@@ -649,7 +649,7 @@ func compileSchema(toolName, kind string, schemaJSON []byte) (*jsonschema.Schema
 	if err != nil {
 		return nil, fmt.Errorf("decode tool %q %s schema: %w", toolName, kind, err)
 	}
-	resourceURL := toolSchemaURL(toolName)
+	resourceURL := toolSchemaURL(toolName, kind)
 	c := jsonschema.NewCompiler()
 	if err := c.AddResource(resourceURL, doc); err != nil {
 		return nil, fmt.Errorf("register tool %q %s schema: %w", toolName, kind, err)
@@ -680,11 +680,11 @@ func compileSchema(toolName, kind string, schemaJSON []byte) (*jsonschema.Schema
 	return compiled, nil
 }
 
-// toolSchemaURL is the URL the input schema of the tool called name is
-// compiled at: an opaque virtual one, so that "$ref" resolution touches
-// neither the filesystem nor the network.
-func toolSchemaURL(name string) string {
-	return "mem:///flexmcp/tools/" + name + "/input-schema.json"
+// toolSchemaURL is the URL the schema of the tool called name is compiled
+// at, kind ("input" or "output") naming the file: an opaque virtual one, so
+// that "$ref" resolution touches neither the filesystem nor the network.
+func toolSchemaURL(name, kind string) string {
+	return "mem:///flexmcp/tools/" + name + "/" + kind + "-schema.json"
 }
 
 // findBoundOutOfRange returns a bound in doc, the schema compiled at
