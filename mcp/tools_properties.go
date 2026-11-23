@@ -144,13 +144,19 @@ func DefaultArray[T any](value []T) PropertyOption {
 
 // setInputProperty stores schema as the tool's input property name. A
 // required flag moves from the property schema into InputSchema.Required,
-// listed once however often the property is declared.
+// listed once however often the property is declared. The last declaration
+// decides, as it does the schema: one without the flag takes name out of
+// Required. Required is replaced, never written in place, so a copied Tool
+// keeps its own; the Properties map a copy shares, as it always has.
 func setInputProperty(t *Tool, name string, schema map[string]any) {
 	if required, ok := schema["required"].(bool); ok && required {
 		delete(schema, "required")
 		if !slices.Contains(t.InputSchema.Required, name) {
-			t.InputSchema.Required = append(t.InputSchema.Required, name)
+			t.InputSchema.Required = append(slices.Clip(t.InputSchema.Required), name)
 		}
+	} else if slices.Contains(t.InputSchema.Required, name) {
+		t.InputSchema.Required = slices.DeleteFunc(slices.Clone(t.InputSchema.Required),
+			func(required string) bool { return required == name })
 	}
 	t.InputSchema.Properties[name] = schema
 }
