@@ -970,7 +970,7 @@ s := server.NewMCPServer("demo", "1.0.0",
 )
 ```
 
-The handler runs only on a failure, before the middleware, with the request's context. It may run concurrently, so it must be safe for concurrent use. It runs on the task path of an earlier protocol version too, before the task is created.
+The handler runs only on a failure, before the middleware, with the request's context; [inside the middleware](#validating-inside-the-middleware) it runs with the chain's. It may run concurrently, so it must be safe for concurrent use. It runs on the task path of an earlier protocol version too, before the task is created.
 
 #### Refuse or proceed
 
@@ -1012,6 +1012,27 @@ For some `propertyNames` failures the validator reports no location that holds, 
 #### Incomplete
 
 Some arguments are refused before the validator reads them: a number with more than 1,100 digits or a decimal scale past 1,100 (`numberOutOfRange`), nesting deeper than 128 levels (`nestedTooDeep`), more values than the server's cap (`tooManyValues`, with the cap in `Expected.Limit`), or, for a request built in process, arguments that cannot be encoded (`unencodable`), such as a NaN a before-call hook wrote. The failure has one violation with that keyword, and `Incomplete` is set. Validation stopped early, so `Omitted` is then a lower bound; without `Incomplete` it is exact.
+
+### Validating Inside the Middleware
+
+By default a call is validated before the tool handler middleware runs, so a middleware never sees a refused call. `WithInputValidationInsideMiddleware` moves validation, and the input validation handler with it, inside the chain, as its innermost link: every middleware is handed the refused call as it is any other, gets the refusal back as the result of the rest of the chain, and the input validation handler gets the context the chain hands the tool handler, with whatever the middleware put in it. A middleware that counts, traces or annotates calls then sees the refused ones too. The option turns input validation on, as `WithInputSchemaValidation` does, and its order among the options does not matter.
+
+```go
+s := server.NewMCPServer("demo", "1.0.0",
+    server.WithToolCapabilities(true),
+    server.WithInputValidationInsideMiddleware(),
+    server.WithToolHandlerMiddleware(countCalls), // sees refused calls as well
+)
+```
+
+- The wire does not change: a refusal is still an `isError` result, limited by `WithToolResultSizeLimit`.
+- Validation reads the call the chain hands it. A middleware that replaces `Params.Arguments` has the value it set validated, read as under a before-call hook, so a number reaches the input validation handler as a `json.Number`. A change made in place to the decoded map is validated only when every number the client sent was exact; when one was not, written with an exponent or more than 15 digits, the bytes the client sent are validated, and the change reaches the tool handler unchecked. To change the arguments, hand down a new map.
+- A middleware that replaces only `RawArguments` has the `Arguments` it left validated, not the new bytes, so `BindArguments` then reads bytes that were not validated, as under a before-call hook. The input validation handler's `CallArguments.Raw` is the `RawArguments` the chain handed down.
+- A middleware that answers without calling the rest of the chain leaves the call unvalidated: no handler runs for it.
+- A fault of the input validation handler, a panic or a forbidden result, reaches the middleware as an error, and the client as a JSON-RPC internal error (-32603), unless a middleware turns the error into a result.
+- Middleware now meets arguments that fail the schema, so one that reads `Params.Arguments` must expect any value there.
+- A task-augmented call of the 2025-11-25 protocol version is still validated before its task is created, and before the middleware.
+- A passing call costs one allocation more than with validation before the middleware.
 
 ## Result Types
 

@@ -919,7 +919,8 @@ func (a callArguments) pastCap(value any) bool {
 // request and could have changed them, or they are null, which validates as
 // an empty object. Sent as raw, they carry their decode too: with no such
 // hook nothing writes Arguments between the request's decode and validation,
-// since middlewares run after it.
+// since middlewares run after it, or, inside the middleware chain, unless one
+// replaced them (validatingHandler).
 //
 // The call of a tool that reads its arguments on demand (onDemand) carries
 // no Arguments unless a hook set them: validation reads the getters' map,
@@ -927,6 +928,12 @@ func (a callArguments) pastCap(value any) bool {
 // object, their decode, as a call decoded at once carries it, so that it
 // reads what it reads without the opt-in.
 func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bool) callArguments {
+	return argumentsToValidateAs(request, onDemand, hooksSeeCallArguments(s.hooks))
+}
+
+// argumentsToValidateAs is argumentsToValidate for a call whose Arguments
+// something may have changed since its decode when roundTrip is set.
+func argumentsToValidateAs(request mcp.CallToolRequest, onDemand, roundTrip bool) callArguments {
 	raw := request.Params.RawArguments
 	arguments := request.Params.Arguments
 	if arguments == nil && len(raw) > 0 {
@@ -934,7 +941,7 @@ func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bo
 			arguments = m
 		}
 	}
-	if len(raw) == 0 || string(raw) == "null" || hooksSeeCallArguments(s.hooks) {
+	if len(raw) == 0 || string(raw) == "null" || roundTrip {
 		if arguments == nil && onDemand && len(raw) > 0 && string(raw) != "null" {
 			arguments = decodedArguments(request.Params)
 		}
@@ -948,7 +955,13 @@ func (s *MCPServer) argumentsToValidate(request mcp.CallToolRequest, onDemand bo
 // then read a round trip of them. Call it once validation ran, whether the
 // call passed or not.
 func (s *MCPServer) markRoundTrip(params *mcp.CallToolParams) {
-	if hooksSeeCallArguments(s.hooks) && len(params.RawArguments) > 0 && string(params.RawArguments) != "null" {
+	markRoundTripAs(params, hooksSeeCallArguments(s.hooks))
+}
+
+// markRoundTripAs is markRoundTrip for a call validation read as a round trip
+// when roundTrip is set (argumentsToValidateAs).
+func markRoundTripAs(params *mcp.CallToolParams, roundTrip bool) {
+	if roundTrip && len(params.RawArguments) > 0 && string(params.RawArguments) != "null" {
 		// MarkRoundTrip is an indirect call, so what it is given escapes. The
 		// copy is declared here, so that only a call that is marked pays for
 		// it, and the caller's request stays on its stack.

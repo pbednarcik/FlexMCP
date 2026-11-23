@@ -238,6 +238,7 @@ type MCPServer struct {
 	inputValidator           *inputSchemaValidator
 	maxValidatedValues       int
 	inputValidationHandler   InputValidationHandler // Answers input validation failures; nil for the default refusal
+	validateInChain          bool                   // Input validation runs as the innermost tool handler middleware
 	outputValidator          *outputSchemaValidator
 	strictInputSchemaDefault bool
 	tracer                   tracing.Tracer

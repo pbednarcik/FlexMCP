@@ -668,7 +668,9 @@ func (s *MCPServer) handleToolCallChecked(
 	// validation failure is returned as a SEP-1303 tool execution error so the
 	// model receives feedback in its context window and can self-correct, or
 	// as the input validation handler answers it, which may let the call run.
-	if s.inputValidator != nil {
+	// With WithInputValidationInsideMiddleware the same check runs instead as
+	// the innermost link of the chain below.
+	if s.inputValidator != nil && !s.validateInChain {
 		ran, err := s.inputValidator.validateRegistered(tool.Tool, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, tool.ArgumentsOnDemand))
 		if ran {
 			s.markRoundTrip(&request.Params)
@@ -687,6 +689,9 @@ func (s *MCPServer) handleToolCallChecked(
 	// The handler runs inside the middlewares, outermost first, the chain
 	// built outside the lock (see toolFilterSnapshot).
 	finalHandler := tool.Handler
+	if s.inputValidator != nil && s.validateInChain {
+		finalHandler = s.validatingHandler(called.registered, called.inputSchema, called.inputSchemaKept, request.Params.RawArguments, request.Params.Arguments, finalHandler)
+	}
 	s.toolMiddlewareMu.RLock()
 	mw := s.toolHandlerMiddlewares
 	s.toolMiddlewareMu.RUnlock()

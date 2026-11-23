@@ -11,24 +11,31 @@ import (
 
 // InputValidationHandler answers a tools/call whose arguments failed input
 // validation. It runs only then, before the middleware, with the request's
-// context; it may run concurrently and must be safe for concurrent use. With
-// refuse true, result answers the call as a tool execution error, IsError
-// forced, limited by WithToolResultSizeLimit; nil answers the default text. A
-// result setting Task, InputRequests, RequestState or ResultType is a fault,
-// as is a panic, recovered even without WithRecovery: both answer -32603,
-// which the error hooks see. With refuse false, result is ignored and the call
-// runs as if it had passed, and the tool handler takes on the duty to validate.
+// context, or, under WithInputValidationInsideMiddleware, as the innermost
+// middleware, with the context the chain hands the tool handler; it may run
+// concurrently and must be safe for concurrent use. With refuse true, result
+// answers the call as a tool execution error, IsError forced, limited by
+// WithToolResultSizeLimit; nil answers the default text. A result setting
+// Task, InputRequests, RequestState or ResultType is a fault, as is a panic,
+// recovered even without WithRecovery: both answer -32603, which the error
+// hooks see; inside the middleware the fault is the error the middleware
+// gets. With refuse false, result is ignored and the call runs as if it had
+// passed, and the tool handler takes on the duty to validate.
 type InputValidationHandler func(ctx context.Context, tool mcp.Tool, args CallArguments, failure InputValidationFailure) (result *mcp.CallToolResult, refuse bool)
 
 // CallArguments are a failing call's arguments as the hook sees them; read-only.
 type CallArguments struct {
 	// Effective is the object validation checked, after any before-call or
-	// before-any hook: {} for null or none, nil for a non-object. A number is
-	// a float64, or a json.Number under such a hook, in process, or, within
+	// before-any hook, or a middleware's replacement of the arguments under
+	// WithInputValidationInsideMiddleware: {} for null or none, nil for a
+	// non-object. A number is a float64, or a json.Number under such a hook
+	// or replacement, in process, or, within
 	// WithMaxValidatedValues, when any number sent has an exponent or over 15
 	// digits: accept both.
 	Effective map[string]any
 	// Raw is the client's bytes, shared with the request; nil in process.
+	// Under WithInputValidationInsideMiddleware it is the RawArguments the
+	// chain handed down, a middleware's replacement if it made one.
 	Raw json.RawMessage
 }
 
