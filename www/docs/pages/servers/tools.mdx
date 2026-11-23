@@ -1034,6 +1034,20 @@ s := server.NewMCPServer("demo", "1.0.0",
 - A task-augmented call of the 2025-11-25 protocol version is still validated before its task is created, and before the middleware.
 - A passing call costs one allocation more than with validation before the middleware.
 
+### Leaving a Tool Unvalidated
+
+`ServerTool.SkipInputValidation` leaves one tool's calls unvalidated by the server while input validation stays on for every other tool. Its calls are never refused by FlexMCP, the input validation handler is not called for them, and they cost nothing to validate. The schema is still compiled at registration, so a schema that does not compile is still refused there. `AddTool` cannot set the field; register the tool with `AddTools`:
+
+```go
+s.AddTools(server.ServerTool{
+    Tool:                editTool,
+    Handler:             handleEdit, // validates its own arguments
+    SkipInputValidation: true,
+})
+```
+
+**The tool handler then takes on the duty to validate its arguments**: the specification requires a server to validate tool inputs, and FlexMCP does not do it for this tool. Set the field only on a tool whose handler checks every argument it reads. It holds on the synchronous path and on the task path of the 2025-11-25 protocol version, before the middleware or [inside it](#validating-inside-the-middleware). A task tool, registered with `AddTaskTool`, has no such field and is always validated.
+
 ## Result Types
 
 ### Text Results

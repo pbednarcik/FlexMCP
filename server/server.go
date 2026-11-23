@@ -97,6 +97,16 @@ type ServerTool struct {
 	// as when the tool is registered again with the opt-in during the call,
 	// keeps its decoded arguments: its handler sees Params.Arguments filled.
 	ArgumentsOnDemand bool
+
+	// SkipInputValidation, when true, leaves this tool's calls unvalidated by
+	// the server even with input validation on: its handler takes on the duty
+	// to validate them (Tools.md row 23), as with an input validation handler
+	// that proceeds, and the input validation handler is never called for
+	// them. Its schema is still compiled at registration. It holds on the
+	// synchronous path and on the task path of the 2025-11-25 protocol
+	// version, wherever validation is placed, and for this tool alone; a task
+	// tool, which has no ServerTool, is validated.
+	SkipInputValidation bool
 }
 
 // ServerTaskTool combines a Tool with its TaskToolHandlerFunc.

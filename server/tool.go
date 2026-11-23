@@ -376,14 +376,12 @@ func (s *MCPServer) ListTools() map[string]*ServerTool {
 	if len(s.tools) == 0 {
 		return nil
 	}
-	// Create a copy to prevent external modification
+	// Copies, as GetTool hands back, every field of each registration
+	// included: the registered tools are shared with the calls made of them.
 	toolsCopy := make(map[string]*ServerTool, len(s.tools))
 	for name, tool := range s.tools {
-		toolsCopy[name] = &ServerTool{
-			Tool:              tool.Tool,
-			Handler:           tool.Handler,
-			ArgumentsOnDemand: tool.ArgumentsOnDemand,
-		}
+		copied := *tool
+		toolsCopy[name] = &copied
 	}
 	return toolsCopy
 }
@@ -669,8 +667,10 @@ func (s *MCPServer) handleToolCallChecked(
 	// model receives feedback in its context window and can self-correct, or
 	// as the input validation handler answers it, which may let the call run.
 	// With WithInputValidationInsideMiddleware the same check runs instead as
-	// the innermost link of the chain below.
-	if s.inputValidator != nil && !s.validateInChain {
+	// the innermost link of the chain below; a tool registered with
+	// SkipInputValidation is validated by neither.
+	validate := s.inputValidator != nil && !tool.SkipInputValidation
+	if validate && !s.validateInChain {
 		ran, err := s.inputValidator.validateRegistered(tool.Tool, called.inputSchema, called.inputSchemaKept, s.argumentsToValidate(request, tool.ArgumentsOnDemand))
 		if ran {
 			s.markRoundTrip(&request.Params)
@@ -689,7 +689,7 @@ func (s *MCPServer) handleToolCallChecked(
 	// The handler runs inside the middlewares, outermost first, the chain
 	// built outside the lock (see toolFilterSnapshot).
 	finalHandler := tool.Handler
-	if s.inputValidator != nil && s.validateInChain {
+	if validate && s.validateInChain {
 		finalHandler = s.validatingHandler(called.registered, called.inputSchema, called.inputSchemaKept, request.Params.RawArguments, request.Params.Arguments, finalHandler)
 	}
 	s.toolMiddlewareMu.RLock()

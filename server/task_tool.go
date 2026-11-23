@@ -91,9 +91,10 @@ func (s *MCPServer) handleToolCallAsTask(
 	// the client fetches the same tool error through tasks/result; it takes
 	// no concurrency slot, since no handler runs for it, so the limit does
 	// not hide the validation error. A fault of the input validation
-	// handler creates no task.
+	// handler creates no task. A tool registered with SkipInputValidation is
+	// not validated; a task tool's regularTool is the zero tool, so it is.
 	var invalid *mcp.CallToolResult
-	if s.inputValidator != nil {
+	if s.inputValidator != nil && !regularTool.SkipInputValidation {
 		toolDef := regularTool.Tool
 		if hasTaskHandler {
 			toolDef = toolToUse.Tool
