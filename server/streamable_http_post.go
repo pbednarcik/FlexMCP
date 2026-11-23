@@ -138,8 +138,10 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 		}
 		// A subscriptions/listen stream is where a modern client receives
 		// the notifications the server broadcasts, such as
-		// notifications/tools/list_changed.
-		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil
+		// notifications/tools/list_changed. A message whose member names the
+		// core refuses is none: it is answered with -32600, opening nothing.
+		listening = jsonMessage.Method == mcp.MethodSubscriptionsListen && requestID != nil &&
+			checkMemberNames(rawData, mcp.MethodSubscriptionsListen).err() == nil
 		// A writer that cannot stream would hold the listen open with nothing
 		// ever written: refuse it now, with 500, since the fault is the
 		// deployment's (httpStatusForJSONRPCError would give 200).
