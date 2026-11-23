@@ -1016,7 +1016,9 @@ func normalizeRawArguments(raw json.RawMessage) (any, error) {
 // range, where a decimal of at most 15 significant digits is the shortest
 // decimal of the float64 nearest it, up to trailing zeros: 10^15 < 2^52, so no
 // two such decimals round to the same float64. A minus zero reads as zero
-// either way. The scan reads raw once and allocates nothing.
+// either way. The scan makes one pass over raw and allocates nothing.
+//
+// A string is skipped to its closing quote by stringEnd.
 func scanArguments(raw []byte, maxValues int) (exact, within bool) {
 	depth, deepest, values := 0, 0, 0
 	for i := 0; i < len(raw); i++ {
@@ -1030,11 +1032,7 @@ func scanArguments(raw []byte, maxValues int) (exact, within bool) {
 		case c == ']' || c == '}':
 			depth--
 		case c == '"':
-			for i++; i < len(raw) && raw[i] != '"'; i++ {
-				if raw[i] == '\\' {
-					i++
-				}
-			}
+			i = stringEnd(raw, i)
 		case c == '-' || '0' <= c && c <= '9':
 			digits := 0
 			for ; i < len(raw); i++ {
@@ -1057,6 +1055,60 @@ func scanArguments(raw []byte, maxValues int) (exact, within bool) {
 		}
 	}
 	return true, deepest <= maxArgumentDepth && (maxValues <= 0 || values <= maxValues)
+}
+
+// stringPlainRun is how many bytes in a row with no quote or backslash
+// stringEnd reads one at a time before it searches the rest of the string
+// for its next quote with bytes.IndexByte. Searching costs a call, which a
+// string dense in escaped quotes would pay for every few bytes; reading
+// costs a step for every byte, which a long run of plain text would pay all
+// along. BenchmarkInputValidationLegs found 8, 16, 32 and 64 alike on its
+// dense legs, within 3 % of reading every byte, and 8 and 16 the fastest
+// on an indented JSON document; a 256 KiB plain string reads in about
+// 2.5 microseconds at each.
+const stringPlainRun = 16
+
+// stringEnd returns the index of the quote that closes the string whose
+// opening quote is raw[open], or len(raw) when no quote closes it. It reads
+// the string a byte at a time, a backslash taking the byte after it along,
+// until stringPlainRun bytes in a row are neither, and then searches for the
+// next quote: that one closes the string when an even run of backslashes
+// stands before it, each pair one escaped backslash, and is escaped by an
+// odd run, after which reading goes on a byte at a time. The run is counted
+// back from the quote, and the byte before the search began is neither a
+// quote nor a backslash, so the count stops there at the latest: no byte is
+// read more than twice.
+func stringEnd(raw []byte, open int) int {
+	i := open + 1
+	for {
+		// The byte-at-a-time skip, its end moved past each escape, so that
+		// it ends after stringPlainRun plain bytes in a row.
+		limit := min(len(raw), i+stringPlainRun)
+		for ; i < limit && raw[i] != '"'; i++ {
+			if raw[i] == '\\' {
+				i++
+				limit = min(len(raw), i+1+stringPlainRun)
+			}
+		}
+		if i < limit {
+			return i
+		}
+		if i >= len(raw) {
+			return len(raw)
+		}
+		k := bytes.IndexByte(raw[i:], '"')
+		if k < 0 {
+			return len(raw)
+		}
+		quote, run := i+k, 0
+		for b := quote - 1; raw[b] == '\\'; b-- {
+			run++
+		}
+		if run%2 == 0 {
+			return quote
+		}
+		i = quote + 1
+	}
 }
 
 // A failing call's feedback is bounded: the first maxValidationMessages

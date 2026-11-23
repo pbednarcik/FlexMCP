@@ -338,17 +338,38 @@ func refusingInputValidation() ServerOption {
 }
 
 // BenchmarkInputValidationLegs splits a validated call's cost into its legs
-// for two shapes of arguments: edit256k, one 256 KiB string, and read4, four
-// small members three of them bounded numbers. decode is the request's own
-// decode of the call's params; scan is scanArguments over the raw arguments
-// alone; validate is validateArguments, the scan and the validator's walk over
-// the decode, as a passing call pays for it.
+// for shapes of arguments: edit256k, one 256 KiB string; read4, four small
+// members three of them bounded numbers; and three 256 KiB strings dense in
+// escaped quotes, a string skip's worst case: escquote, `\"` over and over,
+// embeddedjson, a JSON array sent as a string, and prettyjson, an indented
+// JSON document sent as one. decode is the request's own decode of the
+// call's params; scan is scanArguments over the raw arguments alone, and
+// byteloop the same scan reading every string a byte at a time
+// (scanArgumentsByteByByte), the bar scan is measured against; validate is
+// validateArguments, the scan and the validator's walk over the decode, as a
+// passing call pays for it.
 func BenchmarkInputValidationLegs(b *testing.B) {
+	const contentSchema = `{"type":"object","properties":{"content":{"type":"string"},"file":{"type":"string"}}}`
 	for _, leg := range []struct{ name, schema, args string }{
 		{
 			name:   "edit256k",
-			schema: `{"type":"object","properties":{"content":{"type":"string"},"file":{"type":"string"}}}`,
+			schema: contentSchema,
 			args:   `{"content":"` + strings.Repeat("abcdefgh", 32<<10) + `"}`,
+		},
+		{
+			name:   "escquote",
+			schema: contentSchema,
+			args:   `{"content":"` + strings.Repeat(`\"`, 128<<10) + `"}`,
+		},
+		{
+			name:   "embeddedjson",
+			schema: contentSchema,
+			args:   `{"content":"` + strings.Repeat(`{\"k\":\"v\",\"n\":1},`, 256<<10/20) + `"}`,
+		},
+		{
+			name:   "prettyjson",
+			schema: contentSchema,
+			args:   `{"content":` + prettyDocument(b, 256<<10) + `}`,
 		},
 		{
 			name:   "read4",
@@ -388,6 +409,12 @@ func BenchmarkInputValidationLegs(b *testing.B) {
 				scanArguments(args.raw, args.maxValues)
 			}
 		})
+		b.Run(leg.name+"/byteloop", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				scanArgumentsByteByByte(args.raw, args.maxValues)
+			}
+		})
 		b.Run(leg.name+"/validate", func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
@@ -397,4 +424,37 @@ func BenchmarkInputValidationLegs(b *testing.B) {
 			}
 		})
 	}
+}
+
+// prettyDocument is an indented JSON document of at least size bytes, an
+// array of records holding lines of Go source, JSON-encoded as one string:
+// what a client sends to write such a file. Its escaped quotes come a few to
+// a few dozen bytes apart.
+func prettyDocument(tb testing.TB, size int) string {
+	tb.Helper()
+	lines := []string{
+		`func (s *MCPServer) handle(ctx context.Context, id any, request mcp.CallToolRequest) (any, *requestError) {`,
+		`	if err := s.check(ctx, "tools/call", request.Params.Name); err != nil {`,
+		`		return nil, &requestError{id: id, code: mcp.INVALID_PARAMS, err: err}`,
+		`	}`,
+		`	name := request.GetString("name", "")`,
+		`	// The handler runs inside the middlewares, outermost first.`,
+		`	result, err := s.run(ctx, map[string]any{"name": name, "limit": 10, "tags": []string{"a", "b"}})`,
+		``,
+	}
+	var records []map[string]any
+	for n := 0; n < size; n += 64 {
+		line := lines[len(records)%len(lines)]
+		records = append(records, map[string]any{"line": line, "number": len(records) + 1, "blank": line == ""})
+		n += len(line)
+	}
+	doc, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	encoded, err := json.Marshal(string(doc))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return string(encoded)
 }
