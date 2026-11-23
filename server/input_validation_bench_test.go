@@ -336,3 +336,65 @@ func refusingInputValidation() ServerOption {
 		return mcp.NewToolResultError(fmt.Sprintf("refused %d+%d", len(failure.Violations), failure.Omitted)), true
 	})
 }
+
+// BenchmarkInputValidationLegs splits a validated call's cost into its legs
+// for two shapes of arguments: edit256k, one 256 KiB string, and read4, four
+// small members three of them bounded numbers. decode is the request's own
+// decode of the call's params; scan is scanArguments over the raw arguments
+// alone; validate is validateArguments, the scan and the validator's walk over
+// the decode, as a passing call pays for it.
+func BenchmarkInputValidationLegs(b *testing.B) {
+	for _, leg := range []struct{ name, schema, args string }{
+		{
+			name:   "edit256k",
+			schema: `{"type":"object","properties":{"content":{"type":"string"},"file":{"type":"string"}}}`,
+			args:   `{"content":"` + strings.Repeat("abcdefgh", 32<<10) + `"}`,
+		},
+		{
+			name:   "read4",
+			schema: `{"type":"object","properties":{"file":{"type":"string"},"tail":{"type":"number","minimum":1},"start_line":{"type":"number","minimum":1},"end_line":{"type":"number","minimum":1}}}`,
+			args:   `{"file":"/tmp/x/small.txt","tail":5,"start_line":1,"end_line":2}`,
+		},
+	} {
+		body := []byte(`{"name":"t","arguments":` + leg.args + `}`)
+		var params mcp.CallToolParams
+		if err := json.Unmarshal(body, &params); err != nil {
+			b.Fatal(err)
+		}
+		srv := NewMCPServer("bench", "1.0.0", WithInputSchemaValidation())
+		entry, err := srv.inputValidator.compileAtRegistration(mcp.NewToolWithRawSchema("t", "", json.RawMessage(leg.schema)))
+		if err != nil || entry == nil {
+			b.Fatalf("leg %s: schema not compiled: %v", leg.name, err)
+		}
+		args := callArguments{raw: params.RawArguments, decoded: params.Arguments, maxValues: DefaultMaxValidatedValues}
+
+		// The arguments are exact and within the cap, so validate reads the
+		// decode as it is and never decodes them again.
+		if exact, within := scanArguments(args.raw, args.maxValues); !exact || !within {
+			b.Fatalf("leg %s: scan says exact %v, within %v", leg.name, exact, within)
+		}
+		b.Run(leg.name+"/decode", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var p mcp.CallToolParams
+				if err := json.Unmarshal(body, &p); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(leg.name+"/scan", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				scanArguments(args.raw, args.maxValues)
+			}
+		})
+		b.Run(leg.name+"/validate", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if ran, err := validateArguments(entry, args); !ran || err != nil {
+					b.Fatalf("validated %v: %v", ran, err)
+				}
+			}
+		})
+	}
+}
