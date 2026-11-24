@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"mime"
 	"net/http"
 	"time"
 
@@ -127,8 +126,7 @@ func (c *StreamableHTTP) createGETConnectionToServer(ctx context.Context) (opene
 
 	// handle SSE response. Parse the media type to tolerate parameters such as
 	// "text/event-stream; charset=utf-8" (same handling as SendRequest).
-	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if mediaType != "text/event-stream" {
+	if mediaTypeOf(resp.Header.Get("Content-Type")) != "text/event-stream" {
 		return false, fmt.Errorf("unexpected content type: %s", resp.Header.Get("Content-Type"))
 	}
 

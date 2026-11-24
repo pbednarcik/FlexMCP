@@ -99,7 +99,8 @@ func TestStreamableHTTPReadsOnceWithTheSameAnswers(t *testing.T) {
 // result itself (decorateResult; 59 measured), 46 with _meta read in one
 // pass, 44 with the strings a client repeats kept by the decoder, 43 with
 // Last-Event-ID looked up by its canonical key, 42 with the result's _meta
-// values encoded straight into the response.
+// values encoded straight into the response, 41 with the Content-Type every
+// client sends taken without parsing it.
 func TestStreamableHTTPModernToolCallAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -114,5 +115,5 @@ func TestStreamableHTTPModernToolCallAllocations(t *testing.T) {
 	}
 	harness := testing.AllocsPerRun(1000, func() { _, _ = request(), httptest.NewRecorder() })
 	total := testing.AllocsPerRun(1000, func() { h.ServeHTTP(httptest.NewRecorder(), request()) })
-	assert.LessOrEqual(t, total-harness, 42.0, "allocations in the server per modern tools/call over HTTP")
+	assert.LessOrEqual(t, total-harness, 41.0, "allocations in the server per modern tools/call over HTTP")
 }

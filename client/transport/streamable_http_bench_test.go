@@ -144,9 +144,9 @@ func BenchmarkStreamableHTTPSSEAnswer(b *testing.B) {
 	}
 }
 
-// A request costs the client a bounded number of allocations: 39 for an
-// answer of no stated length, 40 when the server URL's string was made for
-// every request. An answer whose length is stated, as net/http states a
+// A request costs the client a bounded number of allocations: 38 for an
+// answer of no stated length, 39 when its media type was parsed, 40 when the
+// server URL's string was made for every request. An answer whose length is stated, as net/http states a
 // small one, costs one more, the timer that bounds the read of what is left
 // of it on release.
 func TestStreamableHTTPSendRequestAllocations(t *testing.T) {
@@ -159,8 +159,8 @@ func TestStreamableHTTPSendRequestAllocations(t *testing.T) {
 		length int64
 		max    float64
 	}{
-		{"no length stated", 0, 39},
-		{"its length stated", int64(len(answer)), 40},
+		{"no length stated", 0, 38},
+		{"its length stated", int64(len(answer)), 39},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := NewStreamableHTTP("http://127.0.0.1:1/mcp", WithHTTPBasicClient(&http.Client{
@@ -194,8 +194,9 @@ func fewestAllocs(rounds, runs int, f func()) float64 {
 	return fewest
 }
 
-// An answer on an event stream costs a bounded number of allocations: 53
-// for an empty text and 59 for 16 KiB of it.
+// An answer on an event stream costs a bounded number of allocations: 52
+// for an empty text and 58 for 16 KiB of it, one more each when its media
+// type was parsed.
 func TestStreamableHTTPSSEAnswerAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -203,7 +204,7 @@ func TestStreamableHTTPSSEAnswerAllocations(t *testing.T) {
 	for _, tc := range []struct {
 		size int
 		max  float64
-	}{{0, 53}, {16 << 10, 59}} {
+	}{{0, 52}, {16 << 10, 58}} {
 		t.Run(fmt.Sprint(tc.size), func(t *testing.T) {
 			c, err := NewStreamableHTTP("http://127.0.0.1:1/mcp", WithHTTPBasicClient(&http.Client{
 				Transport: eventStreamRoundTripper{body: eventStreamAnswer(tc.size)},

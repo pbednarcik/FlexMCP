@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"strconv"
 	"time"
@@ -218,7 +217,7 @@ func (c *StreamableHTTP) resumeSSE(ctx context.Context, cursor *sseCursor, handl
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
-	if mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mediaType != "text/event-stream" {
+	if mediaTypeOf(resp.Header.Get("Content-Type")) != "text/event-stream" {
 		return false, fmt.Errorf("unexpected content type %q", resp.Header.Get("Content-Type"))
 	}
 	return c.readSSEWithCursor(ctx, resp.Body, cursor, handler), nil

@@ -656,8 +656,7 @@ func (c *StreamableHTTP) sendRequest(
 	}
 
 	// Handle different response types
-	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	switch mediaType {
+	switch mediaTypeOf(resp.Header.Get("Content-Type")) {
 	case "application/json":
 		// Single response. One whose stated length is over the bound fails
 		// without being decoded, and only releaseResponse's bounded drain
@@ -1010,4 +1009,17 @@ func (c *StreamableHTTP) closedError(err error) error {
 	default:
 		return err
 	}
+}
+
+// mediaTypeOf returns the media type contentType names, as
+// mime.ParseMediaType reads it, a parameter it cannot read ignored. The two
+// types a server answers with are taken as they are, with nothing parsed; any
+// other spelling, with parameters or in capitals, is parsed.
+func mediaTypeOf(contentType string) string {
+	switch contentType {
+	case "application/json", "text/event-stream":
+		return contentType
+	}
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	return mediaType
 }

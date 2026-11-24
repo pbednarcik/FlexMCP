@@ -20,9 +20,7 @@ func (s *StreamableHTTPServer) handlePost(w HTTPResponseWriter, r *HTTPRequest) 
 	// post request carry request/notification message
 
 	// Check content type
-	contentType := r.header().Get("Content-Type")
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil || mediaType != "application/json" {
+	if !isJSONMediaType(r.header().Get("Content-Type")) {
 		writeHTTPError(w, "Invalid content type: must be 'application/json'", http.StatusBadRequest)
 		return
 	}
@@ -504,6 +502,18 @@ var (
 	sseEventData = []byte("event: message\ndata: ")
 	sseEventEnd  = []byte("\n\n")
 )
+
+// isJSONMediaType reports whether contentType names application/json as
+// mime.ParseMediaType reads it, parameters and all. The type every client
+// sends is taken as it is, with nothing parsed; any other spelling, with
+// parameters or in capitals, is parsed.
+func isJSONMediaType(contentType string) bool {
+	if contentType == "application/json" {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && mediaType == "application/json"
+}
 
 // startSSEResponse commits the response as an SSE stream: the headers every
 // stream carries, including the one that asks proxies not to buffer events
