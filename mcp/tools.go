@@ -520,6 +520,94 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
+// MarshalJSONTo writes the tool into enc as MarshalJSON writes it, members in
+// the order json.Marshal gives MarshalJSON's map. When enc encodes as
+// json.Marshal does, as the server's encoders do, each member is written
+// straight in, without the map, its boxed values and the copy of the encoded
+// tool; otherwise MarshalJSON's bytes are written. A tool with both forms of
+// a schema is refused before anything is written.
+func (t *Tool) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if !encodesAsMarshal(enc) {
+		encoded, err := t.MarshalJSON()
+		if err != nil {
+			return err
+		}
+		return enc.WriteValue(encoded)
+	}
+	if t.RawInputSchema != nil && (t.InputSchema.Type != "" || t.InputSchema.Types != nil || len(t.InputSchema.AdditionalFields) > 0) {
+		return fmt.Errorf("tool %s has both InputSchema and RawInputSchema set: %w", t.Name, errToolSchemaConflict)
+	}
+	if t.RawOutputSchema != nil && !t.OutputSchema.IsZero() {
+		return fmt.Errorf("tool %s has both OutputSchema and RawOutputSchema set: %w", t.Name, errToolSchemaConflict)
+	}
+	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+		return err
+	}
+	if t.Meta != nil {
+		if err := writeMember(enc, "_meta", t.Meta); err != nil {
+			return err
+		}
+	}
+	if err := writeMember(enc, "annotations", &t.Annotations); err != nil {
+		return err
+	}
+	if t.DeferLoading {
+		if err := writeTokens(enc, "defer_loading", jsontext.True); err != nil {
+			return err
+		}
+	}
+	if t.Description != "" {
+		if err := writeTokens(enc, "description", jsontext.String(t.Description)); err != nil {
+			return err
+		}
+	}
+	if t.Execution != nil {
+		if err := writeMember(enc, "execution", t.Execution); err != nil {
+			return err
+		}
+	}
+	if t.Icons != nil {
+		if err := writeMember(enc, "icons", &t.Icons); err != nil {
+			return err
+		}
+	}
+	if t.RawInputSchema != nil {
+		if err := writeMember(enc, "inputSchema", &t.RawInputSchema); err != nil {
+			return err
+		}
+	} else if err := writeSchemaMember(enc, "inputSchema", (*ToolArgumentsSchema)(&t.InputSchema)); err != nil {
+		return err
+	}
+	if err := writeTokens(enc, "name", jsontext.String(t.Name)); err != nil {
+		return err
+	}
+	if t.RawOutputSchema != nil {
+		if err := writeMember(enc, "outputSchema", &t.RawOutputSchema); err != nil {
+			return err
+		}
+	} else if !t.OutputSchema.IsZero() {
+		outputSchema := t.OutputSchema.AsObjectSchema()
+		if err := writeSchemaMember(enc, "outputSchema", (*ToolArgumentsSchema)(&outputSchema)); err != nil {
+			return err
+		}
+	}
+	if t.Title != "" {
+		if err := writeTokens(enc, "title", jsontext.String(t.Title)); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(jsontext.EndObject)
+}
+
+// writeSchemaMember writes a member named name whose value is the schema
+// tis, into an encoder that encodes as json.Marshal does.
+func writeSchemaMember(enc *jsontext.Encoder, name string, tis *ToolArgumentsSchema) error {
+	if err := enc.WriteToken(jsontext.String(name)); err != nil {
+		return err
+	}
+	return writeToolSchema(enc, tis)
+}
+
 type ToolAnnotation struct {
 	// Human-readable title for the tool
 	Title string `json:"title,omitempty"`

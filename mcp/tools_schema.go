@@ -3,6 +3,8 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"slices"
 	"strings"
@@ -84,6 +86,21 @@ func (tis ToolArgumentsSchema) MarshalJSON() ([]byte, error) {
 	return toolArgumentsSchemaMarshalJSON(tis)
 }
 
+// MarshalJSONTo writes the schema into enc as MarshalJSON writes it. When enc
+// encodes as json.Marshal does, each keyword is written straight in, without
+// the map MarshalJSON builds, its boxed values and the copy of the encoded
+// schema; otherwise MarshalJSON's bytes are written.
+func (tis *ToolArgumentsSchema) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if !encodesAsMarshal(enc) {
+		encoded, err := tis.MarshalJSON()
+		if err != nil {
+			return err
+		}
+		return enc.WriteValue(encoded)
+	}
+	return writeToolSchema(enc, tis)
+}
+
 // UnmarshalJSON implements the json.Unmarshaler interface for ToolInputSchema.
 func (tis *ToolInputSchema) UnmarshalJSON(data []byte) error {
 	return (*ToolArgumentsSchema)(tis).UnmarshalJSON(data)
@@ -154,6 +171,149 @@ func toolArgumentsSchemaMarshalJSON(tis ToolArgumentsSchema) ([]byte, error) {
 	}
 
 	return json.Marshal(m)
+}
+
+// writeToolSchema writes tis into enc, which encodes as json.Marshal does, as
+// toolArgumentsSchemaMarshalJSON writes it: the kept keywords and the modeled
+// ones together, in the order json.Marshal gives a map's keys.
+func writeToolSchema(enc *jsontext.Encoder, tis *ToolArgumentsSchema) error {
+	// Most schemas keep no keyword of their own: the modeled ones fit on the
+	// stack.
+	var fixed [8]string
+	keys := fixed[:0]
+	for key := range tis.AdditionalFields {
+		if !isModeledToolSchemaKeyword(key) {
+			keys = append(keys, key)
+		}
+	}
+	keys = append(keys, "type", "properties")
+	if tis.Defs != nil {
+		keys = append(keys, "$defs")
+	}
+	if len(tis.Required) > 0 || schemaDialectOf(tis.AdditionalFields["$schema"]) != dialectDraft04 {
+		keys = append(keys, "required")
+	}
+	if tis.AdditionalProperties != nil {
+		keys = append(keys, "additionalProperties")
+	}
+	slices.Sort(keys)
+
+	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := writeToolSchemaKeyword(enc, tis, key); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(jsontext.EndObject)
+}
+
+// writeToolSchemaKeyword writes the member key of the schema tis, as
+// toolArgumentsSchemaMarshalJSON's map holds it.
+func writeToolSchemaKeyword(enc *jsontext.Encoder, tis *ToolArgumentsSchema, key string) error {
+	if !isModeledToolSchemaKeyword(key) {
+		if err := writeMetaName(enc, key); err != nil {
+			return err
+		}
+		return jsonv2.MarshalEncode(enc, tis.AdditionalFields[key])
+	}
+	if err := enc.WriteToken(jsontext.String(key)); err != nil {
+		return err
+	}
+	switch key {
+	case "type":
+		if tis.Type == "" && tis.Types != nil {
+			return jsonv2.MarshalEncode(enc, &tis.Types)
+		}
+		return enc.WriteToken(jsontext.String(tis.Type))
+	case "$defs":
+		return jsonv2.MarshalEncode(enc, tis.Defs)
+	case "properties":
+		// Written as '{}' rather than null when there are none.
+		switch {
+		case tis.PropertyOrder != nil:
+			return writeOrderedProperties(enc, tis.Properties, tis.PropertyOrder)
+		case tis.Properties != nil:
+			return jsonv2.MarshalEncode(enc, tis.Properties)
+		}
+		if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+			return err
+		}
+		return enc.WriteToken(jsontext.EndObject)
+	case "required":
+		// Written as '[]' rather than null when there are none.
+		if len(tis.Required) > 0 {
+			return jsonv2.MarshalEncode(enc, &tis.Required)
+		}
+		if err := enc.WriteToken(jsontext.BeginArray); err != nil {
+			return err
+		}
+		return enc.WriteToken(jsontext.EndArray)
+	}
+	return jsonv2.MarshalEncode(enc, tis.AdditionalProperties)
+}
+
+// orderedPropertiesSeen is the most names writeOrderedProperties looks
+// through one by one; a longer order is looked up in a set.
+const orderedPropertiesSeen = 32
+
+// writeOrderedProperties writes properties into enc as
+// marshalOrderedProperties encodes them: the names order lists first, those
+// not in properties and the repeats skipped, then the rest in sorted order.
+func writeOrderedProperties(enc *jsontext.Encoder, properties map[string]any, order []string) error {
+	// The names written are looked through one by one while order is
+	// short, on the stack; a longer order keeps them in a set.
+	var fixed [orderedPropertiesSeen]string
+	written := fixed[:0]
+	var writtenSet map[string]bool
+	if len(order) > orderedPropertiesSeen {
+		writtenSet = make(map[string]bool, len(order))
+	}
+
+	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
+		return err
+	}
+	count := 0
+	for _, name := range order {
+		value, ok := properties[name]
+		if !ok || writtenSet[name] || (writtenSet == nil && slices.Contains(written, name)) {
+			continue
+		}
+		if err := writeProperty(enc, name, value); err != nil {
+			return err
+		}
+		if writtenSet != nil {
+			writtenSet[name] = true
+		} else {
+			written = append(written, name)
+		}
+		count++
+	}
+	if count < len(properties) {
+		rest := make([]string, 0, len(properties)-count)
+		for name := range properties {
+			if !writtenSet[name] && (writtenSet != nil || !slices.Contains(written, name)) {
+				rest = append(rest, name)
+			}
+		}
+		slices.Sort(rest)
+		for _, name := range rest {
+			if err := writeProperty(enc, name, properties[name]); err != nil {
+				return err
+			}
+		}
+	}
+	return enc.WriteToken(jsontext.EndObject)
+}
+
+// writeProperty writes a member named name whose value is value, the name as
+// json.Marshal writes a map's key.
+func writeProperty(enc *jsontext.Encoder, name string, value any) error {
+	if err := writeMetaName(enc, name); err != nil {
+		return err
+	}
+	return jsonv2.MarshalEncode(enc, value)
 }
 
 // marshalOrderedProperties encodes properties as a JSON object. Keys listed in
