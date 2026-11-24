@@ -254,6 +254,9 @@ func (m *Meta) MarshalJSONTo(enc *jsontext.Encoder) error {
 	}
 	slices.Sort(keys)
 
+	// An encoder that encodes as json.Marshal does takes each value straight
+	// in: what it writes is what json.Marshal would, with no bytes of its own.
+	direct := encodesAsMarshal(enc)
 	if err := enc.WriteToken(jsontext.BeginObject); err != nil {
 		return err
 	}
@@ -264,6 +267,12 @@ func (m *Meta) MarshalJSONTo(enc *jsontext.Encoder) error {
 		}
 		if err := writeMetaName(enc, key); err != nil {
 			return err
+		}
+		if direct {
+			if err := jsonv2.MarshalEncode(enc, value); err != nil {
+				return err
+			}
+			continue
 		}
 		// A value is written by encoding/json's own rules, whatever the
 		// enclosing encoder's options, as MarshalJSON's output always was.

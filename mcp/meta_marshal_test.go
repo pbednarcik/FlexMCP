@@ -104,6 +104,8 @@ func FuzzMetaMarshalJSON(f *testing.F) {
 // A result's _meta and a modern request's, inside the json.Marshal that
 // carries them, cost fewer allocations than the map copy did: written into
 // the enclosing encoder they need no map, no buffer and no bytes of their own.
+// Each value is encoded straight in too, not into bytes of its own: 5 and 12
+// allocations when it was, 4 and 8 now.
 func TestMetaMarshalJSONAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -111,19 +113,21 @@ func TestMetaMarshalJSONAllocations(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		meta *Meta
+		max  float64
 	}{
-		{"a result's _meta", &Meta{AdditionalFields: map[string]any{MetaKeyServerInfo: Implementation{Name: "bench", Version: "1.0.0"}}}},
+		{"a result's _meta", &Meta{AdditionalFields: map[string]any{MetaKeyServerInfo: Implementation{Name: "bench", Version: "1.0.0"}}}, 4},
 		{"a modern request's _meta", &Meta{ProgressToken: "p-1", AdditionalFields: map[string]any{
 			MetaKeyProtocolVersion:    "2026-07-28",
 			MetaKeyClientInfo:         Implementation{Name: "c", Version: "1"},
 			MetaKeyClientCapabilities: ClientCapabilities{},
-		}}},
+		}}, 8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := testing.AllocsPerRun(1000, func() { _, _ = enclosed(tc.meta, true) })
 			after := testing.AllocsPerRun(1000, func() { _, _ = enclosed(tc.meta, false) })
 			t.Logf("map copy %v, written into the encoder %v", before, after)
 			assert.Less(t, after, before)
+			assert.LessOrEqual(t, after, tc.max, "allocations per _meta written")
 		})
 	}
 }
