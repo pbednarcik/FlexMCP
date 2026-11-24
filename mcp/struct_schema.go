@@ -29,7 +29,7 @@ func schemaFor[T any]() (*jsonschema.Schema, error) {
 		}
 		schema, err = state.schemaForStructFields(reflect.TypeFor[T](), opts, false)
 	} else {
-		schema, err = state.reconcileNativeSchema(reflect.TypeFor[T](), schema, opts, false)
+		schema, err = state.reconcileRootSchema(reflect.TypeFor[T](), schema, opts)
 	}
 	if err != nil {
 		return nil, err
@@ -184,9 +184,15 @@ func (s *schemaFallbackState) schemaForFieldType(
 		return schema, err
 	}
 
+	// A nil pointer, slice or map is written as null, so its schema admits
+	// null, as the one jsonschema-go infers for a pointer or a slice does.
 	switch t.Kind() {
 	case reflect.Pointer:
-		return s.schemaForFieldType(t.Elem(), opts, true)
+		schema, err := s.schemaForFieldType(t.Elem(), opts, true)
+		if err == nil {
+			allowNull(schema)
+		}
+		return schema, err
 	case reflect.Struct:
 		return s.schemaForStructFields(t, opts, addressable)
 	case reflect.Array, reflect.Slice:
@@ -195,6 +201,9 @@ func (s *schemaFallbackState) schemaForFieldType(
 			return nil, itemErr
 		}
 		schema := &jsonschema.Schema{Type: "array", Items: items}
+		if t.Kind() == reflect.Slice {
+			allowNull(schema)
+		}
 		if t.Kind() == reflect.Array {
 			schema.MinItems = new(t.Len())
 			schema.MaxItems = new(t.Len())
@@ -208,17 +217,45 @@ func (s *schemaFallbackState) schemaForFieldType(
 		if valueErr != nil {
 			return nil, valueErr
 		}
-		return &jsonschema.Schema{Type: "object", AdditionalProperties: values}, nil
+		return &jsonschema.Schema{Types: []string{"null", "object"}, AdditionalProperties: values}, nil
 	default:
 		return nil, err
 	}
 }
 
+// allowNull adds null to the type schema admits, as jsonschema-go does for a
+// pointer. A schema of no type admits null already, and one of several types
+// built here names null among them.
+func allowNull(schema *jsonschema.Schema) {
+	if schema != nil && schema.Type != "" {
+		schema.Types = []string{"null", schema.Type}
+		schema.Type = ""
+	}
+}
+
+// reconcileRootSchema is reconcileNativeSchema for the root of the schema: a
+// root map stays an object, as a tool's arguments and structured result are
+// objects, while the maps inside it admit null.
+func (s *schemaFallbackState) reconcileRootSchema(
+	t reflect.Type,
+	schema *jsonschema.Schema,
+	opts *jsonschema.ForOptions,
+) (*jsonschema.Schema, error) {
+	if schema == nil || t.Kind() != reflect.Map || t.Key().Kind() != reflect.String || hasCustomJSONEncoding(t, false) {
+		return s.reconcileNativeSchema(t, schema, opts, false)
+	}
+	var err error
+	schema.AdditionalProperties, err = s.reconcileNativeSchema(t.Elem(), schema.AdditionalProperties, opts, false)
+	return schema, err
+}
+
 // reconcileNativeSchema keeps a schema jsonschema-go inferred, and rebuilds a
 // struct's properties only where its field choice, which follows Go's
 // selector rules and lets a later field of one JSON name overwrite an
-// earlier one, disagrees with the field encoding/json selects. A type that
-// encodes itself is left as it is.
+// earlier one, disagrees with the field encoding/json selects, and lets a
+// map admit null, which jsonschema-go does for a pointer or a slice but not
+// for a map: encoding/json writes a nil one as null. A type that encodes
+// itself is left as it is.
 func (s *schemaFallbackState) reconcileNativeSchema(
 	t reflect.Type,
 	schema *jsonschema.Schema,
@@ -271,6 +308,7 @@ func (s *schemaFallbackState) reconcileNativeSchema(
 		schema.Items, err = s.reconcileNativeSchema(t.Elem(), schema.Items, opts, addressable || t.Kind() == reflect.Slice)
 	case reflect.Map:
 		if t.Key().Kind() == reflect.String {
+			allowNull(schema)
 			schema.AdditionalProperties, err = s.reconcileNativeSchema(t.Elem(), schema.AdditionalProperties, opts, false)
 		}
 	}
@@ -430,6 +468,8 @@ func hasCustomJSONEncoding(t reflect.Type, addressable bool) bool {
 // applyStructFieldTags sets each property's description and enum from the
 // field encoding/json picks for it (selectedJSONFields): a field it shadows
 // lends none, and one promoted from an unexported embedding keeps its own.
+// The enum of a property that admits null, a nil pointer, slice or map
+// field's, admits null too, as quotedFieldSchema's does.
 func applyStructFieldTags(t reflect.Type, schema *jsonschema.Schema) {
 	if schema == nil || schema.Properties == nil {
 		return
@@ -452,6 +492,9 @@ func applyStructFieldTags(t reflect.Type, schema *jsonschema.Schema) {
 			prop.Description = description
 		}
 		if len(enums) > 0 {
+			if slices.Contains(prop.Types, "null") {
+				enums = append(enums, nil)
+			}
 			prop.Enum = enums
 		}
 		applyStructFieldTagsToType(field.field.Type, prop)

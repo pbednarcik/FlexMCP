@@ -238,8 +238,8 @@ func TestSchemaFor_QuotedFieldEnums(t *testing.T) {
 
 // FlexMCP: upstream's root-container rows ([]T, [2]T, map[string]T, **T of a
 // fallback struct T) are left out, as FlexMCP's tag fallback starts at a
-// struct or a pointer to one; and the fallback's container types stay
-// non-nullable, so "type" is the kind alone where upstream has ["null", kind].
+// struct or a pointer to one. A pointer, slice or map field admits null, as
+// upstream's does; an array is never null.
 func TestSchemaFor_QuotedFallbackContainers(t *testing.T) {
 	type fields struct {
 		Count int    `json:"count,string"`
@@ -258,13 +258,13 @@ func TestSchemaFor_QuotedFallbackContainers(t *testing.T) {
 	properties := schema["properties"].(map[string]any)
 	for _, test := range []struct {
 		name string
-		kind string
+		kind any
 		path []string
 	}{
-		{name: "pointer", kind: "object"},
-		{name: "slice", kind: "array", path: []string{"items"}},
+		{name: "pointer", kind: []any{"null", "object"}},
+		{name: "slice", kind: []any{"null", "array"}, path: []string{"items"}},
 		{name: "array", kind: "array", path: []string{"items"}},
-		{name: "map", kind: "object", path: []string{"additionalProperties"}},
+		{name: "map", kind: []any{"null", "object"}, path: []string{"additionalProperties"}},
 	} {
 		property := properties[test.name].(map[string]any)
 		assert.Equal(t, test.kind, property["type"], test.name)
