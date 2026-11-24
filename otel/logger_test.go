@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	otelmcp "github.com/pbednarcik/flexmcp/otel"
@@ -54,9 +54,9 @@ func newTestLoggerProvider(t *testing.T) (log.LoggerProvider, *captureExporter) 
 func TestNewSlogLogger_NilProviderUsesGlobal(t *testing.T) {
 	lp, exp := newTestLoggerProvider(t)
 
-	prev := global.GetLoggerProvider()
-	global.SetLoggerProvider(lp)
-	t.Cleanup(func() { global.SetLoggerProvider(prev) })
+	prev := otel.GetLoggerProvider()
+	otel.SetLoggerProvider(lp)
+	t.Cleanup(func() { otel.SetLoggerProvider(prev) })
 
 	logger := otelmcp.NewSlogLogger(nil, "mcp")
 	require.NotNil(t, logger)
