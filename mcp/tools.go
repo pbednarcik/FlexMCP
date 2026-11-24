@@ -487,14 +487,15 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 		m["inputSchema"] = t.InputSchema
 	}
 
-	// Add output schema if present
+	// Add output schema if present: one with no type is written as an
+	// object schema, and the zero one is left out.
 	if t.RawOutputSchema != nil {
-		if t.OutputSchema.Type != "" || t.OutputSchema.Types != nil || len(t.OutputSchema.AdditionalFields) > 0 {
+		if !t.OutputSchema.IsZero() {
 			return nil, fmt.Errorf("tool %s has both OutputSchema and RawOutputSchema set: %w", t.Name, errToolSchemaConflict)
 		}
 		m["outputSchema"] = t.RawOutputSchema
-	} else if t.OutputSchema.Type != "" || t.OutputSchema.Types != nil || len(t.OutputSchema.AdditionalFields) > 0 { // If no output schema is specified, do not return anything
-		m["outputSchema"] = t.OutputSchema
+	} else if !t.OutputSchema.IsZero() {
+		m["outputSchema"] = t.OutputSchema.AsObjectSchema()
 	}
 
 	m["annotations"] = t.Annotations

@@ -87,9 +87,6 @@ func (s *MCPServer) checkToolDefinition(tool *mcp.Tool) (toolSchemas, error) {
 	if _, err := json.Marshal(tool); err != nil {
 		return toolSchemas{}, fmt.Errorf("tool %q cannot be encoded: %w", tool.Name, err)
 	}
-	if err := unlistedOutputSchemaError(tool); err != nil {
-		return toolSchemas{}, fmt.Errorf("tool %q output schema cannot be encoded: %w", tool.Name, err)
-	}
 	return toolSchemas{input: input, output: output}, nil
 }
 

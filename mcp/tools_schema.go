@@ -43,6 +43,11 @@ type ToolArgumentsSchema struct {
 // methods explicitly forward to ToolArgumentsSchema.
 type ToolInputSchema ToolArgumentsSchema
 
+// ToolOutputSchema is a tool's outputSchema. In a Tool, one with any keyword
+// set and no type is an object schema, the type the specification requires of
+// an outputSchema: tools/list writes it with "type":"object", and output
+// validation checks against that. The zero ToolOutputSchema is no schema: see
+// IsZero. Encoded on its own, it is written as ToolArgumentsSchema is.
 type ToolOutputSchema ToolArgumentsSchema
 
 // MarshalJSON implements the json.Marshaler interface for ToolInputSchema.
@@ -53,6 +58,25 @@ func (tis ToolInputSchema) MarshalJSON() ([]byte, error) {
 // MarshalJSON implements the json.Marshaler interface for ToolOutputSchema.
 func (tis ToolOutputSchema) MarshalJSON() ([]byte, error) {
 	return ToolArgumentsSchema(tis).MarshalJSON()
+}
+
+// AsObjectSchema returns the schema as a Tool lists it: with "type":"object"
+// when it has no type, an empty type array included, as is otherwise.
+func (tis ToolOutputSchema) AsObjectSchema() ToolOutputSchema {
+	if tis.Type == "" && len(tis.Types) == 0 {
+		tis.Type = "object"
+	}
+	return tis
+}
+
+// IsZero reports whether the schema sets no keyword: no type, $defs,
+// properties, required, additionalProperties or kept keyword. A tool whose
+// OutputSchema is zero has no structured output schema: tools/list leaves it
+// out and output validation does not run, and RawOutputSchema may be set
+// beside it. PropertyOrder alone sets no keyword.
+func (tis ToolOutputSchema) IsZero() bool {
+	return tis.Type == "" && tis.Types == nil && tis.Defs == nil && tis.Properties == nil &&
+		tis.Required == nil && tis.AdditionalProperties == nil && len(tis.AdditionalFields) == 0
 }
 
 // MarshalJSON implements the json.Marshaler interface for ToolArgumentsSchema.

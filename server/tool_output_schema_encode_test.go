@@ -10,10 +10,10 @@ import (
 	"github.com/pbednarcik/flexmcp/mcp"
 )
 
-// A structured output schema tools/list leaves out, one with properties but
-// no type, is still the tool author's: one that cannot be encoded is refused
-// at registration, as one tools/list writes is, whether output validation is
-// on or off, rather than validated never without a word.
+// A structured output schema with properties or required but no type is an
+// object schema tools/list writes: one that cannot be encoded is refused at
+// registration, as any tool tools/list cannot write is, whether output
+// validation is on or off.
 func TestAnOutputSchemaThatCannotBeEncodedIsRefused(t *testing.T) {
 	byProperties := mcp.NewTool("out")
 	byProperties.OutputSchema = mcp.ToolOutputSchema{Properties: map[string]any{"n": map[string]any{"minimum": math.Inf(-1)}}}
@@ -31,20 +31,14 @@ func TestAnOutputSchemaThatCannotBeEncodedIsRefused(t *testing.T) {
 			srv := NewMCPServer("p", "1.0.0", options...)
 			for _, unencodable := range []mcp.Tool{byProperties, byRequired} {
 				message := panicMessage(func() { srv.AddTool(unencodable, okHandler) })
-				assert.Contains(t, message, `tool "out" output schema cannot be encoded`)
+				assert.Contains(t, message, `tool "out" cannot be encoded`)
 				assert.Contains(t, message, "-Inf")
 				assert.Nil(t, srv.GetTool("out"))
 			}
 
-			// An encodable one is as before: with validation on it does not
-			// compile (it is written with "type":""), with it off it
-			// registers, unlisted.
+			// An encodable one registers, validation on or off.
 			message := panicMessage(func() { srv.AddTool(encodable, okHandler) })
-			if validation {
-				assert.Contains(t, message, "cannot be compiled")
-			} else {
-				require.Empty(t, message)
-			}
+			require.Empty(t, message)
 		})
 	}
 }
