@@ -51,6 +51,9 @@ type encodeWriter struct {
 	header statusWriter // sent status before the first write; nil for none
 	status int
 	wrote  bool
+	// prefix goes out in a write of its own before the message's first
+	// bytes: an SSE event's field.
+	prefix []byte
 }
 
 // statusWriter sends an HTTP status.
@@ -61,7 +64,7 @@ type statusWriter interface{ WriteHeader(statusCode int) }
 // status to the stand-in that answers in its place. A message that cannot
 // be encoded answers an error wrapping errNotEncoded, and writes nothing.
 func (e *encodeWriter) encode(w io.Writer, header statusWriter, status int, message any) error {
-	e.w, e.header, e.status, e.wrote = w, header, status, false
+	e.w, e.header, e.status, e.wrote, e.prefix = w, header, status, false, nil
 	defer func() { e.w, e.header = nil, nil }()
 	err := json.NewEncoder(e).Encode(message)
 	if err != nil && !e.wrote {
@@ -71,9 +74,37 @@ func (e *encodeWriter) encode(w io.Writer, header statusWriter, status int, mess
 }
 
 func (e *encodeWriter) Write(p []byte) (int, error) {
-	if !e.wrote && e.header != nil {
-		e.header.WriteHeader(e.status)
+	if !e.wrote {
+		if e.header != nil {
+			e.header.WriteHeader(e.status)
+		}
+		e.wrote = true
+		if len(e.prefix) > 0 {
+			if _, err := e.w.Write(e.prefix); err != nil {
+				return 0, err
+			}
+		}
 	}
-	e.wrote = true
 	return e.w.Write(p)
+}
+
+// event writes message to w as one SSE event, encoded straight into the
+// writes rather than into a copy of its own: the event field, the message
+// with the newline the encoder ends it with, then the newline that ends the
+// event. A message that cannot be encoded writes nothing and answers an error
+// wrapping errNotEncoded.
+func (e *encodeWriter) event(w io.Writer, message any) error {
+	e.w, e.header, e.wrote, e.prefix = w, nil, false, sseEventData
+	defer func() { e.w, e.prefix = nil, nil }()
+	err := json.NewEncoder(e).Encode(message)
+	if err == nil {
+		_, err = w.Write(sseEventEnd[1:])
+	}
+	switch {
+	case err == nil:
+		return nil
+	case !e.wrote:
+		return notEncoded(err)
+	}
+	return fmt.Errorf("failed to write SSE event: %w", err)
 }

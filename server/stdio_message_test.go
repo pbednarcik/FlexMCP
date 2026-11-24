@@ -178,27 +178,47 @@ func bytesPerRun(runs int, f func()) uint64 {
 	return (after.TotalAlloc - before.TotalAlloc) / uint64(runs)
 }
 
-// An event is written as it always was; one that cannot be encoded writes
-// nothing.
-func TestWriteSSEEventWritesTheEventOrNothing(t *testing.T) {
-	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/message"}
-	encoded, err := json.Marshal(notification)
-	require.NoError(t, err)
+// An event is written as it always was, the message as json.Marshal writes it
+// between the event field and a blank line, however large and whatever it
+// holds; one that cannot be encoded writes nothing. The encoder an event went
+// through writes a plain message next.
+func TestSSEEventWritesTheEventOrNothing(t *testing.T) {
+	var e encodeWriter
+	for _, message := range []any{
+		mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/message"},
+		createResponse(int64(1), mcp.NewToolResultText("<a & b> \xff"+strings.Repeat("z", 16<<10))),
+	} {
+		encoded, err := json.Marshal(message)
+		require.NoError(t, err)
+
+		var out bytes.Buffer
+		require.NoError(t, e.event(&out, message))
+		assert.Equal(t, fmt.Sprintf("event: message\ndata: %s\n\n", encoded), out.String())
+
+		out.Reset()
+		require.NoError(t, e.encode(&out, nil, 0, message))
+		assert.Equal(t, fmt.Sprintf("%s\n", encoded), out.String())
+	}
 
 	var out bytes.Buffer
-	require.NoError(t, writeSSEEvent(&out, notification))
-	assert.Equal(t, fmt.Sprintf("event: message\ndata: %s\n\n", encoded), out.String())
-
-	out.Reset()
-	require.Error(t, writeSSEEvent(&out, func() {}))
+	require.ErrorIs(t, e.event(&out, func() {}), errNotEncoded)
 	assert.Zero(t, out.Len())
 }
 
-func TestWriteSSEEventAllocations(t *testing.T) {
+// An event is encoded straight into the writes: a large message is not
+// copied into bytes of its own first. 5 allocations and the message's size in
+// bytes when it was, 4 and no more than a few hundred bytes now.
+func TestSSEEventAllocations(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
 	}
-	notification := mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION, Method: "notifications/message"}
-	allocs := testing.AllocsPerRun(1000, func() { _ = writeSSEEvent(io.Discard, notification) })
-	assert.LessOrEqual(t, allocs, 3.0, "allocations per event written")
+	var e encodeWriter
+	for _, size := range []int{2, 16 << 10} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			message := createResponse(int64(1), mcp.NewToolResultText(strings.Repeat("z", size)))
+			write := func() { _ = e.event(io.Discard, message) }
+			assert.LessOrEqual(t, testing.AllocsPerRun(1000, write), 4.0, "allocations per event written")
+			assert.Less(t, bytesPerRun(50, write), uint64(4<<10), "bytes allocated per event written")
+		})
+	}
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -395,13 +394,13 @@ func (x *postExchange) write(nt mcp.JSONRPCNotification) {
 // on. mu is held.
 func (x *postExchange) event(message any) error {
 	x.upgrade()
-	err := writeSSEEvent(x.w, message)
+	err := x.encoder.event(x.w, message)
 	if errors.Is(err, errNotEncoded) {
 		standIn, ok := x.notSent(message, err)
 		if !ok {
 			return nil
 		}
-		err = writeSSEEvent(x.w, standIn)
+		err = x.encoder.event(x.w, standIn)
 	}
 	if err != nil {
 		return err
@@ -505,21 +504,6 @@ var (
 	sseEventData = []byte("event: message\ndata: ")
 	sseEventEnd  = []byte("\n\n")
 )
-
-func writeSSEEvent(w io.Writer, data any) error {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return notEncoded(err)
-	}
-	// Encoded first, so an event that cannot be encoded writes nothing; the
-	// caller holds the response while the parts are written.
-	for _, part := range [][]byte{sseEventData, jsonData, sseEventEnd} {
-		if _, err := w.Write(part); err != nil {
-			return fmt.Errorf("failed to write SSE event: %w", err)
-		}
-	}
-	return nil
-}
 
 // startSSEResponse commits the response as an SSE stream: the headers every
 // stream carries, including the one that asks proxies not to buffer events
