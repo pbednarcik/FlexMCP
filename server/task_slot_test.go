@@ -13,12 +13,15 @@ import (
 
 // A concurrency slot is held until the task's handler returns: a cancelled
 // task whose handler ignores its context still counts, so cancelling cannot
-// run more handlers at once than WithMaxConcurrentTasks allows.
+// run more handlers at once than WithMaxConcurrentTasks allows. The task is
+// cancelled once its handler runs: one cancelled before its worker starts
+// never runs it (upstream #1054) and frees the slot at once.
 func TestMaxConcurrentTasks_ACancelledTaskHoldsItsSlotWhileItsHandlerRuns(t *testing.T) {
-	release := make(chan struct{})
+	release, started := make(chan struct{}), make(chan struct{}, 3)
 	s := NewMCPServer("test", "1.0.0", WithTaskCapabilities(true, true, true), WithMaxConcurrentTasks(1))
 	s.AddTool(mcp.Tool{Name: "stubborn", Execution: &mcp.ToolExecution{TaskSupport: mcp.TaskSupportRequired}},
 		func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			started <- struct{}{}
 			<-release
 			return mcp.NewToolResultText("late"), nil
 		})
@@ -26,6 +29,7 @@ func TestMaxConcurrentTasks_ACancelledTaskHoldsItsSlotWhileItsHandlerRuns(t *tes
 
 	created, reqErr := s.handleTaskAugmentedToolCall(t.Context(), 1, call)
 	require.Nil(t, reqErr)
+	<-started
 	require.NoError(t, s.cancelTask(t.Context(), created.Task.TaskId))
 
 	_, reqErr = s.handleTaskAugmentedToolCall(t.Context(), 2, call)
