@@ -149,7 +149,7 @@ func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Origin is validated on every request: by the CORS allow list when one
 	// is configured, by the loopback check otherwise.
 	corsEnabled := s.corsConfig.enabled()
-	if !s.disableLocalhostProtection && rejectDNSRebinding(w, r, !corsEnabled, s.allowedHosts) {
+	if s.rejectRebinding(w, r) {
 		return
 	}
 	if corsEnabled {
@@ -405,16 +405,28 @@ func (s *StreamableHTTPServer) Start(addr string) error {
 	return srv.ListenAndServe()
 }
 
+// rejectRebinding applies the DNS rebinding protection ServeHTTP applies to
+// every request, unless WithDisableLocalhostProtection is set: Origin is
+// checked here when no CORS allow list checks it. It reports whether r was
+// refused.
+func (s *StreamableHTTPServer) rejectRebinding(w http.ResponseWriter, r *http.Request) bool {
+	return !s.disableLocalhostProtection && rejectDNSRebinding(w, r, !s.corsConfig.enabled(), s.allowedHosts)
+}
+
 // startMux routes the endpoint, and the metadata path when it is configured,
 // for the server Start makes. The metadata route answers the request paths
-// ServeHTTP answers: ServeMux would also take a real trailing slash for an
-// escaped one.
+// ServeHTTP answers, ServeMux would also take a real trailing slash for an
+// escaped one, and refuses the requests ServeHTTP's DNS rebinding protection
+// refuses.
 func (s *StreamableHTTPServer) startMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle(s.endpointPath, s)
 	if s.protectedResourceMetadataHandler != nil && s.protectedResourceMetadataPath != s.endpointPath {
 		path, metadata := s.protectedResourceMetadataPath, s.protectedResourceMetadataHandler
 		mux.Handle(path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if s.rejectRebinding(w, r) {
+				return
+			}
 			if !metadataPathMatches(r.URL.EscapedPath(), path) {
 				http.NotFound(w, r)
 				return
