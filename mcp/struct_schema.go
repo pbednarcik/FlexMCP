@@ -407,7 +407,11 @@ func applyQuotedFieldTags(t reflect.Type, schema *jsonschema.Schema, addressable
 // number or string, or a pointer to one, and never on a type that encodes
 // itself; any other field keeps schema. Go 1.27's encoding/json quotes
 // through a named pointer type too, where upstream follows the older
-// unnamed-pointer-only rule.
+// unnamed-pointer-only rule. A type that encodes itself is one with
+// MarshalJSON or MarshalText (see hasCustomJSONEncoding): one that encodes
+// itself through MarshalJSONTo alone, which encoding/json calls when built
+// with GOEXPERIMENT=jsonv2, is still described in the quoted string form,
+// though its method decides whether the value is quoted.
 func quotedFieldSchema(field reflect.StructField, schema *jsonschema.Schema, addressable bool) *jsonschema.Schema {
 	fieldType := field.Type
 	t := fieldType

@@ -14,6 +14,16 @@ import (
 type HTTPHeaderFunc func(context.Context) map[string]string
 
 // Interface for the transport layer.
+//
+// The stdio, SSE and Streamable HTTP transports read the server's messages
+// leniently, as encoding/json reads them: a member whose name folds onto a
+// defined one, such as "ID" or "Result", is read as that member, and of a
+// member sent twice the last is kept. The server, unlike them, refuses a
+// request spelled either way (upstream #1166). An HTTP status other than 200
+// or 202 is the exception: Streamable HTTP takes its body for the answer only
+// when it is a JSON-RPC error whose jsonrpc, error, code and message members
+// are spelled exactly, and reports the status otherwise; SSE, whose answers
+// come on its event stream, never takes such a body for one.
 type Interface interface {
 	// Start the connection. The client calls it once; the stdio, SSE and
 	// in-process transports ignore a second call on a started transport.
