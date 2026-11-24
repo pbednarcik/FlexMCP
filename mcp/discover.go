@@ -52,6 +52,11 @@ type SubscriptionFilter struct {
 	// ResourceSubscriptions opts in to notifications/resources/updated for the
 	// listed resource URIs. It replaces the resources/subscribe RPC.
 	ResourceSubscriptions []string `json:"resourceSubscriptions,omitempty"`
+	// TaskIDs opts in to notifications/tasks for the listed tasks, from the
+	// io.modelcontextprotocol/tasks extension; a client asking for them must
+	// declare the extension. FlexMCP grants none: it sends no task push, so
+	// the acknowledgement leaves TaskIDs out.
+	TaskIDs []string `json:"taskIds,omitempty"`
 }
 
 // IsEmpty reports whether the filter opts in to nothing.
@@ -59,7 +64,8 @@ func (f SubscriptionFilter) IsEmpty() bool {
 	return !f.ToolsListChanged &&
 		!f.PromptsListChanged &&
 		!f.ResourcesListChanged &&
-		len(f.ResourceSubscriptions) == 0
+		len(f.ResourceSubscriptions) == 0 &&
+		len(f.TaskIDs) == 0
 }
 
 // SubscriptionsListenRequest opens a long-lived stream for receiving

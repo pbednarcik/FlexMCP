@@ -246,6 +246,16 @@ func (s *MCPServer) handleSubscriptionsListen(
 		}
 	}
 
+	// A client asking a server that serves Tasks for task status
+	// notifications must declare the extension (Tasks.md row 22). A server
+	// without Tasks leaves the request out of the acknowledgement, as any
+	// other it cannot serve.
+	if len(request.Params.Notifications.TaskIDs) > 0 && s.taskHandler != nil &&
+		!ClientDeclaresExtension(ctx, mcp.ExtensionTasks) {
+		required := mcp.ClientCapabilities{Extensions: map[string]any{mcp.ExtensionTasks: map[string]any{}}}
+		return nil, handlerError(ctx, id, mcp.MissingRequiredClientCapabilityError{Required: required})
+	}
+
 	allowed := s.allowedSubscriptions(request.Params.Notifications)
 
 	// Acknowledge the subscription so the client learns which of its requested
@@ -439,7 +449,8 @@ func (s *MCPServer) unregisterListenSession(session ClientSession) {
 // allowedSubscriptions intersects the notification types a client asked for
 // with the capabilities this server actually advertises. The server MUST NOT
 // establish a subscription it cannot serve: resourceSubscriptions are never
-// granted, because nothing emits notifications/resources/updated yet.
+// granted, because nothing emits notifications/resources/updated yet, nor
+// taskIds, because nothing sends notifications/tasks.
 func (s *MCPServer) allowedSubscriptions(want mcp.SubscriptionFilter) mcp.SubscriptionFilter {
 	s.capabilitiesMu.RLock()
 	defer s.capabilitiesMu.RUnlock()

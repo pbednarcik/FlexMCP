@@ -46,13 +46,21 @@ type subscriptionState struct {
 //
 // Listen is only available on connections using protocol version 2026-07-28 or
 // later. On a legacy connection it returns an error: notifications arrive on
-// the transport's own stream there, with no opt-in required.
+// the transport's own stream there, with no opt-in required. A filter with
+// TaskIDs asks for the Tasks extension's task pushes: on a client that does
+// not declare the extension it returns ErrExtensionTasksNotDeclared and sends
+// nothing.
 func (c *Client) Listen(ctx context.Context, filter mcp.SubscriptionFilter) error {
 	if !c.isModern() {
 		return fmt.Errorf(
 			"subscriptions/listen requires protocol version %s or later; "+
 				"on this connection notifications are delivered without opting in",
 			mcp.ProtocolVersion20260728)
+	}
+	if len(filter.TaskIDs) > 0 {
+		if err := c.requireTasksExtension(); err != nil {
+			return err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)

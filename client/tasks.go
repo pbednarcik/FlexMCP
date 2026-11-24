@@ -24,9 +24,9 @@ var (
 		"use GetExtensionTask, CancelExtensionTask, UpdateExtensionTask and WaitForExtensionTask")
 	// ErrExtensionTasksNotDeclared is returned by the Tasks extension's methods
 	// (GetExtensionTask, CancelExtensionTask, UpdateExtensionTask and
-	// WaitForExtensionTask) on a client that does not declare the extension: a
-	// client declares it by being configured with it in WithClientCapabilities,
-	// on a 2026-07-28 connection.
+	// WaitForExtensionTask), and by Listen with TaskIDs, on a client that does
+	// not declare the extension: a client declares it by being configured with
+	// it in WithClientCapabilities, on a 2026-07-28 connection.
 	ErrExtensionTasksNotDeclared = errors.New("the Tasks extension " + mcp.ExtensionTasks +
 		" is not declared: it needs a 2026-07-28 connection and WithClientCapabilities with the extension under Extensions")
 	// ErrUnknownTaskStatus is returned, with the state, by WaitForExtensionTask
