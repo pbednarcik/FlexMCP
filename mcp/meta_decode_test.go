@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"weak"
 
@@ -313,7 +314,7 @@ func TestMetaUnmarshalClaudeCodeAllocations(t *testing.T) {
 // A decoder keeps at most maxKeptStrings strings, none longer than
 // maxKeptString bytes, however many it reads.
 func TestMetaStringCacheIsBounded(t *testing.T) {
-	d := metaDecoders.New().(*valueDecoder)
+	d := newValueDecoder().(*valueDecoder)
 	for i := range 4 * maxKeptStrings {
 		want := "s" + strconv.Itoa(i)
 		got, _, ok := d.text(jsontext.Value(strconv.Quote(want)), true)
@@ -401,4 +402,85 @@ func FuzzMetaFastMatchesSlow(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		checkMetaDiff(t, data)
 	})
+}
+
+// A decode right after collections, which empty a sync.Pool, finds a decoder
+// kept warm rather than making one with a string cache sized for
+// maxKeptStrings: 32-34 KiB a decode when every collection cost the pool its
+// decoders, 5-7 KiB now, what the other pools the collections emptied cost.
+func TestValueDecodeAfterCollectionsAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	meta := []byte(metaClaudeCode)
+	arguments := []byte(`{"region":"us-east-1","n":3}`)
+	for _, tc := range []struct {
+		name   string
+		decode func()
+	}{
+		{"a _meta", func() {
+			var m Meta
+			_ = m.UnmarshalJSON(meta)
+		}},
+		{"a tool call's arguments", func() { _, _ = decodeArgumentsFast(arguments) }},
+		{"a tool call's arguments for validation", func() { _, _ = decodeArgumentsNumbers(arguments) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.decode()
+			const runs = 10
+			var before, after runtime.MemStats
+			var total uint64
+			for range runs {
+				runtime.GC()
+				runtime.GC()
+				runtime.ReadMemStats(&before)
+				tc.decode()
+				runtime.ReadMemStats(&after)
+				total += after.TotalAlloc - before.TotalAlloc
+			}
+			assert.Less(t, total/runs, uint64(16<<10), "bytes allocated by a decode after two collections")
+		})
+	}
+}
+
+// A decoder serves one decode at a time, however often the collections that
+// send decodes to the reserve come: decodes on every core, each of its own
+// input, each read back as it was sent.
+func TestValueDecodersServeOneDecodeAtATime(t *testing.T) {
+	workers := 4 * runtime.GOMAXPROCS(0)
+	stop := make(chan struct{})
+	collected := make(chan struct{})
+	go func() {
+		defer close(collected)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.GC()
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Go(func() {
+			want := fmt.Sprintf("worker-%d-%s", w, strings.Repeat("v", w%50))
+			data := []byte(`{"k":"` + want + `","n":[1,2,{"x":"` + want + `"}]}`)
+			for range 2000 {
+				value, ok := decodeArgumentsFast(data)
+				if !ok {
+					t.Errorf("worker %d: not decoded", w)
+					return
+				}
+				got := value.(map[string]any)
+				if got["k"] != want || got["n"].([]any)[2].(map[string]any)["x"] != want {
+					t.Errorf("worker %d: decoded %v", w, got)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(stop)
+	<-collected
 }

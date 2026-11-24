@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"strconv"
-	"sync"
 	"unicode/utf8"
 )
 
@@ -19,6 +18,8 @@ type valueDecoder struct {
 	// rather than copying it into a buffer of its own.
 	in  bytes.Buffer
 	dec *jsontext.Decoder
+	// unq holds the text of a string that holds escapes; one grown past
+	// maxKeptUnquoted is let go when the decode ends.
 	unq []byte
 	// strs holds strings this decoder read before, by their bytes: a client
 	// sends the same ones on every request. It holds at most
@@ -43,17 +44,20 @@ const (
 	// maxKeptStrings is how many strings a decoder keeps before it
 	// forgets them all.
 	maxKeptStrings = 256
+	// maxKeptUnquoted is the escape buffer a decoder keeps between
+	// decodes. A longer escaped string costs a buffer of its own each time,
+	// beside the string it is read into; a decoder a pool or a reserve keeps
+	// does not hold the last one's text, nor 64 KiB for each slot.
+	maxKeptUnquoted = 4 << 10
 )
 
 // maxFastInput bounds the input the single pass reads; a larger one goes
-// to the slow decoder. A decoder's escape buffer grows with its input and goes
-// back to the pool as grown, so this also bounds what a pooled decoder keeps:
-// none is kept that an input past it grew. A large input that fails at its
-// end is not first built value by value.
+// to the slow decoder. A large input that fails at its end is not first
+// built value by value.
 const maxFastInput = 64 << 10
 
 // metaDecoders keeps the decoders between requests, so a decode makes none.
-var metaDecoders = sync.Pool{New: newValueDecoder}
+var metaDecoders decoderPool
 
 // newValueDecoder makes a decoder for a pool, its string cache empty.
 func newValueDecoder() any {
@@ -69,10 +73,13 @@ func (d *valueDecoder) start(data []byte) {
 }
 
 // finish lets go of the input, so a pooled decoder keeps none of a caller's
-// bytes alive.
+// bytes alive, and of an escape buffer grown past maxKeptUnquoted.
 func (d *valueDecoder) finish() {
 	d.in = bytes.Buffer{}
 	d.dec.Reset(&d.in, metaJSONOptions)
+	if cap(d.unq) > maxKeptUnquoted {
+		d.unq = nil
+	}
 }
 
 // metaConstStrings are the keys and values clients send on every request,
@@ -105,9 +112,9 @@ func (m *Meta) unmarshalFast(data []byte) bool {
 	if len(data) > maxFastInput {
 		return false
 	}
-	d := metaDecoders.Get().(*valueDecoder)
+	d := metaDecoders.get()
 	ok := d.decodeMeta(m, data)
-	metaDecoders.Put(d)
+	metaDecoders.put(d)
 	return ok
 }
 

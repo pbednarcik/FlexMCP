@@ -1,24 +1,16 @@
 package mcp
 
-import (
-	"sync"
-
-	"github.com/pbednarcik/flexmcp/internal/argsdecode"
-)
+import "github.com/pbednarcik/flexmcp/internal/argsdecode"
 
 // argumentDecoders keeps the decoders that read a tool call's arguments
 // between requests. They are not [metaDecoders]: argument values are new on
 // each call more often than a _meta's, and in a decoder of their own they do
 // not push out the strings a client repeats in every _meta.
-var argumentDecoders = sync.Pool{New: newValueDecoder}
+var argumentDecoders decoderPool
 
 // numberDecoders keep the decoders that read a tool call's arguments for the
 // input validator, every number kept as the json.Number of its literal.
-var numberDecoders = sync.Pool{New: func() any {
-	d := newValueDecoder().(*valueDecoder)
-	d.numbers = true
-	return d
-}}
+var numberDecoders = decoderPool{numbers: true}
 
 func init() { argsdecode.Numbers = decodeArgumentsNumbers }
 
@@ -33,9 +25,9 @@ func decodeArgumentsNumbers(data []byte) (any, bool) {
 	if len(data) > maxFastInput {
 		return nil, false
 	}
-	d := numberDecoders.Get().(*valueDecoder)
+	d := numberDecoders.get()
 	value, ok := d.decodeArguments(data)
-	numberDecoders.Put(d)
+	numberDecoders.put(d)
 	return value, ok
 }
 
@@ -49,9 +41,9 @@ func decodeArgumentsFast(data []byte) (any, bool) {
 	if len(data) > maxFastInput {
 		return nil, false
 	}
-	d := argumentDecoders.Get().(*valueDecoder)
+	d := argumentDecoders.get()
 	value, ok := d.decodeArguments(data)
-	argumentDecoders.Put(d)
+	argumentDecoders.put(d)
 	return value, ok
 }
 
