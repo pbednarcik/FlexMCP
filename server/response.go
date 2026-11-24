@@ -69,6 +69,18 @@ func (s *MCPServer) decorateResponse(
 // what makes the pointer-receiver decoration interfaces reachable for the
 // results the generated dispatcher stores by value.
 func (s *MCPServer) decorateResult(result any, method mcp.MCPMethod) (any, bool) {
+	if r, ok := result.(*mcp.CallToolResult); ok {
+		if r == nil {
+			return nil, false
+		}
+		// A tool's result, the one most calls answer with, is copied with
+		// no reflection, and with the _meta its copy gets in the same
+		// allocation.
+		own := &decoratedToolResult{result: *r}
+		s.decorateCopy(&own.result, &own.meta, method)
+		return &own.result, true
+	}
+
 	value := reflect.ValueOf(result)
 	if !value.IsValid() {
 		return nil, false
@@ -88,13 +100,38 @@ func (s *MCPServer) decorateResult(result any, method mcp.MCPMethod) (any, bool)
 	if !ok {
 		return nil, false
 	}
+	s.decorateCopy(metadata, nil, method)
 
+	if byValue {
+		return pointer.Elem().Interface(), true
+	}
+	return pointer.Interface(), true
+}
+
+// decoratedToolResult is a tool result's private copy and the _meta
+// decoration gives it, made together.
+type decoratedToolResult struct {
+	result mcp.CallToolResult
+	meta   mcp.Meta
+}
+
+// decorateCopy stamps the modern result metadata onto metadata, a private
+// copy of a result. spare, when not nil, is the zero _meta the copy takes for
+// its own, instead of one allocated.
+func (s *MCPServer) decorateCopy(metadata mcp.ResultMetadata, spare *mcp.Meta, method mcp.MCPMethod) {
 	// The copy still shares the handler's _meta: it gets its own before a
 	// field is written.
 	if meta := metadata.GetResultMeta(); meta != nil {
-		own := *meta
+		own := spare
+		if own == nil {
+			own = new(mcp.Meta)
+		}
+		*own = *meta
 		own.AdditionalFields = maps.Clone(meta.AdditionalFields)
-		metadata.SetResultMeta(&own)
+		metadata.SetResultMeta(own)
+	} else if spare != nil {
+		// The _meta EnsureResultMeta would allocate below.
+		metadata.SetResultMeta(spare)
 	}
 
 	// resultType is required from 2026-07-28 onward. A handler that already
@@ -110,15 +147,10 @@ func (s *MCPServer) decorateResult(result any, method mcp.MCPMethod) (any, bool)
 
 	// ttlMs and cacheScope are required on list and read results.
 	if methodReturnsCacheableResult(method) {
-		if cacheable, ok := reflect.TypeAssert[mcp.CacheHintSetter](pointer); ok {
+		if cacheable, ok := metadata.(mcp.CacheHintSetter); ok {
 			applyDefaultCacheHints(cacheable, s.cacheHintsFor(method))
 		}
 	}
-
-	if byValue {
-		return pointer.Elem().Interface(), true
-	}
-	return pointer.Interface(), true
 }
 
 // boxedServerInfo is the server's identity as result _meta carries it: boxed
