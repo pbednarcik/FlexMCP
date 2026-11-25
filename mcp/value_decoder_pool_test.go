@@ -83,7 +83,7 @@ func TestDecoderReserveReopensWhenFoundEmpty(t *testing.T) {
 // buffers, whatever the decoders read: an escape buffer a long escaped string
 // grew is let go when the decode ends. 91 KiB a decoder when it was kept,
 // after a 64 KiB argument of escapes; 27-28 KiB now after that or a client's
-// _meta, 45 KiB with the string cache full.
+// _meta, 51 KiB with the string cache full and an escape buffer kept.
 func TestReservedDecodersRetention(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates")
@@ -109,7 +109,26 @@ func TestReservedDecodersRetention(t *testing.T) {
 		b.WriteString("}")
 		return []byte(b.String())
 	}
+	// fullAndEscaped is an array of maxKeptStrings different values of
+	// maxKeptString bytes, each kept and boxed, and one escaped string whose
+	// escape buffer stays under maxKeptUnquoted, so it is kept too.
+	fullAndEscaped := func() []byte {
+		var b strings.Builder
+		b.WriteString("[")
+		for i := range maxKeptStrings {
+			fmt.Fprintf(&b, `"%0*d",`, maxKeptString, i)
+		}
+		b.WriteString(`"`)
+		b.WriteString(strings.Repeat(`\n`, maxKeptUnquoted*15/32))
+		b.WriteString(`"]`)
+		return []byte(b.String())
+	}()
+	d := newValueDecoder().(*valueDecoder)
+	_, _ = d.decodeArguments(fullAndEscaped)
+	require.Len(t, d.strs, maxKeptStrings, "strings the decoder keeps")
+	require.NotZero(t, cap(d.unq), "the escape buffer the decoder keeps")
 	inputs := map[string][]byte{
+		"a full string cache and an escape buffer": fullAndEscaped,
 		"a _meta":              []byte(metaClaudeCode),
 		"64 KiB of escapes":    []byte(`{"s":"` + strings.Repeat(`\n`, (maxFastInput-16)/2) + `"}`),
 		"nested 10,000 deep":   []byte(strings.Repeat("[", 10000) + strings.Repeat("]", 10000)),
@@ -133,7 +152,7 @@ func TestReservedDecodersRetention(t *testing.T) {
 			retained := (heap() - before) / uint64(n)
 			runtime.KeepAlive(&p)
 			t.Logf("%d B a decoder", retained)
-			assert.Less(t, retained, uint64(48<<10), "bytes a reserved decoder holds")
+			assert.Less(t, retained, uint64(54<<10), "bytes a reserved decoder holds")
 		})
 	}
 }

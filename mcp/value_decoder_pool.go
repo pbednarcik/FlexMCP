@@ -19,9 +19,10 @@ import (
 // reserve empty clears the flag too, so a reserve emptied between a put's
 // look and its flag reopens. A full reserve keeps its decoders for the life
 // of the process: 27-28 KiB each after the decodes clients send, at most
-// 45 KiB whatever they read, its string cache full (maxKeptStrings of
-// maxKeptString bytes; an escape buffer past maxKeptUnquoted is not kept).
-// At 36 Ps the three pools' reserves hold about 2.9 MiB, 4.8 MiB at most.
+// 51 KiB whatever they read, its string cache full (maxKeptStrings of
+// maxKeptString bytes) and its escape buffer just under maxKeptUnquoted (one
+// past it is not kept). At 36 Ps the three pools' reserves hold about
+// 2.9 MiB, 5.4 MiB at most.
 type decoderPool struct {
 	pool sync.Pool
 	// numbers marks the decoders the pool makes as keeping numbers as the
