@@ -92,6 +92,13 @@ func TestTaskSeal(t *testing.T) {
 			err:    errTaskUnknown,
 		},
 		{
+			// The caller's bytes are authenticated, not only its length.
+			name:   "another caller of the same length is unknown",
+			taskID: func(t *testing.T) string { return mustSeal(t, a, handlerID, caller) },
+			caller: "Alice",
+			err:    errTaskUnknown,
+		},
+		{
 			name:   "the unbound caller does not open a bound id",
 			taskID: func(t *testing.T) string { return mustSeal(t, a, handlerID, caller) },
 			caller: "",

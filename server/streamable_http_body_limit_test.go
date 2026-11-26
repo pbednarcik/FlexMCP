@@ -17,7 +17,7 @@ import (
 )
 
 // A POST body is read only up to a bound: a larger one is answered 413
-// Request Entity Too Large with a JSON-RPC error, so a client cannot make
+// Request Entity Too Large with a JSON-RPC error, so one request cannot make
 // the server hold an arbitrary amount of memory.
 func TestStreamableHTTP_RequestBodyIsBounded(t *testing.T) {
 	initialize := func(padding int) []byte {
@@ -71,6 +71,21 @@ func TestStreamableHTTP_RequestBodyBoundDoesNotTrustContentLength(t *testing.T) 
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+}
+
+// A Content-Length over the bound is refused before a byte of the body is
+// read, so a client that declares a large body and sends it slowly is not
+// waited for.
+func TestStreamableHTTP_DeclaredLengthOverBoundIsRefusedUnread(t *testing.T) {
+	server := NewStreamableHTTPServer(NewMCPServer("t", "1"), WithMaxRequestBodyBytes(1024))
+	body := &countingReader{Reader: bytes.NewReader(bytes.Repeat([]byte("x"), 1025))}
+	req := httptest.NewRequest(http.MethodPost, "/mcp", io.NopCloser(body))
+	req.ContentLength = 1025
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+	assert.Zero(t, body.n, "bytes read of a body declared over the bound")
 }
 
 // countingReader counts the bytes it hands out.

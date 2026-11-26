@@ -261,9 +261,12 @@ const DefaultMaxRequestBodyBytes = 4 << 20
 
 // WithMaxRequestBodyBytes bounds the body of a POST request served through
 // ServeHTTP: the server reads at most n bytes of it, and answers a larger
-// one 413 Request Entity Too Large with a JSON-RPC error, so a client cannot
-// make the server hold an arbitrary amount of memory. The default is
-// DefaultMaxRequestBodyBytes; zero or less removes the bound. A request
+// one 413 Request Entity Too Large with a JSON-RPC error, so one request
+// cannot make the server hold an arbitrary amount of memory. The bound is per
+// request: requests read at the same time hold up to n each, so a server open
+// to many clients also limits its connections, and a short
+// [WithRequestBodyTimeout] shortens how long a slow body is held. The default
+// is DefaultMaxRequestBodyBytes; zero or less removes the bound. A request
 // brought through Handle arrives with its body already read, so the caller
 // bounds it there.
 func WithMaxRequestBodyBytes(n int64) StreamableHTTPOption {
