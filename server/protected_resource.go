@@ -174,39 +174,58 @@ func metadataPathMatches(requestPath, metadataPath string) bool {
 //	mux.Handle(server.ProtectedResourceMetadataPath(cfg.Resource),
 //	    server.NewProtectedResourceMetadataHandler(cfg))
 func NewProtectedResourceMetadataHandler(config ProtectedResourceMetadataConfig) http.Handler {
-	// Pre-marshal at construction time so each request is just a copy.
-	// This struct only contains JSON-friendly types so Marshal cannot fail
-	// in practice; the lazy fallback below preserves correctness regardless.
-	body, marshalErr := json.Marshal(config)
-
+	m := newMetadataResponder(config)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.serve(w, r, true)
+	})
+}
+
+// metadataResponder answers the metadata route with the document encoded once.
+type metadataResponder struct {
+	body []byte
+	err  error
+}
+
+// newMetadataResponder encodes config at construction time so each request is
+// just a copy. The struct only contains JSON-friendly types so Marshal cannot
+// fail in practice; serve's fallback preserves correctness regardless.
+func newMetadataResponder(config ProtectedResourceMetadataConfig) *metadataResponder {
+	body, err := json.Marshal(config)
+	return &metadataResponder{body: body, err: err}
+}
+
+// serve answers r. permissive adds the CORS headers that let any origin read
+// the metadata; a server with a CORS allow list serves without them, its own
+// CORS headers already written.
+func (m *metadataResponder) serve(w http.ResponseWriter, r *http.Request, permissive bool) {
+	if permissive {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	}
 
-		switch r.Method {
-		case http.MethodOptions:
-			w.WriteHeader(http.StatusNoContent)
-			return
-		case http.MethodGet, http.MethodHead:
-			// proceed below
-		default:
-			w.Header().Set("Allow", "GET, HEAD, OPTIONS")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+	switch r.Method {
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case http.MethodGet, http.MethodHead:
+		// proceed below
+	default:
+		w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
-		if marshalErr != nil {
-			http.Error(w, "failed to marshal protected resource metadata", http.StatusInternalServerError)
-			return
-		}
+	if m.err != nil {
+		http.Error(w, "failed to marshal protected resource metadata", http.StatusInternalServerError)
+		return
+	}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusOK)
-		if r.Method == http.MethodHead {
-			return
-		}
-		_, _ = w.Write(body)
-	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(m.body)
 }

@@ -77,9 +77,9 @@ type StreamableHTTPServer struct {
 	// protectedResourceMetadata, when non-nil, is served as RFC 9728 OAuth
 	// 2.0 Protected Resource Metadata. The well-known path is derived from
 	// the configured Resource via ProtectedResourceMetadataPath.
-	protectedResourceMetadata        *ProtectedResourceMetadataConfig
-	protectedResourceMetadataPath    string
-	protectedResourceMetadataHandler http.Handler
+	protectedResourceMetadata     *ProtectedResourceMetadataConfig
+	protectedResourceMetadataPath string
+	metadataResponder             *metadataResponder
 
 	// corsConfig, when non-nil and with at least one allowed origin, makes
 	// the server emit CORS headers and answer preflight requests. See
@@ -128,9 +128,10 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 // ServeHTTP implements the http.Handler interface.
 //
 // When WithProtectedResourceMetadata has been configured, requests to the
-// derived /.well-known/oauth-protected-resource path are dispatched to the
-// metadata handler so that the same StreamableHTTPServer can be mounted as a
-// single http.Handler while still exposing OAuth discovery metadata.
+// derived /.well-known/oauth-protected-resource path are answered with the
+// metadata, after the same checks as the endpoint, so that the same
+// StreamableHTTPServer can be mounted as a single http.Handler while still
+// exposing OAuth discovery metadata.
 //
 // When WithStreamableHTTPCORS has been configured, CORS preflight (OPTIONS)
 // requests are answered directly and simple cross-origin responses are
@@ -146,23 +147,11 @@ func NewStreamableHTTPServer(server *MCPServer, opts ...StreamableHTTPOption) *S
 // ServeHTTP is the conventional net/http entry point; for non-net/http HTTP
 // frameworks (fasthttp, fiber, etc.), see Handle.
 func (s *StreamableHTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Origin is validated on every request: by the CORS allow list when one
-	// is configured, by the loopback check otherwise.
-	corsEnabled := s.corsConfig.enabled()
-	if s.rejectRebinding(w, r) {
+	if s.admit(w, r) {
 		return
 	}
-	if corsEnabled {
-		if s.corsConfig.rejectDisallowedOrigin(w, r) {
-			return
-		}
-		if s.corsConfig.handlePreflight(w, r) {
-			return
-		}
-		s.corsConfig.applySimple(w, r)
-	}
-	if s.protectedResourceMetadataHandler != nil && metadataPathMatches(r.URL.EscapedPath(), s.protectedResourceMetadataPath) {
-		s.protectedResourceMetadataHandler.ServeHTTP(w, r)
+	if s.metadataResponder != nil && metadataPathMatches(r.URL.EscapedPath(), s.protectedResourceMetadataPath) {
+		s.serveMetadata(w, r)
 		return
 	}
 
@@ -413,25 +402,52 @@ func (s *StreamableHTTPServer) rejectRebinding(w http.ResponseWriter, r *http.Re
 	return !s.disableLocalhostProtection && rejectDNSRebinding(w, r, !s.corsConfig.enabled(), s.allowedHosts)
 }
 
+// admit runs the checks ServeHTTP and Start's metadata route make before they
+// serve a request (Handle makes none of them), and reports whether it answered
+// the request itself. Origin is judged by the CORS allow list when one is
+// configured; otherwise by the DNS rebinding protection, on the addresses a
+// rebinding can reach and unless WithDisableLocalhostProtection turned it off.
+// With a list, a preflight is answered here and an allowed origin gets the
+// list's headers.
+func (s *StreamableHTTPServer) admit(w http.ResponseWriter, r *http.Request) bool {
+	if s.rejectRebinding(w, r) {
+		return true
+	}
+	if s.corsConfig.enabled() {
+		if s.corsConfig.rejectDisallowedOrigin(w, r) || s.corsConfig.handlePreflight(w, r) {
+			return true
+		}
+		s.corsConfig.applySimple(w, r)
+	}
+	return false
+}
+
+// serveMetadata answers the metadata route, once admit let the request
+// through: with Access-Control-Allow-Origin: * when no CORS allow list is
+// configured, else with the list's headers admit wrote.
+func (s *StreamableHTTPServer) serveMetadata(w http.ResponseWriter, r *http.Request) {
+	s.metadataResponder.serve(w, r, !s.corsConfig.enabled())
+}
+
 // startMux routes the endpoint, and the metadata path when it is configured,
 // for the server Start makes. The metadata route answers the request paths
 // ServeHTTP answers, ServeMux would also take a real trailing slash for an
-// escaped one, and refuses the requests ServeHTTP's DNS rebinding protection
-// refuses.
+// escaped one, and refuses the requests ServeHTTP's Origin and Host checks
+// refuse.
 func (s *StreamableHTTPServer) startMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle(s.endpointPath, s)
-	if s.protectedResourceMetadataHandler != nil && s.protectedResourceMetadataPath != s.endpointPath {
-		path, metadata := s.protectedResourceMetadataPath, s.protectedResourceMetadataHandler
+	if s.metadataResponder != nil && s.protectedResourceMetadataPath != s.endpointPath {
+		path := s.protectedResourceMetadataPath
 		mux.Handle(path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if s.rejectRebinding(w, r) {
+			if s.admit(w, r) {
 				return
 			}
 			if !metadataPathMatches(r.URL.EscapedPath(), path) {
 				http.NotFound(w, r)
 				return
 			}
-			metadata.ServeHTTP(w, r)
+			s.serveMetadata(w, r)
 		}))
 	}
 	return mux

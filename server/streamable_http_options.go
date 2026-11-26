@@ -176,14 +176,19 @@ func WithTLSCert(certFile, keyFile string) StreamableHTTPOption {
 //
 // The metadata is served both when the server is started via Start (registered
 // on the internal mux) and when the server is used directly as an
-// http.Handler via ServeHTTP. To mount the metadata endpoint manually on a
-// custom router, use NewProtectedResourceMetadataHandler instead.
+// http.Handler via ServeHTTP. It is checked as the endpoint is: with a CORS
+// allow list (WithStreamableHTTPCORS) an origin outside it is refused and an
+// allowed one gets the list's headers; without one, every origin the DNS
+// rebinding protection lets through gets Access-Control-Allow-Origin: *. To
+// mount the metadata endpoint manually on a custom router, use
+// NewProtectedResourceMetadataHandler instead, which always answers any
+// origin.
 func WithProtectedResourceMetadata(config ProtectedResourceMetadataConfig) StreamableHTTPOption {
 	return func(s *StreamableHTTPServer) {
 		cfg := config
 		s.protectedResourceMetadata = &cfg
 		s.protectedResourceMetadataPath = ProtectedResourceMetadataPath(cfg.Resource)
-		s.protectedResourceMetadataHandler = NewProtectedResourceMetadataHandler(cfg)
+		s.metadataResponder = newMetadataResponder(cfg)
 	}
 }
 
