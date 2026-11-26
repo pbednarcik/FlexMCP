@@ -543,6 +543,28 @@ func TestTheCallerIsResolvedOnlyOnAHandOver(t *testing.T) {
 	assert.Equal(t, int32(2), calls.Load(), "the caller runs for the seal and for the guard")
 }
 
+// A caller that answers the guard otherwise than it answered the seal fails
+// the hand-over, as WithTaskCaller warns: NewTaskResult succeeds, and the call
+// is answered with an internal error instead of the task.
+func TestAnUnstableCallerFailsItsHandOver(t *testing.T) {
+	var calls atomic.Int32
+	var sealErr error
+	srv := taskServer(false, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		res, err := NewTaskResult(ctx, "job-1")
+		sealErr = err
+		return res, err
+	}, WithTaskCaller(func(context.Context) string {
+		if calls.Add(1) == 1 {
+			return "alice"
+		}
+		return "bob"
+	}))
+
+	assert.Equal(t, mcp.INTERNAL_ERROR, errorCode(t, callToolIn(t, t.Context(), srv, "slow", declaredCall)))
+	require.NoError(t, sealErr)
+	assert.Equal(t, int32(2), calls.Load())
+}
+
 // DetachTaskContext keeps the call's values, and drops its cancellation, its
 // session and its task stamp: what is sent under it reaches no client, and a
 // Run under it runs at once.
