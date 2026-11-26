@@ -226,7 +226,8 @@ func writeHTTPError(w HTTPResponseWriter, msg string, code int) {
 //     a present Origin on a loopback, private, shared or link-local
 //     connection.
 //   - WithProtectedResourceMetadata is NOT applied. The caller should mount
-//     the metadata route separately if needed (see ProtectedResourceMetadataHandler).
+//     the metadata route separately if needed (see
+//     NewProtectedResourceMetadataHandler).
 //   - WithHTTPContextFunc is honored for backwards compatibility; it receives
 //     a synthetic *http.Request derived from r so existing options keep working.
 //     Callers may also pre-populate r.Context with any values they need.
